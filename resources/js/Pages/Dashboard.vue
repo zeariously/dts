@@ -1274,54 +1274,219 @@ const submitEntryDateUpdate = () => {
                 </p>
             </div>
 
-            <!-- ABOUT CONTENT -->
+                       <!-- ABOUT CONTENT -->
             <div
                 v-else-if="activeSection === 'about'"
-                class="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm"
+                class="space-y-6"
             >
-                <h2 class="text-2xl font-bold text-slate-900">
-                    About DTS
-                </h2>
+                <!-- Hero -->
+                <section class="overflow-hidden rounded-3xl border border-blue-100 bg-white shadow-sm">
+                    <div class="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr]">
+                        <div class="p-8 lg:p-10">
+                            <div class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-blue-700">
+                                <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                                About the System
+                            </div>
 
-                <p class="mt-4 max-w-4xl text-sm leading-7 text-slate-600">
-                     Document Tracking System is a web-based platform used to encode,
-                    monitor, receive, route, and track official documents. It helps offices
-                    organize incoming and outgoing documents, manage document actions, and view
-                    transaction history in one place.
-                </p>
+                            <h2 class="mt-6 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+                                Pantalan Document Tracking System
+                            </h2>
 
-                <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Tracking
-                        </p>
+                            <p class="mt-4 max-w-4xl text-base font-semibold leading-8 text-slate-600">
+                                Pantalan DTS is a web-based document tracking platform designed to help offices
+                                encode, receive, route, return, monitor, and manage official documents in one
+                                organized workspace. It improves visibility of document movement and helps users
+                                quickly identify pending actions, assigned personnel, and document history.
+                            </p>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Monitor document movement and status.
+                            <div class="mt-7 flex flex-wrap gap-3">
+                                <span class="rounded-full bg-blue-600 px-5 py-2 text-sm font-black text-white">
+                                    Document Monitoring
+                                </span>
+
+                                <span class="rounded-full bg-emerald-50 px-5 py-2 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
+                                    Routing & Receiving
+                                </span>
+
+                                <span class="rounded-full bg-purple-50 px-5 py-2 text-sm font-black text-purple-700 ring-1 ring-purple-100">
+                                    Action History
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 p-8 text-white lg:p-10">
+                            <p class="text-sm font-black uppercase tracking-[0.22em] text-blue-100">
+                                System Purpose
+                            </p>
+
+                            <div class="mt-6 space-y-4">
+                                <div class="rounded-2xl bg-white/10 p-5 ring-1 ring-white/15">
+                                    <p class="text-2xl font-black">
+                                        Faster Tracking
+                                    </p>
+
+                                    <p class="mt-2 text-sm font-semibold leading-6 text-blue-100">
+                                        Quickly locate documents and see their current movement status.
+                                    </p>
+                                </div>
+
+                                <div class="rounded-2xl bg-white/10 p-5 ring-1 ring-white/15">
+                                    <p class="text-2xl font-black">
+                                        Clear Accountability
+                                    </p>
+
+                                    <p class="mt-2 text-sm font-semibold leading-6 text-blue-100">
+                                        Know who received, returned, transferred, or still needs to act on a document.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Feature Cards -->
+                <section class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+                    <div class="rounded-3xl border border-blue-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-2xl">
+                            📄
+                        </div>
+
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Document Encoding
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Add document details, classification, document type, concerned staff, and attachments.
                         </p>
                     </div>
 
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Routing
-                        </p>
+                    <div class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-2xl">
+                            ✅
+                        </div>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Forward, receive, and return documents.
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Receiving
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Mark documents as received and confirm that the assigned office or personnel has taken action.
                         </p>
                     </div>
 
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Reports
-                        </p>
+                    <div class="rounded-3xl border border-purple-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-purple-50 text-2xl">
+                            🔁
+                        </div>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Generate summaries for monitoring.
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Transfer & Return
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Forward documents to the proper personnel or return them with remarks when needed.
                         </p>
                     </div>
-                </div>
+
+                    <div class="rounded-3xl border border-amber-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-2xl">
+                            📊
+                        </div>
+
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Monitoring Reports
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            View transaction summaries, pending actions, and monitoring dashboard reports.
+                        </p>
+                    </div>
+                </section>
+
+                <!-- Workflow -->
+                <section class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <p class="text-sm font-black uppercase tracking-[0.22em] text-blue-600">
+                                Document Flow
+                            </p>
+
+                            <h3 class="mt-2 text-2xl font-black text-slate-950">
+                                How documents move in DTS
+                            </h3>
+                        </div>
+
+                        <p class="max-w-2xl text-sm font-semibold leading-6 text-slate-500">
+                            The system keeps every step visible so users can check where a document is, who should act on it,
+                            and what actions were already performed.
+                        </p>
+                    </div>
+
+                    <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                1
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Encode</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                2
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Assign</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                3
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Receive</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                4
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Transfer / Return</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                5
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Monitor</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Footer Info -->
+                <section class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                    <div class="rounded-3xl border border-blue-100 bg-blue-50 p-6">
+                        <h3 class="text-lg font-black text-blue-900">
+                            Who can use the system?
+                        </h3>
+
+                        <p class="mt-3 text-sm font-semibold leading-7 text-blue-800">
+                            DTS is intended for authorized users who encode, route, receive, return, monitor,
+                            and manage office documents. Access is role-based so each user only sees the modules
+                            and actions allowed for their role.
+                        </p>
+                    </div>
+
+                    <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                        <h3 class="text-lg font-black text-slate-900">
+                            Need assistance?
+                        </h3>
+
+                        <p class="mt-3 text-sm font-semibold leading-7 text-slate-500">
+                            For account access, incorrect document routing, missing notifications, or report concerns,
+                            contact the system administrator or the assigned DTS monitoring staff.
+                        </p>
+                    </div>
+                </section>
             </div>
+
 
             <!-- REPORTS CONTENT -->
             <div
@@ -1372,7 +1537,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Filter documents by classification, keywords, and date range.
+                                        Filter documents by classification, keywords, and date range.sssssss
                                     </p>
                                 </div>
 

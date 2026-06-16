@@ -18,6 +18,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    actionTakenItems: {
+        type: Array,
+        default: () => [],
+    },
     years: {
         type: Array,
         default: () => [],
@@ -32,6 +36,7 @@ const page = usePage()
 const showUserMenu = ref(false)
 const showNotificationModal = ref(false)
 const showPendingModal = ref(false)
+const showActionTakenModal = ref(false)
 
 const authUser = computed(() => {
     return page.props.auth?.user || {}
@@ -80,6 +85,14 @@ const closePendingModal = () => {
     showPendingModal.value = false
 }
 
+const openActionTakenModal = () => {
+    showActionTakenModal.value = true
+}
+
+const closeActionTakenModal = () => {
+    showActionTakenModal.value = false
+}
+
 const search = ref(props.filters.search || '')
 const status = ref(props.filters.status || '')
 const perPage = ref(props.filters.per_page || 15)
@@ -89,8 +102,102 @@ const expandedPeople = ref({})
 let searchTimer = null
 let skipNextSearchWatch = false
 
-const transactionRows = computed(() => {
+const rawRows = computed(() => {
     return props.transactions?.data || []
+})
+
+const documentRows = computed(() => {
+    const uniqueDocuments = new Map()
+
+    rawRows.value.forEach((row) => {
+        const documentId = row?.IDdoc
+            ?? row?.document_no
+            ?? row?.id
+
+        if (!documentId) {
+            return
+        }
+
+        const existing = uniqueDocuments.get(String(documentId))
+
+        if (!existing) {
+            uniqueDocuments.set(String(documentId), row)
+            return
+        }
+
+        const existingDays = Number(existing.days_pending || 0)
+        const currentDays = Number(row.days_pending || 0)
+
+        if (currentDays > existingDays) {
+            uniqueDocuments.set(String(documentId), row)
+        }
+    })
+
+    return Array.from(uniqueDocuments.values())
+})
+
+const actionTakenRows = computed(() => {
+    const groupedDocuments = new Map()
+
+    ;(props.actionTakenItems || []).forEach((item) => {
+        const documentId = item?.IDdoc
+            ?? item?.document_no
+            ?? item?.doc_id
+            ?? item?.id
+
+        if (!documentId) {
+            return
+        }
+
+        const key = String(documentId)
+        const existing = groupedDocuments.get(key)
+
+        const actionItem = {
+            id: item.id,
+            action_label: item.action_label || 'Action Taken',
+            remarks: item.remarks || '',
+            actor_name: item.actor_name || '-',
+            created_at: item.created_at || null,
+        }
+
+        if (!existing) {
+            groupedDocuments.set(key, {
+                ...item,
+                IDdoc: item.IDdoc ?? item.document_no,
+                document_no: item.document_no ?? item.IDdoc,
+                latest_action_label: actionItem.action_label,
+                latest_remarks: actionItem.remarks,
+                latest_actor_name: actionItem.actor_name,
+                latest_action_at: actionItem.created_at,
+                actions: [actionItem],
+            })
+
+            return
+        }
+
+        existing.actions.push(actionItem)
+
+        const existingTime = new Date(existing.latest_action_at || 0).getTime()
+        const currentTime = new Date(actionItem.created_at || 0).getTime()
+
+        if (!Number.isNaN(currentTime) && currentTime >= existingTime) {
+            existing.latest_action_label = actionItem.action_label
+            existing.latest_remarks = actionItem.remarks
+            existing.latest_actor_name = actionItem.actor_name
+            existing.latest_action_at = actionItem.created_at
+        }
+    })
+
+    return Array.from(groupedDocuments.values()).sort((a, b) => {
+        const firstDate = new Date(a.latest_action_at || a.created_at || 0).getTime()
+        const secondDate = new Date(b.latest_action_at || b.created_at || 0).getTime()
+
+        return secondDate - firstDate
+    })
+})
+
+const actionTakenCount = computed(() => {
+    return Number(props.stats?.action_taken_documents ?? actionTakenRows.value.length ?? 0)
 })
 
 const totalPendingDocuments = computed(() => {
@@ -116,6 +223,15 @@ const topPendingPeople = computed(() => {
         .sort((a, b) => Number(b.max_days_pending || 0) - Number(a.max_days_pending || 0))
         .slice(0, 5)
 })
+
+const pendingCount = (person) => {
+    return Number(
+        person.pending_documents
+        ?? (person.documents || []).length
+        ?? person.pending_transactions
+        ?? 0
+    )
+}
 
 const statusOptions = [
     {
@@ -149,12 +265,12 @@ const activeStatusLabel = computed(() => {
     return statusOptions.find((item) => item.value === status.value)?.label || 'Overview'
 })
 
-const transactionSectionTitle = computed(() => {
+const documentSectionTitle = computed(() => {
     if (status.value === '') {
-        return 'All Document Transactions'
+        return 'All Documents'
     }
 
-    return `${activeStatusLabel.value} Document Transactions`
+    return `${activeStatusLabel.value} Documents`
 })
 
 const personKey = (person) => {
@@ -235,9 +351,23 @@ const goBackToDts = () => {
     router.visit('/dts')
 }
 
-const goToDocument = (docId) => {
+const goToDocument = (document) => {
+    const docId = document?.IDdoc
+        ?? document?.document_no
+        ?? document?.id
+        ?? document
+
+    if (!docId) {
+        return
+    }
+
+    showPendingModal.value = false
+    showNotificationModal.value = false
+    showActionTakenModal.value = false
+
     router.visit(`/dts/${docId}`)
 }
+
 
 const goToPage = (url) => {
     if (!url) {
@@ -466,7 +596,7 @@ const daysPendingClass = (days) => {
                                         </p>
 
                                         <p class="mt-1 text-xs font-semibold text-slate-500">
-                                            {{ person.pending_transactions ?? 0 }} pending transaction(s)
+                                            {{ pendingCount(person) }} pending document(s)
                                         </p>
                                     </div>
 
@@ -511,7 +641,7 @@ const daysPendingClass = (days) => {
             <!-- Main Workspace -->
             <section class="space-y-5">
                 <!-- Stats Cards -->
-                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
                     <button
                         type="button"
                         class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
@@ -558,6 +688,31 @@ const daysPendingClass = (days) => {
                         <p class="mt-1 text-sm font-bold text-slate-500">
                             No Action Yet
                         </p>
+                    </button>
+
+                    <button
+                        type="button"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
+                        @click="openActionTakenModal"
+                    >
+                        <div class="flex items-center justify-between">
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-2xl">
+                                ☑️
+                            </div>
+
+                            <span class="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
+                                Actions
+                            </span>
+                        </div>
+
+                        <p class="mt-5 text-3xl font-black text-slate-900">
+                            {{ actionTakenCount }}
+                        </p>
+
+                        <p class="mt-1 text-sm font-bold text-slate-500">
+                            Action Taken
+                        </p>
+
                     </button>
 
                     <button
@@ -618,7 +773,7 @@ const daysPendingClass = (days) => {
                             </p>
 
                             <h2 class="mt-1 text-lg font-black text-slate-900">
-                                Find a document transaction
+                                Find a document
                             </h2>
                         </div>
 
@@ -637,7 +792,7 @@ const daysPendingClass = (days) => {
                                 <input
                                     v-model="search"
                                     type="text"
-                                    placeholder="Search Doc ID, subject, or assigned personnel..."
+                                    placeholder="Search Document ID, subject, or assigned personnel..."
                                     class="w-full rounded-2xl border border-blue-100 bg-blue-50/60 px-5 py-3.5 pl-11 text-sm font-semibold text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
                                 />
 
@@ -707,16 +862,16 @@ const daysPendingClass = (days) => {
                     </div>
                 </section>
 
-                <!-- Transaction List -->
+                <!-- Document List -->
                 <section class="overflow-hidden rounded-[2rem] bg-white shadow-xl shadow-blue-100/70 ring-1 ring-blue-100">
                     <div class="flex flex-col gap-4 border-b border-blue-50 px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                         <div>
                             <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-600">
-                                Transaction List
+                                Document List
                             </p>
 
                             <h2 class="mt-1 text-2xl font-black text-slate-900">
-                                {{ transactionSectionTitle }}
+                                {{ documentSectionTitle }}
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-slate-500">
@@ -726,7 +881,7 @@ const daysPendingClass = (days) => {
 
                         <div class="flex flex-wrap gap-2">
                             <span class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700 ring-1 ring-blue-100">
-                                {{ transactionRows.length }} shown
+                                {{ documentRows.length }} shown
                             </span>
 
                             <span class="rounded-full bg-slate-50 px-4 py-2 text-sm font-black text-slate-600 ring-1 ring-slate-200">
@@ -763,45 +918,35 @@ const daysPendingClass = (days) => {
 
                             <tbody>
                                 <tr
-                                    v-for="transaction in transactionRows"
-                                    :key="transaction.IDdist"
+                                    v-for="document in documentRows"
+                                    :key="`document-${document.IDdoc || document.document_no || document.id}`"
                                     class="border-b border-slate-100 transition hover:bg-blue-50/60"
                                 >
                                     <td class="whitespace-nowrap px-5 py-4 align-top">
-                                        <div class="flex items-center gap-3">
-                                           
-
-                                            <div>
-                                                <p class="text-lg font-black text-blue-700">
-                                                    {{ transaction.IDdoc }}
-                                                </p>
-<!-- 
-                                                <p class="mt-1 text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">
-                                                    IDdist: {{ transaction.IDdist || '-' }}
-                                                </p> -->
-                                            </div>
-                                        </div>
+                                        <p class="text-lg font-black text-blue-700">
+                                            {{ document.IDdoc || document.document_no || '-' }}
+                                        </p>
                                     </td>
 
                                     <td class="px-5 py-4 align-top">
                                         <p class="text-sm font-black leading-snug text-slate-900">
-                                            {{ transaction.subject || 'No subject' }}
+                                            {{ document.subject || 'No subject' }}
                                         </p>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 align-top">
                                         <div class="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-2 text-sm font-black text-slate-800 ring-1 ring-slate-200">
                                             <span class="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
-                                            {{ transaction.assigned_personnel || 'Unassigned' }}
+                                            {{ document.assigned_personnel || 'Unassigned' }}
                                         </div>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
                                         <span
                                             class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
-                                            :class="daysPendingClass(transaction.days_pending)"
+                                            :class="daysPendingClass(document.days_pending)"
                                         >
-                                            {{ transaction.days_pending ?? 0 }} day(s)
+                                            {{ document.days_pending ?? 0 }} day(s)
                                         </span>
                                     </td>
 
@@ -809,14 +954,14 @@ const daysPendingClass = (days) => {
                                         <button
                                             type="button"
                                             class="rounded-2xl bg-blue-600 px-5 py-2.5 text-xs font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700"
-                                            @click="goToDocument(transaction.IDdoc)"
+                                            @click="goToDocument(document)"
                                         >
                                             View Details
                                         </button>
                                     </td>
                                 </tr>
 
-                                <tr v-if="transactionRows.length === 0">
+                                <tr v-if="documentRows.length === 0">
                                     <td
                                         colspan="5"
                                         class="px-6 py-16 text-center"
@@ -826,7 +971,7 @@ const daysPendingClass = (days) => {
                                         </div>
 
                                         <h3 class="mt-4 text-lg font-black text-slate-800">
-                                            No document transactions found.
+                                            No documents found.
                                         </h3>
 
                                         <p class="mt-2 text-sm font-semibold text-slate-500">
@@ -875,6 +1020,166 @@ const daysPendingClass = (days) => {
                 </section>
             </section>
         </main>
+
+        <!-- Action Taken Modal -->
+        <div
+            v-if="showActionTakenModal"
+            class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
+            @click.self="closeActionTakenModal"
+        >
+            <div class="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+                <div class="border-b border-indigo-100 bg-indigo-600 px-6 py-5 text-white">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-100">
+                                Action Taken
+                            </p>
+
+                            <h2 class="mt-2 text-2xl font-black">
+                                Documents with Action Taken
+                            </h2>
+
+                            <p class="mt-1 text-sm font-semibold text-indigo-100">
+                                Review Action Taken records by document for monitoring.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white transition hover:bg-white/25"
+                            @click="closeActionTakenModal"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+
+                <div class="max-h-[72vh] overflow-y-auto bg-slate-50 p-5">
+                    <div class="mb-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-indigo-100">
+                            <p class="text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
+                                Total Actions
+                            </p>
+
+                            <p class="mt-2 text-3xl font-black text-indigo-800">
+                                {{ actionTakenCount }}
+                            </p>
+                        </div>
+
+                    </div>
+
+                    <div
+                        v-if="actionTakenRows.length"
+                        class="space-y-3"
+                    >
+                        <article
+                            v-for="item in actionTakenRows"
+                            :key="`action-taken-document-${item.document_no || item.IDdoc}`"
+                            class="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm"
+                        >
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span class="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">
+                                            Doc ID: {{ item.document_no || item.IDdoc }}
+                                        </span>
+
+                                        <span class="rounded-full bg-indigo-600 px-3 py-1 text-xs font-black text-white">
+                                            {{ item.actions?.length || 0 }} action(s) taken
+                                        </span>
+
+                                        <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
+                                            Monitoring Only
+                                        </span>
+                                    </div>
+
+                                    <p class="mt-3 break-words text-base font-black leading-snug text-slate-900">
+                                        {{ item.subject || 'No subject' }}
+                                    </p>
+
+                                    <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-600 md:grid-cols-3">
+                                        <p>
+                                            <span class="text-slate-900">Latest Action:</span>
+                                            {{ item.latest_action_label || 'Action Taken' }}
+                                        </p>
+
+                                        <p>
+                                            <span class="text-slate-900">Latest Actor:</span>
+                                            {{ item.latest_actor_name || '-' }}
+                                        </p>
+
+                                        <p>
+                                            <span class="text-slate-900">Assigned:</span>
+                                            {{ item.assigned_personnel || 'Unassigned' }}
+                                        </p>
+
+                                        <p>
+                                            <span class="text-slate-900">Latest Date:</span>
+                                            {{ formatDate(item.latest_action_at || item.created_at) }}
+                                        </p>
+                                    </div>
+
+                                    <div
+                                        v-if="item.actions && item.actions.length"
+                                        class="mt-4 space-y-2"
+                                    >
+                                        <div
+                                            v-for="action in item.actions"
+                                            :key="`action-${item.document_no || item.IDdoc}-${action.id}`"
+                                            class="rounded-xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200"
+                                        >
+                                            <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                                <p class="text-sm font-black text-indigo-700">
+                                                    {{ action.action_label || 'Action Taken' }}
+                                                </p>
+
+                                                <p class="text-xs font-bold text-slate-500">
+                                                    {{ action.actor_name || '-' }} • {{ formatDate(action.created_at) }}
+                                                </p>
+                                            </div>
+
+                                            <p
+                                                v-if="action.remarks"
+                                                class="mt-2 whitespace-pre-line text-sm font-semibold leading-6 text-slate-700"
+                                            >
+                                                {{ action.remarks }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="flex shrink-0 flex-col gap-2 sm:flex-row lg:flex-col">
+                                    <button
+                                        type="button"
+                                        class="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white transition hover:bg-blue-700"
+                                        @click="goToDocument(item)"
+                                    >
+                                        View Details
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div
+                        v-else
+                        class="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center"
+                    >
+                        <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-2xl shadow-sm">
+                            ☑️
+                        </div>
+
+                        <h3 class="mt-4 text-lg font-black text-slate-900">
+                            No action taken records
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold text-slate-600">
+                            Documents with saved Action Taken records will appear here.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Pending Monitoring Modal -->
         <div
@@ -969,7 +1274,7 @@ const daysPendingClass = (days) => {
                                         </p>
 
                                         <p class="mt-1 text-xl font-black text-blue-800">
-                                            {{ person.pending_transactions ?? 0 }}
+                                            {{ pendingCount(person) }}
                                         </p>
                                     </div>
 
@@ -1035,7 +1340,7 @@ const daysPendingClass = (days) => {
                                         <button
                                             type="button"
                                             class="mt-4 inline-flex w-full items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition hover:bg-blue-700"
-                                            @click.stop="goToDocument(doc.IDdoc)"
+                                            @click.stop="goToDocument(doc)"
                                         >
                                             View Details
                                         </button>
@@ -1163,7 +1468,7 @@ const daysPendingClass = (days) => {
                                     v-if="item.IDdoc"
                                     type="button"
                                     class="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white transition hover:bg-blue-700"
-                                    @click="goToDocument(item.IDdoc)"
+                                    @click="goToDocument(item)"
                                 >
                                     View Details
                                 </button>

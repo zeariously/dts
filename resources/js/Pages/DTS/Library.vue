@@ -29,6 +29,15 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    actionTypes: {
+        type: Array,
+        default: () => [],
+    },
+    // Backward support: some controller versions send this as addresses.
+    addresses: {
+        type: Array,
+        default: () => [],
+    },
 })
 
 const page = usePage()
@@ -84,6 +93,11 @@ const attachmentForm = useForm({
     description: '',
 })
 
+const actionTypeForm = useForm({
+    name: '',
+    description: '',
+})
+
 const deleteForm = useForm({
     ids: [],
 })
@@ -93,6 +107,7 @@ const libraryMenus = [
     { key: 'office', label: 'Office' },
     { key: 'doctype', label: 'Doc Type' },
     { key: 'attachment', label: 'Attachment' },
+    { key: 'action-types', label: 'Action Taken' },
 ]
 
 const activeTitle = computed(() => {
@@ -104,7 +119,7 @@ const libraryTabHref = (tab) => {
 }
 
 const canManageActiveLibrary = computed(() => {
-    return canManageDts.value && ['personnel', 'office', 'doctype', 'attachment'].includes(activeLibrary.value)
+    return canManageDts.value && ['personnel', 'office', 'doctype', 'attachment', 'action-types'].includes(activeLibrary.value)
 })
 
 const getValue = (row, keys) => {
@@ -193,11 +208,25 @@ const normalizedAttachments = computed(() => {
     }))
 })
 
+const normalizedActionTypes = computed(() => {
+    const records = props.actionTypes && props.actionTypes.length
+        ? props.actionTypes
+        : (props.addresses || [])
+
+    return records.map((item, index) => ({
+        ID: item.ID ?? item.id ?? `action-type-${index}`,
+        name: item.name ?? item.action_name ?? item.label ?? item.description ?? '-',
+        displayName: item.name ?? item.action_name ?? item.label ?? item.description ?? '-',
+        description: item.description ?? item.details ?? item.remarks ?? '',
+    }))
+})
+
 const sourceRows = computed(() => {
     if (activeLibrary.value === 'personnel') return normalizedPersonnel.value
     if (activeLibrary.value === 'office') return normalizedOffices.value
     if (activeLibrary.value === 'doctype') return normalizedDocTypes.value
     if (activeLibrary.value === 'attachment') return normalizedAttachments.value
+    if (activeLibrary.value === 'action-types') return normalizedActionTypes.value
 
     return []
 })
@@ -263,6 +292,7 @@ const activeFormProcessing = computed(() => {
         || officeForm.processing
         || docTypeForm.processing
         || attachmentForm.processing
+        || actionTypeForm.processing
 })
 
 const genericColumns = computed(() => {
@@ -277,6 +307,13 @@ const genericColumns = computed(() => {
         return [
             { key: 'code', label: 'Code' },
             { key: 'displayName', label: 'Attachment' },
+            { key: 'description', label: 'Description' },
+        ]
+    }
+
+    if (activeLibrary.value === 'action-types') {
+        return [
+            { key: 'displayName', label: 'Action Taken' },
             { key: 'description', label: 'Description' },
         ]
     }
@@ -335,6 +372,9 @@ const resetLibraryForms = () => {
 
     attachmentForm.reset()
     attachmentForm.clearErrors()
+
+    actionTypeForm.reset()
+    actionTypeForm.clearErrors()
 }
 
 const closeRecordModal = () => {
@@ -384,6 +424,11 @@ const openEditModal = (row) => {
         attachmentForm.description = row.description || ''
     }
 
+    if (activeLibrary.value === 'action-types') {
+        actionTypeForm.name = row.displayName || row.name || ''
+        actionTypeForm.description = row.description || ''
+    }
+
     showAddModal.value = false
     showEditModal.value = true
 }
@@ -401,6 +446,7 @@ const formForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return officeForm
     if (activeLibrary.value === 'doctype') return docTypeForm
     if (activeLibrary.value === 'attachment') return attachmentForm
+    if (activeLibrary.value === 'action-types') return actionTypeForm
 
     return null
 }
@@ -410,6 +456,7 @@ const storeUrlForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return '/dts/library/office/store'
     if (activeLibrary.value === 'doctype') return '/dts/library/doctype/store'
     if (activeLibrary.value === 'attachment') return '/dts/library/attachment/store'
+    if (activeLibrary.value === 'action-types') return '/dts/library/action-types'
 
     return ''
 }
@@ -419,6 +466,7 @@ const updateUrlForActiveLibrary = (id) => {
     if (activeLibrary.value === 'office') return `/dts/library/office/${id}/update`
     if (activeLibrary.value === 'doctype') return `/dts/library/doctype/${id}/update`
     if (activeLibrary.value === 'attachment') return `/dts/library/attachment/${id}/update`
+    if (activeLibrary.value === 'action-types') return `/dts/library/action-types/${id}`
 
     return ''
 }
@@ -428,6 +476,7 @@ const deleteUrlForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return '/dts/library/office/delete'
     if (activeLibrary.value === 'doctype') return '/dts/library/doctype/delete'
     if (activeLibrary.value === 'attachment') return '/dts/library/attachment/delete'
+    if (activeLibrary.value === 'action-types') return '/dts/library/action-types'
 
     return ''
 }
@@ -446,12 +495,19 @@ const saveRecord = () => {
 
     if (!url) return
 
-    form.post(url, {
+    const options = {
         preserveScroll: true,
         onSuccess: () => {
             closeRecordModal()
         },
-    })
+    }
+
+    if (isEditing && activeLibrary.value === 'action-types') {
+        form.patch(url, options)
+        return
+    }
+
+    form.post(url, options)
 }
 
 const openDeleteModal = (row) => {
@@ -487,6 +543,10 @@ const deleteModalTitle = computed(() => {
         return 'Delete Attachment Record'
     }
 
+    if (activeLibrary.value === 'action-types') {
+        return 'Delete Action Taken Record'
+    }
+
     return 'Delete Record'
 })
 
@@ -511,6 +571,10 @@ const deleteModalMessage = computed(() => {
         return `Are you sure you want to delete "${recordToDelete.value.displayName}"?`
     }
 
+    if (activeLibrary.value === 'action-types') {
+        return `Are you sure you want to delete "${recordToDelete.value.displayName}"?`
+    }
+
     return 'Are you sure you want to delete this record?'
 })
 
@@ -523,14 +587,21 @@ const confirmDeleteRecord = () => {
 
     if (!url) return
 
-    deleteForm.post(url, {
+    const options = {
         preserveScroll: true,
         onSuccess: () => {
             selectedRows.value = []
             showDeleteModal.value = false
             recordToDelete.value = null
         },
-    })
+    }
+
+    if (activeLibrary.value === 'action-types') {
+        deleteForm.delete(url, options)
+        return
+    }
+
+    deleteForm.post(url, options)
 }
 
 </script>
@@ -1236,6 +1307,49 @@ const confirmDeleteRecord = () => {
                             class="mt-1 text-xs text-red-600"
                         >
                             {{ attachmentForm.errors.description }}
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Action Taken Form -->
+                <div v-if="activeLibrary === 'action-types'" class="space-y-4">
+                    <div>
+                        <label class="mb-1 block text-sm font-semibold text-slate-700">
+                            Action Taken
+                        </label>
+
+                        <input
+                            v-model="actionTypeForm.name"
+                            type="text"
+                            class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                            placeholder="Example: Emailed, Filed, Called, Delivered"
+                        />
+
+                        <p
+                            v-if="actionTypeForm.errors.name"
+                            class="mt-1 text-xs text-red-600"
+                        >
+                            {{ actionTypeForm.errors.name }}
+                        </p>
+                    </div>
+
+                    <div>
+                        <label class="mb-1 block text-sm font-semibold text-slate-700">
+                            Description
+                        </label>
+
+                        <textarea
+                            v-model="actionTypeForm.description"
+                            rows="3"
+                            class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                            placeholder="Optional description"
+                        ></textarea>
+
+                        <p
+                            v-if="actionTypeForm.errors.description"
+                            class="mt-1 text-xs text-red-600"
+                        >
+                            {{ actionTypeForm.errors.description }}
                         </p>
                     </div>
                 </div>

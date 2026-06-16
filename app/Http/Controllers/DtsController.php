@@ -59,8 +59,70 @@ public function index(Request $request)
 
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
 
+    $currentRights = (string) $this->currentUserRights();
+
+    /*
+     * Main DTS Index/Dashboard rule:
+     * Role 2 = can now view ALL documents in the document list/dashboard,
+     *          same as Role 3.
+     * Role 2 notifications are still tagged-only below by forcing the
+     * tagged scope only on the notification query.
+     * Role 4 stays tagged-only here if you still want that view restricted.
+     */
+    $shouldLimitToTaggedDocuments = in_array($currentRights, ['4'], true);
+
     $viewerOfficeIds = $this->viewerAssignedOfficeIds();
     $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
+
+    $currentUserIdForScope = $this->currentUserId();
+
+    $applyTaggedDocumentScope = function (
+        $query,
+        string $documentAlias = 'd',
+        string $distributionAlias = 'dist',
+        bool $forceTaggedOnly = false
+    ) use (
+        $shouldLimitToTaggedDocuments,
+        $viewerOfficeIds,
+        $viewerPersonnelIds,
+        $currentUserIdForScope
+    ) {
+        if (! $forceTaggedOnly && ! $shouldLimitToTaggedDocuments) {
+            return $query;
+        }
+
+        $officeIds = collect($viewerOfficeIds)
+            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        $personnelIds = collect($viewerPersonnelIds)
+            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        /*
+         * Strict tagged-only rule:
+         * If the account has no mapped personnel ID, return no documents.
+         * Do not fallback to office, creator, or confirm user because the user
+         * requested that only documents tagged to them should appear.
+         */
+        if (empty($personnelIds)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where(function ($scope) use ($documentAlias, $distributionAlias, $personnelIds) {
+            $scope->whereIn($documentAlias . '.IDkeeper', $personnelIds);
+
+            if (Schema::hasColumn('distribution', 'idmapagency')) {
+                $scope->orWhereIn($distributionAlias . '.idmapagency', $personnelIds);
+            }
+        });
+    };
 
     $doctypeCodeColumn = 'dt.description';
 
@@ -83,14 +145,7 @@ public function index(Request $request)
 
     $latestDistribution = $makeLatestDistribution();
 
-    /*
-     * Separate latest returned distribution.
-     * Reason: returnDocument() marks the current distribution as returned,
-     * then creates a new distribution back to the sender/previous handler.
-     * Because of that, the latest distribution may already be the new
-     * "For Receiving" row with no returndate. This join keeps the actual
-     * return date available for Outgoing / Sent Documents.
-     */
+   
     $latestReturnedDistribution = DB::table('distribution as rx')
         ->select([
             'rx.IDdoc',
@@ -153,22 +208,102 @@ public function index(Request $request)
             'dist.remarks as distribution_remarks',
         ]);
 
-    $this->applyViewerDocumentScope($documentsQuery, 'd', 'dist', $viewerOfficeIds, $viewerPersonnelIds);
+    $applyTaggedDocumentScope($documentsQuery, 'd', 'dist');
 
     if ($selectedYear !== '') {
         $documentsQuery->whereYear('d.entrydate', (int) $selectedYear);
     }
 
     if ($search !== '') {
-        $documentsQuery->where(function ($query) use ($search) {
-            $query->where('d.IDdoc', 'like', "%{$search}%")
-                ->orWhere('d.subject', 'like', "%{$search}%")
-                ->orWhere('d.regarding', 'like', "%{$search}%")
-                ->orWhere('d.remarks', 'like', "%{$search}%")
-                ->orWhere('dt.description', 'like', "%{$search}%")
-                ->orWhere('fromOffice.officename', 'like', "%{$search}%")
-                ->orWhere('forOffice.officename', 'like', "%{$search}%")
-                ->orWhere('distOffice.officename', 'like', "%{$search}%");
+        $searchLike = "%{$search}%";
+        $statusSearch = strtolower($search);
+
+        $documentsQuery->where(function ($query) use ($searchLike, $statusSearch, $doctypeCodeColumn, $trueValues) {
+            $query->where('d.IDdoc', 'like', $searchLike)
+                ->orWhere('d.subject', 'like', $searchLike)
+                ->orWhere('d.regarding', 'like', $searchLike)
+                ->orWhere('d.remarks', 'like', $searchLike)
+                ->orWhere('d.classification', 'like', $searchLike)
+                ->orWhere('dt.description', 'like', $searchLike)
+                ->orWhereRaw($doctypeCodeColumn . ' LIKE ?', [$searchLike])
+                ->orWhere('fromOffice.officename', 'like', $searchLike)
+                ->orWhere('forOffice.officename', 'like', $searchLike)
+                ->orWhere('distOffice.officename', 'like', $searchLike)
+                ->orWhere('receiverPersonnel.name', 'like', $searchLike)
+                ->orWhere('dist.remarks', 'like', $searchLike)
+                ->orWhereRaw('CAST(d.IDdocstatus AS CHAR) LIKE ?', [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%b %e, %Y') LIKE ?", [$searchLike]);
+
+            if (str_contains($statusSearch, 'incoming')) {
+                $query->orWhere('d.classification', 'False');
+            }
+
+            if (str_contains($statusSearch, 'outgoing')) {
+                $query->orWhere('d.classification', 'True');
+            }
+
+            if (str_contains($statusSearch, 'received') || str_contains($statusSearch, 'done')) {
+                $query->orWhereNotNull('dist.confirmdate');
+            }
+
+            if (str_contains($statusSearch, 'for receiving') || str_contains($statusSearch, 'receiving')) {
+                $query->orWhere(function ($statusQuery) use ($trueValues) {
+                    $statusQuery->whereNotNull('dist.IDdist')
+                        ->whereNull('dist.confirmdate')
+                        ->where(function ($subQuery) use ($trueValues) {
+                            $subQuery->whereNull('dist.YNreturn')
+                                ->orWhereNotIn('dist.YNreturn', $trueValues);
+                        })
+                        ->where(function ($subQuery) use ($trueValues) {
+                            $subQuery->whereNull('dist.YNpulled')
+                                ->orWhereNotIn('dist.YNpulled', $trueValues);
+                        });
+                });
+            }
+
+            if (str_contains($statusSearch, 'pending')) {
+                $query->orWhere(function ($statusQuery) use ($trueValues) {
+                    $statusQuery->where(function ($subQuery) {
+                        $subQuery->whereNull('dist.IDdist')
+                            ->orWhereNull('dist.confirmdate');
+                    })
+                    ->where(function ($subQuery) use ($trueValues) {
+                        $subQuery->whereNull('dist.YNreturn')
+                            ->orWhereNotIn('dist.YNreturn', $trueValues);
+                    })
+                    ->where(function ($subQuery) use ($trueValues) {
+                        $subQuery->whereNull('dist.YNpulled')
+                            ->orWhereNotIn('dist.YNpulled', $trueValues);
+                    });
+                });
+            }
+
+            if (str_contains($statusSearch, 'pending 07') || str_contains($statusSearch, '07')) {
+                $query->orWhere('d.IDdocstatus', 7);
+            }
+
+            if (str_contains($statusSearch, 'return')) {
+                $query->orWhere(function ($statusQuery) use ($trueValues) {
+                    $statusQuery->whereIn('dist.YNreturn', $trueValues)
+                        ->orWhereNotNull('dist.returndate')
+                        ->orWhereNotNull('returnDist.returndate');
+                });
+            }
+
+            if (str_contains($statusSearch, 'pulled') || str_contains($statusSearch, 'pullout')) {
+                $query->orWhereIn('dist.YNpulled', $trueValues);
+            }
         });
     }
 
@@ -177,20 +312,12 @@ public function index(Request $request)
             $documentsQuery->where('d.classification', $request->input('report_classification'));
         }
 
-        if ($request->filled('subject_keyword')) {
-            $documentsQuery->where('d.subject', 'like', '%' . $request->input('subject_keyword') . '%');
-        }
+        if ($request->filled('report_month')) {
+            $reportMonth = (int) $request->input('report_month');
 
-        if ($request->filled('regarding_keyword')) {
-            $documentsQuery->where('d.regarding', 'like', '%' . $request->input('regarding_keyword') . '%');
-        }
-
-        if ($request->filled('start_date')) {
-            $documentsQuery->whereDate('d.entrydate', '>=', $request->input('start_date'));
-        }
-
-        if ($request->filled('end_date')) {
-            $documentsQuery->whereDate('d.entrydate', '<=', $request->input('end_date'));
+            if ($reportMonth >= 1 && $reportMonth <= 12) {
+                $documentsQuery->whereMonth('d.entrydate', $reportMonth);
+            }
         }
     }
 
@@ -359,7 +486,7 @@ public function index(Request $request)
         ])
         ->groupBy('dx.IDdoc');
 
-    $makeStatsBaseQuery = function () use ($statsLatestDistribution, $selectedYear, $viewerOfficeIds, $viewerPersonnelIds) {
+    $makeStatsBaseQuery = function () use ($statsLatestDistribution, $selectedYear, $applyTaggedDocumentScope) {
         $query = DB::table('document as d')
             ->leftJoinSub($statsLatestDistribution, 'ldStats', function ($join) {
                 $join->on('ldStats.IDdoc', '=', 'd.IDdoc');
@@ -369,7 +496,7 @@ public function index(Request $request)
                 $query->whereYear('d.entrydate', (int) $selectedYear);
             });
 
-        $this->applyViewerDocumentScope($query, 'd', 'dist', $viewerOfficeIds, $viewerPersonnelIds);
+        $applyTaggedDocumentScope($query, 'd', 'dist');
 
         return $query;
     };
@@ -448,11 +575,18 @@ public function index(Request $request)
             ->distinct()
             ->count('d.IDdoc'),
     ];
-  
     $viewerNotifications = collect();
     $creatorReceivedNotifications = collect();
 
-    if ($this->currentUserRights() === '2') {
+    /*
+     * GLOBAL tagged notification rule:
+     * If a document is tagged to ANY logged-in user's personnel record,
+     * that user should receive the notification.
+     *
+     * document.IDkeeper and distribution.idmapagency are personnel IDs,
+     * NOT username.ID. This is why we always use $viewerPersonnelIds.
+     */
+    if (! empty($viewerPersonnelIds)) {
         $viewerNotificationsQuery = DB::table('document as d')
             ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
             ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
@@ -472,14 +606,20 @@ public function index(Request $request)
                 $query->whereNull('dist.YNpulled')
                     ->orWhereNotIn('dist.YNpulled', $trueValues);
             })
+            ->where(function ($query) use ($viewerPersonnelIds) {
+                $query->whereIn('d.IDkeeper', $viewerPersonnelIds);
+
+                if (Schema::hasColumn('distribution', 'idmapagency')) {
+                    $query->orWhereIn('dist.idmapagency', $viewerPersonnelIds);
+                }
+            })
             ->when($selectedYear !== '', function ($query) use ($selectedYear) {
                 $query->whereYear('d.entrydate', (int) $selectedYear);
             });
 
-        $this->applyViewerDocumentScope($viewerNotificationsQuery, 'd', 'dist', $viewerOfficeIds, $viewerPersonnelIds);
-
         $viewerNotifications = $viewerNotificationsQuery
             ->select([
+                DB::raw("'for_receiving' as notification_type"),
                 'd.IDdoc',
                 'd.IDdoc as document_no',
                 'd.subject',
@@ -492,13 +632,14 @@ public function index(Request $request)
                 DB::raw('DATE_ADD(dist.distdate, INTERVAL 7 DAY) as due_date'),
             ])
             ->orderBy('dist.distdate')
-            ->limit(20)
+            ->limit(50)
             ->get()
             ->map(function ($doc) {
                 $transferDate = $doc->transfer_date ? Carbon::parse($doc->transfer_date) : null;
                 $dueDate = $transferDate ? $transferDate->copy()->addDays(7) : null;
 
                 return [
+                    'notification_type' => 'for_receiving',
                     'IDdoc' => $doc->IDdoc,
                     'document_no' => $doc->document_no,
                     'subject' => $doc->subject,
@@ -617,10 +758,7 @@ public function index(Request $request)
             'filter' => $filter,
             'year' => $selectedYear,
             'report_classification' => $request->input('report_classification'),
-            'subject_keyword' => $request->input('subject_keyword'),
-            'regarding_keyword' => $request->input('regarding_keyword'),
-            'start_date' => $request->input('start_date'),
-            'end_date' => $request->input('end_date'),
+            'report_month' => $request->input('report_month'),
         ],
         'years' => $availableYears,
         'offices' => $officesForDropdown,
@@ -726,6 +864,24 @@ public function index(Request $request)
             ->orderBy('ID')
             ->value('ID')
         ?? 1;
+
+   
+    if (! empty($validated['IDkeeper'])) {
+        $selectedPersonnel = DB::table('lu_personnel')
+            ->where('ID', $validated['IDkeeper'])
+            ->select(['ID', 'name', 'IDoffice'])
+            ->first();
+
+        if (! $selectedPersonnel || empty($selectedPersonnel->IDoffice)) {
+            return back()
+                ->withErrors([
+                    'IDkeeper' => 'Selected staff concern does not have an assigned office.',
+                ])
+                ->withInput();
+        }
+
+        $validated['IDfor'] = (int) $selectedPersonnel->IDoffice;
+    }
 
     $document = DB::transaction(function () use ($request, $validated, $entryDate, $defaultDocStatusId) {
         $nextDocumentId = ((int) DtsDocument::max('IDdoc')) + 1;
@@ -896,21 +1052,52 @@ public function index(Request $request)
             ->get()
         : collect();
 
-    $remarksHistory = Schema::hasTable('dts_document_remarks')
-        ? DB::table('dts_document_remarks')
-            ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'dts_document_remarks.created_by')
+    $remarksHistory = collect();
+
+    if (Schema::hasTable('dts_document_remarks')) {
+        $remarkSelect = [
+            'dts_document_remarks.id',
+            'dts_document_remarks.IDdoc',
+            'dts_document_remarks.remarks',
+            'dts_document_remarks.created_by',
+            'dts_document_remarks.created_at',
+            'remarkUser.loginname as created_by_name',
+        ];
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
+            $remarkSelect[] = 'dts_document_remarks.action_type';
+        } else {
+            $remarkSelect[] = DB::raw("'remark' as action_type");
+        }
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
+            $remarkSelect[] = 'dts_document_remarks.action_type_id';
+            $remarkSelect[] = 'actionTypeList.name as action_name';
+            $remarkSelect[] = DB::raw(
+                Schema::hasColumn('dts_document_remarks', 'action_label')
+                    ? 'dts_document_remarks.action_label as action_label'
+                    : 'NULL as action_label'
+            );
+        } else {
+            $remarkSelect[] = DB::raw('NULL as action_type_id');
+            $remarkSelect[] = DB::raw('NULL as action_name');
+            $remarkSelect[] = DB::raw('NULL as action_label');
+        }
+
+        $remarksHistoryQuery = DB::table('dts_document_remarks')
+            ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'dts_document_remarks.created_by');
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_type_id') && Schema::hasTable('dts_action_types')) {
+            $remarksHistoryQuery
+                ->leftJoin('dts_action_types as actionTypeList', 'actionTypeList.id', '=', 'dts_document_remarks.action_type_id');
+        }
+
+        $remarksHistory = $remarksHistoryQuery
             ->where('dts_document_remarks.IDdoc', $document->IDdoc)
             ->orderByDesc('dts_document_remarks.created_at')
-            ->select([
-                'dts_document_remarks.id',
-                'dts_document_remarks.IDdoc',
-                'dts_document_remarks.remarks',
-                'dts_document_remarks.created_by',
-                'dts_document_remarks.created_at',
-                'remarkUser.loginname as created_by_name',
-            ])
-            ->get()
-        : collect();
+            ->select($remarkSelect)
+            ->get();
+    }
 
     $documentCreatorName = null;
 
@@ -1181,12 +1368,35 @@ public function index(Request $request)
         });
 
     foreach ($remarksHistory as $remarkItem) {
+        $remarkActionType = strtolower(trim((string) ($remarkItem->action_type ?? 'remark')));
+        $remarkActor = $remarkItem->created_by_name ?? ($remarkItem->created_by ? 'Account #' . $remarkItem->created_by : null);
+
+        if ($remarkActionType === 'action_taken') {
+            $actionLabel = trim((string) ($remarkItem->action_label ?? ''));
+            $actionName = trim((string) ($remarkItem->action_name ?? ''));
+            $actionTarget = $actionLabel !== ''
+                ? $actionLabel
+                : ($actionName !== '' ? $actionName : 'selected action');
+
+            $addHistory(
+                'action',
+                'Action Taken',
+                'Selected action: ' . $actionTarget . '.',
+                $remarkItem->created_at,
+                $remarkActor,
+                null,
+                $remarkItem->remarks
+            );
+
+            continue;
+        }
+
         $addHistory(
             'remark',
             'Added Remark',
             'A remark was added to this document.',
             $remarkItem->created_at,
-            $remarkItem->created_by_name ?? ($remarkItem->created_by ? 'Account #' . $remarkItem->created_by : null),
+            $remarkActor,
             null,
             $remarkItem->remarks
         );
@@ -1232,7 +1442,16 @@ public function index(Request $request)
             ->first()
         : null;
 
+    $actionTypesForDropdown = Schema::hasTable('dts_action_types')
+        ? DB::table('dts_action_types')
+            ->orderBy('name')
+            ->get()
+        : collect();
+
     return Inertia::render('DTS/Show', [
+        'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
+        'canRemarkDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
+        'canActionTakenDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
                 'document' => [
                 'IDdoc' => $document->IDdoc,
                 'document_no' => $document->IDdoc,
@@ -1306,6 +1525,7 @@ public function index(Request $request)
                 ])
                 ->get()
             : collect(),
+        'actionTypes' => $actionTypesForDropdown,
     ]);
 }
 
@@ -1796,6 +2016,12 @@ public function library()
             ->get()
         : collect();
 
+    $addresses = Schema::hasTable('dts_action_types')
+        ? DB::table('dts_action_types')
+            ->orderBy('name')
+            ->get()
+        : collect();
+
     return Inertia::render('DTS/Library', [
         'offices' => $offices,
         'personnel' => $personnel,
@@ -1803,6 +2029,7 @@ public function library()
         'docStatuses' => $docStatuses,
         'notes' => $notes,
         'attachments' => $attachments,
+        'addresses' => $addresses,
     ]);
 }
 public function storePersonnel(Request $request)
@@ -1861,6 +2088,115 @@ public function deletePersonnel(Request $request)
     );
 
     return back()->with('success', 'Selected personnel deleted successfully.');
+}
+
+public function storeActionType(Request $request)
+{
+    $this->ensureCanManageDts();
+
+    $validated = $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'description' => ['nullable', 'string'],
+    ]);
+
+    if (! Schema::hasTable('dts_action_types')) {
+        return back()->withErrors([
+            'name' => 'Action type table not found. Please run the DTS action type setup SQL first.',
+        ]);
+    }
+
+    DB::table('dts_action_types')->insert([
+        'name' => trim($validated['name']),
+        'description' => isset($validated['description']) ? trim((string) $validated['description']) : null,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->recordDtsActivity(
+        'added action type',
+        'Added action type: ' . trim($validated['name']) . '.',
+        null,
+        [
+            'action_name' => trim($validated['name']),
+            'description' => isset($validated['description']) ? trim((string) $validated['description']) : null,
+        ],
+        'DTS Library',
+        'dts_action_types'
+    );
+
+    return back()->with('success', 'Action type added successfully.');
+}
+
+public function updateActionType(Request $request, $id)
+{
+    $this->ensureCanManageDts();
+
+    $validated = $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'description' => ['nullable', 'string'],
+    ]);
+
+    if (! Schema::hasTable('dts_action_types')) {
+        return back()->withErrors([
+            'name' => 'Action type table not found. Please run the DTS action type setup SQL first.',
+        ]);
+    }
+
+    DB::table('dts_action_types')
+        ->where('id', $id)
+        ->update([
+            'name' => trim($validated['name']),
+            'description' => isset($validated['description']) ? trim((string) $validated['description']) : null,
+            'updated_at' => now(),
+        ]);
+
+    $this->recordDtsActivity(
+        'updated action type',
+        'Updated action type: ' . trim($validated['name']) . '.',
+        null,
+        [
+            'action_type_id' => (int) $id,
+            'action_name' => trim($validated['name']),
+            'description' => isset($validated['description']) ? trim((string) $validated['description']) : null,
+        ],
+        'DTS Library',
+        'dts_action_types'
+    );
+
+    return back()->with('success', 'Action type updated successfully.');
+}
+
+public function deleteActionType(Request $request)
+{
+    $this->ensureCanManageDts();
+
+    $validated = $request->validate([
+        'ids' => ['required', 'array'],
+        'ids.*' => ['integer'],
+    ]);
+
+    if (! Schema::hasTable('dts_action_types')) {
+        return back()->withErrors([
+            'delete' => 'Action type table not found. Please run the DTS action type setup SQL first.',
+        ]);
+    }
+
+    DB::table('dts_action_types')
+        ->whereIn('id', $validated['ids'])
+        ->delete();
+
+    $this->recordDtsActivity(
+        'deleted action',
+        'Deleted selected action type record(s).',
+        null,
+        [
+            'ids' => $validated['ids'],
+        ],
+        'DTS Library',
+        'dts_action_types'
+    );
+
+    return back()->with('success', 'Selected action deleted successfully.');
 }
 
 public function storeOffice(Request $request)
@@ -2378,23 +2714,51 @@ public function storeAttachment(Request $request, $id)
 
 public function storeRemark(Request $request, $id)
 {
-    $this->ensureCanManageDts();
+    /*
+     * Remarks should be allowed for roles 1, 2, and 3.
+     * Role 2 can add remarks only to documents that are tagged/assigned to them.
+     * Role 4 remains view-only.
+     */
+    $this->ensureCanRemarkDts();
+    $this->ensureViewerCanActOnDocument((int) $id);
+
     $validated = $request->validate([
         'remarks' => ['required', 'string'],
     ]);
 
     $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
 
+    if (! Schema::hasTable('dts_document_remarks')) {
+        return back()->withErrors([
+            'remarks' => 'Remarks table not found. Expected table name: dts_document_remarks.',
+        ]);
+    }
+
     DB::transaction(function () use ($document, $validated) {
-        DB::table('dts_document_remarks')->insert([
+        $now = now();
+
+        $insertData = [
             'IDdoc' => $document->IDdoc,
             'remarks' => $validated['remarks'],
             'created_by' => Auth::id(),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
 
-        // Keep latest remark visible sa dashboard/detail summary
+        if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
+            $insertData['action_type'] = 'remark';
+        }
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
+            $insertData['action_type_id'] = null;
+        }
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
+            $insertData['action_label'] = null;
+        }
+
+        DB::table('dts_document_remarks')->insert($insertData);
+
         $document->update([
             'remarks' => $validated['remarks'],
         ]);
@@ -2410,6 +2774,134 @@ public function storeRemark(Request $request, $id)
     );
 
     return back()->with('success', 'Remark added successfully.');
+}
+
+
+public function actionTakenDocument(Request $request, $id)
+{
+    /*
+     * Action Taken:
+     * The dropdown comes from dts_action_types, and each record is a one-word action choice.
+     * Roles 1, 2, and 3 can save action taken on a tagged/assigned document.
+     * Role 4 remains view-only.
+     */
+    $this->ensureCanRemarkDts();
+    $this->ensureViewerCanActOnDocument((int) $id);
+
+    $validated = $request->validate([
+        'IDactionType' => ['required', 'integer', 'exists:dts_action_types,id'],
+        'remarks' => ['nullable', 'string'],
+    ]);
+
+    if (! Schema::hasTable('dts_document_remarks')) {
+        return back()->withErrors([
+            'action' => 'Remarks/action table not found. Expected table name: dts_document_remarks.',
+        ]);
+    }
+
+    if (! Schema::hasTable('dts_action_types')) {
+        return back()->withErrors([
+            'action' => 'Action type list table not found. Expected table name: dts_action_types.',
+        ]);
+    }
+
+    if (! Schema::hasColumn('dts_document_remarks', 'action_type') || ! Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
+        return back()->withErrors([
+            'action' => 'Please update dts_document_remarks table first. Missing action_type or action_type_id column.',
+        ]);
+    }
+
+    $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
+
+    $latestDistributionForAction = DtsDistribution::where('IDdoc', $document->IDdoc)
+        ->orderByDesc('IDdist')
+        ->first();
+
+    if (! $latestDistributionForAction || empty($latestDistributionForAction->confirmdate)) {
+        return back()->withErrors([
+            'action' => 'Action Taken is available only after the document is received.',
+        ]);
+    }
+
+    $actionType = DB::table('dts_action_types')
+        ->where('id', $validated['IDactionType'])
+        ->first();
+
+    if (! $actionType) {
+        return back()->withErrors([
+            'IDactionType' => 'Selected action was not found.',
+        ]);
+    }
+
+    $remarks = trim((string) ($validated['remarks'] ?? ''));
+    $actionDescription = 'Action taken: ' . ($actionType->name ?? 'Action #' . $actionType->id);
+
+    if ($remarks === '') {
+        $remarks = $actionDescription;
+    }
+
+    DB::transaction(function () use ($document, $actionType, $remarks) {
+        $now = now();
+
+        $insertData = [
+            'IDdoc' => $document->IDdoc,
+            'remarks' => $remarks,
+            'action_type' => 'action_taken',
+            'action_type_id' => $actionType->id,
+            'action_label' => $actionType->name ?? null,
+            'created_by' => Auth::id(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
+            $insertData['action_status'] = 'open';
+        }
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
+            $insertData['action_completed_at'] = null;
+        }
+
+        if (Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
+            $insertData['action_completed_by'] = null;
+        }
+
+        DB::table('dts_document_remarks')->insert($insertData);
+
+        /*
+         * Action type is only an action/history item.
+         * It does NOT transfer or re-tag the document to personnel.
+         */
+        $document->update([
+            'remarks' => $remarks,
+        ]);
+    });
+
+    $this->recordDtsActivity(
+        'document action',
+        'Saved action for document #' . $document->IDdoc . ': ' . ($actionType->name ?? 'Action #' . $actionType->id) . '.',
+        (int) $document->IDdoc,
+        [
+            'action_type_id' => $actionType->id,
+            'action_name' => $actionType->name ?? null,
+            'action_description' => $actionType->description ?? null,
+            'remarks' => $remarks,
+        ]
+    );
+
+    return back()->with('success', 'Action taken saved successfully.');
+}
+
+public function closeActionTaken(Request $request, $id, $remarkId)
+{
+    /*
+     * Monitoring Dashboard is view-only.
+     * Action Taken records are for monitoring per document only,
+     * so the old close/open workflow is intentionally disabled.
+     */
+    return back()->withErrors([
+        'action' => 'Monitoring Dashboard is view-only. Action Taken records cannot be closed here.',
+    ]);
 }
 
 
@@ -2486,10 +2978,57 @@ public function monitoringDashboard(Request $request)
         ]);
 
     if ($search !== '') {
-        $transactionsQuery->where(function ($query) use ($search) {
-            $query->where('d.IDdoc', 'like', "%{$search}%")
-                ->orWhere('d.subject', 'like', "%{$search}%")
-                ->orWhere('assignedPersonnel.name', 'like', "%{$search}%");
+        $searchLike = "%{$search}%";
+        $statusSearch = strtolower($search);
+
+        $transactionsQuery->where(function ($query) use ($searchLike, $statusSearch, $trueValues) {
+            $query->where('d.IDdoc', 'like', $searchLike)
+                ->orWhere('d.subject', 'like', $searchLike)
+                ->orWhere('dt.description', 'like', $searchLike)
+                ->orWhere('assignedPersonnel.name', 'like', $searchLike)
+                ->orWhere('dist.IDdist', 'like', $searchLike)
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%b %e, %Y') LIKE ?", [$searchLike]);
+
+            if (str_contains($statusSearch, 'received')) {
+                $query->orWhereNotNull('dist.confirmdate');
+            }
+
+            if (str_contains($statusSearch, 'pending') || str_contains($statusSearch, 'no action')) {
+                $query->orWhere(function ($statusQuery) use ($trueValues) {
+                    $statusQuery->whereNotNull('dist.distdate')
+                        ->whereNull('dist.confirmdate')
+                        ->where(function ($subQuery) use ($trueValues) {
+                            $subQuery->whereNull('dist.YNreturn')
+                                ->orWhereNotIn('dist.YNreturn', $trueValues);
+                        })
+                        ->where(function ($subQuery) use ($trueValues) {
+                            $subQuery->whereNull('dist.YNpulled')
+                                ->orWhereNotIn('dist.YNpulled', $trueValues);
+                        });
+                });
+            }
+
+            if (str_contains($statusSearch, 'return')) {
+                $query->orWhere(function ($statusQuery) use ($trueValues) {
+                    $statusQuery->whereIn('dist.YNreturn', $trueValues)
+                        ->orWhereNotNull('dist.returndate');
+                });
+            }
+
+            if (str_contains($statusSearch, 'pulled') || str_contains($statusSearch, 'pullout')) {
+                $query->orWhereIn('dist.YNpulled', $trueValues);
+            }
         });
     }
 
@@ -2527,11 +3066,7 @@ public function monitoringDashboard(Request $request)
         ->paginate($perPage)
         ->appends($request->query());
 
-    /*
-     * Dashboard cards should count DOCUMENTS, not distribution/transaction rows.
-     * The normal DTS dashboard counts documents, so this Monitoring Dashboard
-     * must also use document count to avoid inflated numbers.
-     */
+    
     $totalDocuments = DB::table('document as d')
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
@@ -2664,11 +3199,76 @@ public function monitoringDashboard(Request $request)
 
         return $person;
     });
+    /*
+     * Monitoring Dashboard only:
+     * Show Action Taken records per document for monitoring.
+     * No close/open workflow and no action_status column required.
+     */
+    $actionTakenItems = collect();
+    $actionTakenCount = 0;
+
+    if (
+        Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn('dts_document_remarks', 'action_type')
+        && Schema::hasTable('dts_action_types')
+    ) {
+        $actionSelect = [
+            'remarksTable.id',
+            'remarksTable.IDdoc',
+            'd.IDdoc as document_no',
+            'd.subject',
+            'd.entrydate',
+            'd.IDkeeper',
+            'assignedPersonnel.name as assigned_personnel',
+            'remarksTable.remarks',
+            'remarksTable.created_at',
+            'remarkUser.loginname as actor_name',
+            DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Action Taken') as action_label"),
+        ];
+
+        $actionTakenBase = DB::table('dts_document_remarks as remarksTable')
+            ->leftJoin('document as d', 'd.IDdoc', '=', 'remarksTable.IDdoc')
+            ->leftJoin('dts_action_types as actionType', 'actionType.id', '=', 'remarksTable.action_type_id')
+            ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'remarksTable.created_by')
+            ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
+            ->where('remarksTable.action_type', 'action_taken')
+            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
+                $query->whereYear('d.entrydate', (int) $selectedYear);
+            });
+
+        if ($search !== '') {
+            $actionTakenBase->where(function ($query) use ($search) {
+                $query->where('d.IDdoc', 'like', "%{$search}%")
+                    ->orWhere('d.subject', 'like', "%{$search}%")
+                    ->orWhere('remarksTable.remarks', 'like', "%{$search}%")
+                    ->orWhere('remarksTable.action_label', 'like', "%{$search}%")
+                    ->orWhere('actionType.name', 'like', "%{$search}%")
+                    ->orWhere('assignedPersonnel.name', 'like', "%{$search}%")
+                    ->orWhere('remarkUser.loginname', 'like', "%{$search}%");
+            });
+        }
+
+        $actionTakenItems = $actionTakenBase
+            ->select($actionSelect)
+            ->orderByDesc('remarksTable.created_at')
+            ->limit(300)
+            ->get();
+
+        $actionTakenCount = $actionTakenItems
+            ->pluck('IDdoc')
+            ->filter()
+            ->unique()
+            ->count();
+    }
+
+    $stats['action_taken'] = $actionTakenCount;
+    $stats['action_taken_documents'] = $actionTakenCount;
 
     return Inertia::render('DTS/MonitoringDashboard', [
         'stats' => $stats,
         'transactions' => $transactions,
         'peopleNoAction' => $peopleNoAction,
+        'actionTakenItems' => $actionTakenItems,
         'years' => $availableYears,
         'filters' => [
             'search' => $search,
@@ -2730,12 +3330,46 @@ private function cleanIntegerIds(array $ids): array
         ->all();
 }
 
-private function viewerAssignedPersonnelIds(): array
+private function isSuperAdminViewOnly(?int $documentId = null): bool
 {
-    if ($this->currentUserRights() !== '2') {
-        return [];
+    /*
+     * Role 4 is view-only ONLY when the document is not tagged to them.
+     * If the document is tagged to the logged-in Role 4 personnel, they can receive,
+     * add remarks, and add Action Taken like a normal assigned receiver.
+     */
+    if ($this->currentUserRights() !== '4') {
+        return false;
     }
 
+    if (! $documentId) {
+        return true;
+    }
+
+    return ! $this->documentIsTaggedToViewer($documentId);
+}
+
+private function shouldLimitDtsToTaggedDocuments(): bool
+{
+    /*
+     * Direct document viewing rule:
+     * Role 2 can now VIEW all document details like Role 3.
+     * Actions are still protected separately by viewerCanActOnDocument().
+     */
+    return false;
+}
+
+private function shouldLimitDtsActionToTaggedDocuments(): bool
+{
+    /*
+     * Action rule:
+     * Role 2 and Role 4 can only receive/transfer/return,
+     * add remarks, and add Action Taken when the document is tagged to them.
+     */
+    return in_array($this->currentUserRights(), ['2', '4'], true);
+}
+
+private function viewerAssignedPersonnelIds(): array
+{
     $user = auth()->user();
 
     if (! $user) {
@@ -2743,8 +3377,21 @@ private function viewerAssignedPersonnelIds(): array
     }
 
     $ids = [];
+    $userId = $this->currentUserId();
 
-    foreach (['IDpersonnel', 'personnel_id', 'IDkeeper', 'staff_id', 'employee_id'] as $field) {
+    /*
+     * Best mapping: username.idmapagency / personnel columns must match lu_personnel.ID.
+     */
+    foreach ([
+        'idmapagency',
+        'IDmapagency',
+        'IDmapAgency',
+        'IDpersonnel',
+        'personnel_id',
+        'IDkeeper',
+        'staff_id',
+        'employee_id',
+    ] as $field) {
         $value = $user->{$field} ?? null;
 
         if ($value !== null && $value !== '') {
@@ -2752,57 +3399,92 @@ private function viewerAssignedPersonnelIds(): array
         }
     }
 
-    if (Schema::hasTable('lu_personnel')) {
-        $personnelQuery = DB::table('lu_personnel');
+    if ($userId && Schema::hasTable('username')) {
+        foreach ([
+            'idmapagency',
+            'IDmapagency',
+            'IDmapAgency',
+            'IDpersonnel',
+            'personnel_id',
+            'IDkeeper',
+            'staff_id',
+            'employee_id',
+        ] as $column) {
+            if (Schema::hasColumn('username', $column)) {
+                $value = DB::table('username')
+                    ->where('ID', $userId)
+                    ->value($column);
 
-        $hasCondition = false;
-        $userId = $this->currentUserId();
-
-        foreach (['IDuser', 'user_id', 'IDusername', 'username_id', 'account_id'] as $column) {
-            if ($userId && Schema::hasColumn('lu_personnel', $column)) {
-                $hasCondition = true;
-                $personnelQuery->orWhere($column, $userId);
+                if ($value !== null && $value !== '') {
+                    $ids[] = $value;
+                }
             }
         }
+    }
 
+    if (Schema::hasTable('lu_personnel')) {
         $loginName = trim((string) ($user->loginname ?? $user->username ?? ''));
         $displayName = trim((string) ($user->name ?? ''));
+        $email = trim((string) ($user->email ?? ''));
 
-        foreach (['loginname', 'username'] as $column) {
-            if ($loginName !== '' && Schema::hasColumn('lu_personnel', $column)) {
-                $hasCondition = true;
-                $personnelQuery->orWhere($column, $loginName);
-            }
-        }
+        $personnelQuery = DB::table('lu_personnel');
 
-        /*
-         * Fallback:
-         * Some viewer accounts are not linked to lu_personnel by ID/user_id.
-         * In that case, match the account loginname/display name to lu_personnel.name.
-         * Example: username/loginname "charlene" -> personnel name "Charlene".
-         */
-        if (Schema::hasColumn('lu_personnel', 'name')) {
-            if ($loginName !== '') {
-                $hasCondition = true;
-                $personnelQuery->orWhereRaw('LOWER(TRIM(name)) = ?', [strtolower($loginName)]);
+        $personnelQuery->where(function ($query) use ($userId, $loginName, $displayName, $email) {
+            $hasCondition = false;
+
+            foreach (['IDuser', 'user_id', 'IDusername', 'username_id', 'account_id'] as $column) {
+                if ($userId && Schema::hasColumn('lu_personnel', $column)) {
+                    $hasCondition = true;
+                    $query->orWhere($column, $userId);
+                }
             }
 
-            if ($displayName !== '') {
-                $hasCondition = true;
-                $personnelQuery->orWhereRaw('LOWER(TRIM(name)) = ?', [strtolower($displayName)]);
+            foreach (['loginname', 'username'] as $column) {
+                if ($loginName !== '' && Schema::hasColumn('lu_personnel', $column)) {
+                    $hasCondition = true;
+                    $query->orWhere($column, $loginName);
+                }
             }
-        }
 
-        $email = $user->email ?? null;
+            if (Schema::hasColumn('lu_personnel', 'name')) {
+                if ($loginName !== '') {
+                    $hasCondition = true;
+                    $query->orWhereRaw('LOWER(TRIM(name)) = ?', [strtolower($loginName)])
+                        ->orWhereRaw('LOWER(TRIM(name)) LIKE ?', ['%' . strtolower($loginName) . '%']);
+                }
 
-        if ($email && Schema::hasColumn('lu_personnel', 'email')) {
-            $hasCondition = true;
-            $personnelQuery->orWhere('email', $email);
-        }
+                if ($displayName !== '') {
+                    $hasCondition = true;
+                    $query->orWhereRaw('LOWER(TRIM(name)) = ?', [strtolower($displayName)])
+                        ->orWhereRaw('LOWER(TRIM(name)) LIKE ?', ['%' . strtolower($displayName) . '%']);
 
-        if ($hasCondition) {
-            $ids = array_merge($ids, $personnelQuery->pluck('ID')->all());
-        }
+                    $tokens = collect(preg_split('/\s+/', strtolower($displayName)))
+                        ->map(fn ($token) => trim($token))
+                        ->filter(fn ($token) => strlen($token) >= 2)
+                        ->values()
+                        ->all();
+
+                    if (! empty($tokens)) {
+                        $query->orWhere(function ($tokenQuery) use ($tokens) {
+                            foreach ($tokens as $token) {
+                                $tokenQuery->whereRaw('LOWER(TRIM(name)) LIKE ?', ['%' . $token . '%']);
+                            }
+                        });
+                    }
+                }
+            }
+
+            if ($email !== '' && Schema::hasColumn('lu_personnel', 'email')) {
+                $hasCondition = true;
+                $query->orWhere('email', $email);
+            }
+
+            if (! $hasCondition) {
+                $query->whereRaw('1 = 0');
+            }
+        });
+
+        $ids = array_merge($ids, $personnelQuery->pluck('ID')->all());
     }
 
     return $this->cleanIntegerIds($ids);
@@ -2810,10 +3492,6 @@ private function viewerAssignedPersonnelIds(): array
 
 private function viewerAssignedOfficeIds(?array $personnelIds = null): array
 {
-    if ($this->currentUserRights() !== '2') {
-        return [];
-    }
-
     $user = auth()->user();
 
     if (! $user) {
@@ -2863,7 +3541,7 @@ private function viewerAssignedOfficeIds(?array $personnelIds = null): array
 
 private function applyViewerDocumentScope($query, string $documentAlias = 'd', string $distributionAlias = 'dist', ?array $officeIds = null, ?array $personnelIds = null)
 {
-    if ($this->currentUserRights() !== '2') {
+    if (! $this->shouldLimitDtsToTaggedDocuments()) {
         return $query;
     }
 
@@ -2871,36 +3549,52 @@ private function applyViewerDocumentScope($query, string $documentAlias = 'd', s
     $officeIds = $officeIds ?? $this->viewerAssignedOfficeIds($personnelIds);
     $userId = $this->currentUserId();
 
-    if (empty($officeIds) && empty($personnelIds) && ! $userId) {
+    if (empty($personnelIds)) {
         return $query->whereRaw('1 = 0');
     }
 
-    return $query->where(function ($scope) use ($documentAlias, $distributionAlias, $officeIds, $personnelIds, $userId) {
-        if (! empty($officeIds)) {
-            $scope->orWhereIn($distributionAlias . '.IDoffice', $officeIds)
-                ->orWhereIn($documentAlias . '.IDfor', $officeIds);
-        }
+    return $query->where(function ($scope) use ($documentAlias, $distributionAlias, $personnelIds) {
+        $scope->whereIn($documentAlias . '.IDkeeper', $personnelIds);
 
-        if (! empty($personnelIds)) {
-            $scope->orWhereIn($documentAlias . '.IDkeeper', $personnelIds);
+        if (Schema::hasColumn('distribution', 'idmapagency')) {
+            $scope->orWhereIn($distributionAlias . '.idmapagency', $personnelIds);
         }
+    });
+}
 
-        if ($userId) {
-            $scope->orWhere($distributionAlias . '.confirmuser', $userId);
+
+private function applyViewerActionScope($query, string $documentAlias = 'd', string $distributionAlias = 'dist', ?array $officeIds = null, ?array $personnelIds = null)
+{
+    if (! $this->shouldLimitDtsActionToTaggedDocuments()) {
+        return $query;
+    }
+
+    $personnelIds = $personnelIds ?? $this->viewerAssignedPersonnelIds();
+    $officeIds = $officeIds ?? $this->viewerAssignedOfficeIds($personnelIds);
+
+    if (empty($personnelIds)) {
+        return $query->whereRaw('1 = 0');
+    }
+
+    return $query->where(function ($scope) use ($documentAlias, $distributionAlias, $personnelIds) {
+        $scope->whereIn($documentAlias . '.IDkeeper', $personnelIds);
+
+        if (Schema::hasColumn('distribution', 'idmapagency')) {
+            $scope->orWhereIn($distributionAlias . '.idmapagency', $personnelIds);
         }
     });
 }
 
 private function viewerCanAccessDocument(int $documentId): bool
 {
-    if ($this->currentUserRights() !== '2') {
+    if (! $this->shouldLimitDtsToTaggedDocuments()) {
         return true;
     }
 
     $personnelIds = $this->viewerAssignedPersonnelIds();
     $officeIds = $this->viewerAssignedOfficeIds($personnelIds);
 
-    if (empty($officeIds) && empty($personnelIds) && ! $this->currentUserId()) {
+    if (empty($personnelIds)) {
         return false;
     }
 
@@ -2923,11 +3617,77 @@ private function viewerCanAccessDocument(int $documentId): bool
     return $query->exists();
 }
 
-private function ensureViewerCanActOnDocument(int $documentId): void
+private function documentIsTaggedToViewer(int $documentId): bool
 {
-    abort_unless($this->viewerCanAccessDocument($documentId), 403);
+    $personnelIds = $this->viewerAssignedPersonnelIds();
+
+    if (empty($personnelIds)) {
+        return false;
+    }
+
+    $latestDistribution = DB::table('distribution as taggedDx')
+        ->select([
+            'taggedDx.IDdoc',
+            DB::raw('MAX(taggedDx.IDdist) as latest_IDdist'),
+        ])
+        ->groupBy('taggedDx.IDdoc');
+
+    return DB::table('document as d')
+        ->leftJoinSub($latestDistribution, 'taggedLd', function ($join) {
+            $join->on('taggedLd.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'taggedLd.latest_IDdist')
+        ->where('d.IDdoc', $documentId)
+        ->where(function ($scope) use ($personnelIds) {
+            $scope->whereIn('d.IDkeeper', $personnelIds);
+
+            if (Schema::hasColumn('distribution', 'idmapagency')) {
+                $scope->orWhereIn('dist.idmapagency', $personnelIds);
+            }
+        })
+        ->exists();
 }
 
+private function viewerCanActOnDocument(int $documentId): bool
+{
+    if (! $this->canReceiveDts() && ! $this->canRemarkDts()) {
+        return false;
+    }
+
+    if (! $this->shouldLimitDtsActionToTaggedDocuments()) {
+        return true;
+    }
+
+    $personnelIds = $this->viewerAssignedPersonnelIds();
+    $officeIds = $this->viewerAssignedOfficeIds($personnelIds);
+
+    if (empty($personnelIds)) {
+        return false;
+    }
+
+    $latestDistribution = DB::table('distribution as actionDx')
+        ->select([
+            'actionDx.IDdoc',
+            DB::raw('MAX(actionDx.IDdist) as latest_IDdist'),
+        ])
+        ->groupBy('actionDx.IDdoc');
+
+    $query = DB::table('document as d')
+        ->leftJoinSub($latestDistribution, 'actionLd', function ($join) {
+            $join->on('actionLd.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'actionLd.latest_IDdist')
+        ->where('d.IDdoc', $documentId);
+
+    $this->applyViewerActionScope($query, 'd', 'dist', $officeIds, $personnelIds);
+
+    return $query->exists();
+}
+
+private function ensureViewerCanActOnDocument(int $documentId): void
+{
+    abort_unless($this->viewerCanActOnDocument($documentId), 403);
+}
 
 private function currentUserRights(): string
 {
@@ -2944,6 +3704,10 @@ private function ensureCanManageDts(): void
 
 private function canReceiveDts(): bool
 {
+    /*
+     * Role 4 can receive/act ONLY when the document is tagged to them.
+     * The tagged-only protection is handled by viewerCanActOnDocument().
+     */
     return in_array((string) optional(Auth::user())->rights, ['1', '2', '3', '4'], true);
 }
 
@@ -2951,6 +3715,23 @@ private function ensureCanReceiveDts(): void
 {
     abort_unless($this->canReceiveDts(), 403);
 }
+
+private function canRemarkDts(): bool
+{
+    /*
+     * Role 1 = admin/manage
+     * Role 2 = user/receiver, allowed to add remarks on assigned documents
+     * Role 3 = staff/admin, allowed to add remarks
+     * Role 4 = allowed only when the document is tagged to them
+     */
+    return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
+}
+
+private function ensureCanRemarkDts(): void
+{
+    abort_unless($this->canRemarkDts(), 403);
+}
+
 private function canAccessMonitoringDashboard(): bool
 {
     return in_array((string) optional(Auth::user())->rights, ['1', '3', '4'], true);

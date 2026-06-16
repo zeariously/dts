@@ -275,13 +275,12 @@ const emit = defineEmits([
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isDocumentsActive)"
                         >
-                            <span>Dashboard / Documents</span>
+                            <span>Dashboard</span>
 
                             <span
                                 v-if="isDocumentsActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
 
@@ -296,7 +295,6 @@ const emit = defineEmits([
                                 v-if="isIncomingActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
 
@@ -311,7 +309,6 @@ const emit = defineEmits([
                                 v-if="isOutgoingActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
 
@@ -326,7 +323,6 @@ const emit = defineEmits([
                                 v-if="isLibraryActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
 
@@ -341,7 +337,6 @@ const emit = defineEmits([
                                 v-if="isReportsActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
 
@@ -356,7 +351,6 @@ const emit = defineEmits([
                                 v-if="isAboutActive"
                                 class="text-xs font-bold"
                             >
-                                ●
                             </span>
                         </Link>
                     </div>

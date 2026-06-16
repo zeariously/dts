@@ -1,8 +1,8 @@
 <?php
 
-use App\Http\Controllers\ProfileController;
-use App\Http\Controllers\DtsController;
 use App\Http\Controllers\Admin\AdminUserManagementController;
+use App\Http\Controllers\DtsController;
+use App\Http\Controllers\ProfileController;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -54,12 +54,14 @@ Route::middleware(['auth', 'verified'])
 | DTS Routes
 |--------------------------------------------------------------------------
 |
-| NOTE:
 | This group already has prefix('dts'), so do NOT add /dts again
-| inside the routes. Example:
+| inside the routes.
 |
-| Correct:   Route::post('/{id}/attachments', ...)
-| Wrong:     Route::post('/dts/{id}/attachments', ...)
+| Correct:
+| Route::post('/{id}/action-taken', ...)
+|
+| Wrong:
+| Route::post('/dts/{id}/action-taken', ...)
 |
 */
 
@@ -67,6 +69,12 @@ Route::middleware(['auth', 'verified'])
     ->prefix('dts')
     ->name('dts.')
     ->group(function () {
+        /*
+        |--------------------------------------------------------------------------
+        | Main DTS Pages
+        |--------------------------------------------------------------------------
+        */
+
         Route::get('/', [DtsController::class, 'index'])
             ->name('index');
 
@@ -86,11 +94,7 @@ Route::middleware(['auth', 'verified'])
         | Final URL:
         | /dts/monitoring-dashboard
         |
-        | Final route name:
-        | dts.monitoring-dashboard
-        |
-        | IMPORTANT:
-        | This must be placed BEFORE Route::get('/{id}', ...)
+        | Must be before Route::get('/{id}', ...)
         |--------------------------------------------------------------------------
         */
 
@@ -106,6 +110,12 @@ Route::middleware(['auth', 'verified'])
         Route::get('/library', [DtsController::class, 'library'])
             ->name('library');
 
+        /*
+        |--------------------------------------------------------------------------
+        | Library - Personnel
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/library/personnel/store', [DtsController::class, 'storePersonnel'])
             ->name('library.personnel.store');
 
@@ -114,6 +124,12 @@ Route::middleware(['auth', 'verified'])
 
         Route::post('/library/personnel/{id}/update', [DtsController::class, 'updatePersonnel'])
             ->name('library.personnel.update');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Library - Office
+        |--------------------------------------------------------------------------
+        */
 
         Route::post('/library/office/store', [DtsController::class, 'storeOffice'])
             ->name('library.office.store');
@@ -124,6 +140,12 @@ Route::middleware(['auth', 'verified'])
         Route::post('/library/office/{id}/update', [DtsController::class, 'updateOffice'])
             ->name('library.office.update');
 
+        /*
+        |--------------------------------------------------------------------------
+        | Library - Document Type
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/library/doctype/store', [DtsController::class, 'storeDocType'])
             ->name('library.doctype.store');
 
@@ -133,6 +155,12 @@ Route::middleware(['auth', 'verified'])
         Route::post('/library/doctype/{id}/update', [DtsController::class, 'updateDocType'])
             ->name('library.doctype.update');
 
+        /*
+        |--------------------------------------------------------------------------
+        | Library - Attachment Type
+        |--------------------------------------------------------------------------
+        */
+
         Route::post('/library/attachment/store', [DtsController::class, 'storeLibraryAttachment'])
             ->name('library.attachment.store');
 
@@ -141,6 +169,26 @@ Route::middleware(['auth', 'verified'])
 
         Route::post('/library/attachment/{id}/update', [DtsController::class, 'updateLibraryAttachment'])
             ->name('library.attachment.update');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Library - Action Taken Types
+        |--------------------------------------------------------------------------
+        | Final URLs:
+        | POST   /dts/library/action-types
+        | PATCH  /dts/library/action-types/{id}
+        | DELETE /dts/library/action-types
+        |--------------------------------------------------------------------------
+        */
+
+        Route::post('/library/action-types', [DtsController::class, 'storeActionType'])
+            ->name('library.action-types.store');
+
+        Route::patch('/library/action-types/{id}', [DtsController::class, 'updateActionType'])
+            ->name('library.action-types.update');
+
+        Route::delete('/library/action-types', [DtsController::class, 'deleteActionType'])
+            ->name('library.action-types.delete');
 
         /*
         |--------------------------------------------------------------------------
@@ -158,6 +206,8 @@ Route::middleware(['auth', 'verified'])
         |--------------------------------------------------------------------------
         | Document Action Routes
         |--------------------------------------------------------------------------
+        | Must be before Route::get('/{id}', ...)
+        |--------------------------------------------------------------------------
         */
 
         Route::post('/{id}/receive', [DtsController::class, 'receive'])
@@ -171,6 +221,12 @@ Route::middleware(['auth', 'verified'])
 
         Route::post('/{id}/remarks', [DtsController::class, 'storeRemark'])
             ->name('remarks.store');
+
+        Route::post('/{id}/action-taken', [DtsController::class, 'actionTakenDocument'])
+            ->name('action-taken');
+
+        Route::post('/{id}/action-taken/{remarkId}/close', [DtsController::class, 'closeActionTaken'])
+            ->name('action-taken.close');
 
         Route::post('/{id}/pullout', [DtsController::class, 'pullout'])
             ->name('pullout');
@@ -205,18 +261,6 @@ Route::middleware('auth')->group(function () {
 
     Route::delete('/profile', [ProfileController::class, 'destroy'])
         ->name('profile.destroy');
-        Route::middleware(['auth', 'verified'])->group(function () {
-    Route::prefix('dts')->name('dts.')->group(function () {
-        Route::get('/', [DtsController::class, 'index'])->name('index');
-
-        Route::get('/monitoring-dashboard', [DtsController::class, 'monitoringDashboard'])
-            ->name('monitoring-dashboard');
-
-        // IMPORTANT: this must stay below monitoring-dashboard
-        Route::get('/{id}', [DtsController::class, 'show'])->name('show');
-    });
-});
-
 });
 
 require __DIR__ . '/auth.php';

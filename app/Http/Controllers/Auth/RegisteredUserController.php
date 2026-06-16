@@ -26,7 +26,7 @@ class RegisteredUserController extends Controller
             'password' => Hash::make($request->password),
             'rights' => 2,
             'idoffice' => 0,
-            'idmapagency' => null,
+            'idmapagency' => $request->input('idmapagency') ?? 0,
             'lastlogin' => now(),
         ]);
 

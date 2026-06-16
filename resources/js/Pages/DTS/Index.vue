@@ -1,6 +1,6 @@
 <script setup>
 import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DTSLayout from '@/Layouts/DTSLayout.vue'
 import AddDocumentModal from '@/Components/DTS/AddDocumentModal.vue'
 
@@ -198,6 +198,13 @@ const overdueTransferNotifications = computed(() => {
 })
 
 const openNotificationsFromBell = () => {
+    // Do not open the notification modal when there are no notifications.
+    // This prevents Role 2 from seeing the popup every time the bell is clicked.
+    if (!hasTransferNotifications.value) {
+        showTransferNotificationModal.value = false
+        return
+    }
+
     showTransferNotificationModal.value = true
 }
 
@@ -208,6 +215,12 @@ const closeTransferNotificationModal = () => {
 watch(
     transferNotifications,
     (items) => {
+        // If notifications are empty, always keep the modal closed.
+        if (!items.length) {
+            showTransferNotificationModal.value = false
+            return
+        }
+
         const hasForReceiving = items.some((item) => item.notification_type !== 'received_by_addressee')
 
         // Auto popup is only for viewer accounts with documents for receiving.
@@ -223,6 +236,9 @@ watch(
 
 const search = ref(props.filters?.search || '')
 const perPage = ref(Number(props.filters?.per_page || 10))
+
+let searchTimer = null
+let skipNextSearchWatch = false
 
 const showAddDocumentModal = ref(false)
 const showEditEntryDateModal = ref(false)
@@ -247,6 +263,46 @@ const activeSection = computed(() => {
 })
 const activeFilter = computed(() => {
     return currentParams.value.get('filter') || ''
+})
+
+const tableSearchPlaceholder = computed(() => {
+    if (activeSection.value === 'received-docs') {
+        return 'Search '
+    }
+
+    if (activeSection.value === 'pending-docs' || activeSection.value === 'pending-docs-07') {
+        return 'Search '
+    }
+
+    if (activeSection.value === 'sent-docs') {
+        return 'Search '
+    }
+
+    if (activeSection.value === 'pulled-out-docs') {
+        return 'Search '
+    }
+
+    if (activeFilter.value === 'for-receiving') {
+        return 'Search'
+    }
+
+    if (['received', 'collab-received'].includes(activeFilter.value)) {
+        return 'Search '
+    }
+
+    if (activeFilter.value === 'for-action') {
+        return 'Search '
+    }
+
+    if (activeFilter.value === 'returned') {
+        return 'Search '
+    }
+
+    return 'Search '
+})
+
+const tableSearchDescription = computed(() => {
+    return 'Search checks all visible table columns, including document number, type, offices, subject, dates, status, personnel, and remarks.'
 })
 
 const availableYears = computed(() => {
@@ -308,20 +364,8 @@ const buildCurrentPayload = () => {
             payload.report_classification = reportClassification.value
         }
 
-        if (reportSubjectKeyword.value) {
-            payload.subject_keyword = reportSubjectKeyword.value
-        }
-
-        if (reportRegardingKeyword.value) {
-            payload.regarding_keyword = reportRegardingKeyword.value
-        }
-
-        if (reportStartDate.value) {
-            payload.start_date = reportStartDate.value
-        }
-
-        if (reportEndDate.value) {
-            payload.end_date = reportEndDate.value
+        if (reportMonth.value) {
+            payload.report_month = reportMonth.value
         }
     }
 
@@ -338,53 +382,37 @@ const applyYearFilter = () => {
 const receivedKeeper = ref(currentParams.value.get('keeper') || '')
 const receivedDocType = ref(currentParams.value.get('doc_type') || '')
 const reportClassification = ref(currentParams.value.get('report_classification') || '')
-const reportSubjectKeyword = ref(currentParams.value.get('subject_keyword') || '')
-const reportRegardingKeyword = ref(currentParams.value.get('regarding_keyword') || '')
-const reportStartDate = ref(currentParams.value.get('start_date') || '')
-const reportEndDate = ref(currentParams.value.get('end_date') || '')
+const reportMonth = ref(currentParams.value.get('report_month') || '')
 const reportErrors = ref({})
 
-const validateReportFilters = () => {
-    reportErrors.value = {}
+const reportMonths = [
+    { value: '', label: 'All Months' },
+    { value: '1', label: 'January' },
+    { value: '2', label: 'February' },
+    { value: '3', label: 'March' },
+    { value: '4', label: 'April' },
+    { value: '5', label: 'May' },
+    { value: '6', label: 'June' },
+    { value: '7', label: 'July' },
+    { value: '8', label: 'August' },
+    { value: '9', label: 'September' },
+    { value: '10', label: 'October' },
+    { value: '11', label: 'November' },
+    { value: '12', label: 'December' },
+]
 
-    const hasAnyFilter = Boolean(
-        selectedYear.value ||
-        reportClassification.value ||
-        reportSubjectKeyword.value ||
-        reportRegardingKeyword.value ||
-        reportStartDate.value ||
-        reportEndDate.value
-    )
-
-    if (!hasAnyFilter) {
-        reportErrors.value.general = 'Please select at least one filter before previewing the report.'
-    }
-
-    if (reportStartDate.value && reportEndDate.value) {
-        const start = new Date(reportStartDate.value)
-        const end = new Date(reportEndDate.value)
-
-        if (start > end) {
-            reportErrors.value.date = 'End date must be equal to or later than start date.'
-        }
-    }
-
-    return Object.keys(reportErrors.value).length === 0
-}
+const reportMonthLabel = computed(() => {
+    return reportMonths.find((month) => month.value === String(reportMonth.value))?.label || 'All Months'
+})
 
 const previewReport = () => {
-    if (!validateReportFilters()) {
-        return
-    }
+    reportErrors.value = {}
 
     router.get('/dts', {
         section: 'reports',
         year: selectedYear.value === 'all' ? 'all' : (selectedYear.value || undefined),
         report_classification: reportClassification.value,
-        subject_keyword: reportSubjectKeyword.value,
-        regarding_keyword: reportRegardingKeyword.value,
-        start_date: reportStartDate.value,
-        end_date: reportEndDate.value,
+        report_month: reportMonth.value,
         per_page: perPage.value,
     }, {
         preserveScroll: true,
@@ -394,10 +422,7 @@ const previewReport = () => {
 
 const resetReport = () => {
     reportClassification.value = ''
-    reportSubjectKeyword.value = ''
-    reportRegardingKeyword.value = ''
-    reportStartDate.value = ''
-    reportEndDate.value = ''
+    reportMonth.value = ''
     reportErrors.value = {}
 
     router.get('/dts', {
@@ -674,7 +699,26 @@ const runSearch = () => {
     applyFilters()
 }
 
+watch(search, () => {
+    if (skipNextSearchWatch) {
+        skipNextSearchWatch = false
+        clearTimeout(searchTimer)
+        return
+    }
+
+    clearTimeout(searchTimer)
+
+    searchTimer = setTimeout(() => {
+        applyFilters()
+    }, 500)
+})
+
+onBeforeUnmount(() => {
+    clearTimeout(searchTimer)
+})
+
 const resetSearch = () => {
+    skipNextSearchWatch = true
     search.value = ''
     perPage.value = 10
 
@@ -720,6 +764,7 @@ const applyReceivedFilters = () => {
 }
 
 const resetReceivedFilters = () => {
+    skipNextSearchWatch = true
     search.value = ''
     receivedKeeper.value = ''
     receivedDocType.value = ''
@@ -881,6 +926,25 @@ const classificationBadgeClass = (value) => {
     }
 
     return 'border border-slate-300 bg-slate-100 text-slate-800'
+}
+
+
+const formatDtsId = (value) => {
+    if (value === null || value === undefined || String(value).trim() === '') {
+        return 'DTS - #'
+    }
+
+    const rawValue = String(value).trim()
+    const cleanValue = rawValue
+        .replace(/^DTS\s*-\s*#?/i, '')
+        .replace(/^#/, '')
+        .trim()
+
+    return `DTS - #${cleanValue || rawValue}`
+}
+
+const formatDtsDocumentNo = (doc) => {
+    return formatDtsId(doc?.document_no || doc?.tracking_no || doc?.IDdoc || doc?.id)
 }
 
 const printReport = () => {
@@ -1103,7 +1167,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                Doc ID: {{ doc.document_no || doc.IDdoc }}
+                                                {{ formatDtsDocumentNo(doc) }}
                                             </span>
 
                                             <span
@@ -1274,54 +1338,219 @@ const submitEntryDateUpdate = () => {
                 </p>
             </div>
 
-            <!-- ABOUT CONTENT -->
+                       <!-- ABOUT CONTENT -->
             <div
                 v-else-if="activeSection === 'about'"
-                class="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm"
+                class="space-y-6"
             >
-                <h2 class="text-2xl font-bold text-slate-900">
-                    About DTS
-                </h2>
+                <!-- Hero -->
+                <section class="overflow-hidden rounded-3xl border border-blue-100 bg-white shadow-sm">
+                    <div class="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr]">
+                        <div class="p-8 lg:p-10">
+                            <div class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-blue-700">
+                                <span class="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                                About the System
+                            </div>
 
-                <p class="mt-4 max-w-4xl text-sm leading-7 text-slate-600">
-                     Document Tracking System is a web-based platform used to encode,
-                    monitor, receive, route, and track official documents. It helps offices
-                    organize incoming and outgoing documents, manage document actions, and view
-                    transaction history in one place.
-                </p>
+                            <h2 class="mt-6 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+                                Pantalan Document Tracking System
+                            </h2>
 
-                <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Tracking
-                        </p>
+                            <p class="mt-4 max-w-4xl text-base font-semibold leading-8 text-slate-600">
+                                Pantalan DTS is a web-based document tracking platform designed to help offices
+                                encode, receive, route, return, monitor, and manage official documents in one
+                                organized workspace. It improves visibility of document movement and helps users
+                                quickly identify pending actions, assigned personnel, and document history.
+                            </p>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Monitor document movement and status.
+                            <div class="mt-7 flex flex-wrap gap-3">
+                                <span class="rounded-full bg-blue-600 px-5 py-2 text-sm font-black text-white">
+                                    Document Monitoring
+                                </span>
+
+                                <span class="rounded-full bg-emerald-50 px-5 py-2 text-sm font-black text-emerald-700 ring-1 ring-emerald-100">
+                                    Routing & Receiving
+                                </span>
+
+                                <span class="rounded-full bg-purple-50 px-5 py-2 text-sm font-black text-purple-700 ring-1 ring-purple-100">
+                                    Action History
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-600 p-8 text-white lg:p-10">
+                            <p class="text-sm font-black uppercase tracking-[0.22em] text-blue-100">
+                                System Purpose
+                            </p>
+
+                            <div class="mt-6 space-y-4">
+                                <div class="rounded-2xl bg-white/10 p-5 ring-1 ring-white/15">
+                                    <p class="text-2xl font-black">
+                                        Faster Tracking
+                                    </p>
+
+                                    <p class="mt-2 text-sm font-semibold leading-6 text-blue-100">
+                                        Quickly locate documents and see their current movement status.
+                                    </p>
+                                </div>
+
+                                <div class="rounded-2xl bg-white/10 p-5 ring-1 ring-white/15">
+                                    <p class="text-2xl font-black">
+                                        Clear Accountability
+                                    </p>
+
+                                    <p class="mt-2 text-sm font-semibold leading-6 text-blue-100">
+                                        Know who received, returned, transferred, or still needs to act on a document.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Feature Cards -->
+                <section class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+                    <div class="rounded-3xl border border-blue-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-2xl">
+                            📄
+                        </div>
+
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Document Encoding
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Add document details, classification, document type, concerned staff, and attachments.
                         </p>
                     </div>
 
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Routing
-                        </p>
+                    <div class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-2xl">
+                            ✅
+                        </div>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Forward, receive, and return documents.
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Receiving
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Mark documents as received and confirm that the assigned office or personnel has taken action.
                         </p>
                     </div>
 
-                    <div class="rounded-xl bg-slate-50 p-5">
-                        <p class="font-bold text-slate-800">
-                            Reports
-                        </p>
+                    <div class="rounded-3xl border border-purple-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-purple-50 text-2xl">
+                            🔁
+                        </div>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Generate summaries for monitoring.
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Transfer & Return
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            Forward documents to the proper personnel or return them with remarks when needed.
                         </p>
                     </div>
-                </div>
+
+                    <div class="rounded-3xl border border-amber-100 bg-white p-6 shadow-sm">
+                        <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-2xl">
+                            📊
+                        </div>
+
+                        <h3 class="mt-5 text-lg font-black text-slate-900">
+                            Monitoring Reports
+                        </h3>
+
+                        <p class="mt-2 text-sm font-semibold leading-6 text-slate-500">
+                            View transaction summaries, pending actions, and monitoring dashboard reports.
+                        </p>
+                    </div>
+                </section>
+
+                <!-- Workflow -->
+                <section class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <p class="text-sm font-black uppercase tracking-[0.22em] text-blue-600">
+                                Document Flow
+                            </p>
+
+                            <h3 class="mt-2 text-2xl font-black text-slate-950">
+                                How documents move in DTS
+                            </h3>
+                        </div>
+
+                        <p class="max-w-2xl text-sm font-semibold leading-6 text-slate-500">
+                            The system keeps every step visible so users can check where a document is, who should act on it,
+                            and what actions were already performed.
+                        </p>
+                    </div>
+
+                    <div class="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                1
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Encode</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                2
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Assign</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                3
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Receive</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                4
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Transfer / Return</p>
+                        </div>
+
+                        <div class="rounded-2xl bg-slate-50 p-5 text-center ring-1 ring-slate-100">
+                            <div class="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
+                                5
+                            </div>
+                            <p class="mt-3 text-sm font-black text-slate-900">Monitor</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Footer Info -->
+                <section class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                    <div class="rounded-3xl border border-blue-100 bg-blue-50 p-6">
+                        <h3 class="text-lg font-black text-blue-900">
+                            Who can use the system?
+                        </h3>
+
+                        <p class="mt-3 text-sm font-semibold leading-7 text-blue-800">
+                            DTS is intended for authorized users who encode, route, receive, return, monitor,
+                            and manage office documents. Access is role-based so each user only sees the modules
+                            and actions allowed for their role.
+                        </p>
+                    </div>
+
+                    <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                        <h3 class="text-lg font-black text-slate-900">
+                            Need assistance?
+                        </h3>
+
+                        <p class="mt-3 text-sm font-semibold leading-7 text-slate-500">
+                            For account access, incorrect document routing, missing notifications, or report concerns,
+                            contact the system administrator or the assigned DTS monitoring staff.
+                        </p>
+                    </div>
+                </section>
             </div>
+
 
             <!-- REPORTS CONTENT -->
             <div
@@ -1345,20 +1574,16 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <h2 class="mt-2 text-3xl font-bold text-slate-900">
-                                     DTS Reports
+                                    DTS Monthly Reports
                                 </h2>
+
+                                <p class="mt-2 text-sm font-semibold text-slate-500">
+                                    Select classification and month. Results update automatically.
+                                </p>
                             </div>
                         </div>
 
-                        <div class="rounded-2xl bg-blue-50 px-5 py-4 text-right">
-                            <p class="text-xs font-bold uppercase tracking-wide text-blue-700">
-                                Module
-                            </p>
-
-                            <p class="mt-1 text-lg font-bold text-black">
-                                Reports
-                            </p>
-                        </div>
+                        
                     </div>
                 </div>
 
@@ -1368,33 +1593,34 @@ const submitEntryDateUpdate = () => {
                             <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                     <h3 class="text-xl font-bold text-black">
-                                        Reports: By Date
+                                        Reports: By Classification and Month
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Filter documents by classification, keywords, and date range.
+                                        Choose Incoming or Outgoing, then select the month to display only matching records.
                                     </p>
                                 </div>
 
                                 <span class="inline-flex w-fit rounded-full bg-blue-700 px-4 py-1.5 text-xs font-bold text-white">
-                                    Preview Report
+                                    Auto Filter
                                 </span>
                             </div>
                         </div>
 
                         <div class="p-6">
-                            <div class="grid grid-cols-1 gap-5">
-                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
-                                    <label class="text-sm font-bold text-black md:text-right">
-                                        Classification:
+                            <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                                <div>
+                                    <label class="mb-2 block text-sm font-bold text-black">
+                                        Classification
                                     </label>
 
                                     <select
                                         v-model="reportClassification"
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        @change="previewReport"
                                     >
                                         <option value="">
-                                            All
+                                            All Classifications
                                         </option>
 
                                         <option value="False">
@@ -1407,90 +1633,34 @@ const submitEntryDateUpdate = () => {
                                     </select>
                                 </div>
 
-                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
-                                    <label class="text-sm font-bold text-black md:text-right">
-                                        Subject keywords:
+                                <div>
+                                    <label class="mb-2 block text-sm font-bold text-black">
+                                        Month
                                     </label>
 
-                                    <input
-                                        v-model="reportSubjectKeyword"
-                                        type="text"
-                                        placeholder="Type subject keyword..."
+                                    <select
+                                        v-model="reportMonth"
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @keyup.enter="previewReport"
-                                    />
-                                </div>
-
-                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
-                                    <label class="text-sm font-bold text-black md:text-right">
-                                        Re keywords:
-                                    </label>
-
-                                    <input
-                                        v-model="reportRegardingKeyword"
-                                        type="text"
-                                        placeholder="Type regarding keyword..."
-                                        class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @keyup.enter="previewReport"
-                                    />
-                                </div>
-
-                                <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
-                                    <div class="rounded-2xl border border-blue-100 bg-blue-50 p-5">
-                                        <p class="mb-4 text-sm font-bold uppercase tracking-wide text-blue-700">
-                                            Start Date
-                                        </p>
-
-                                        <input
-                                            v-model="reportStartDate"
-                                            type="date"
-                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        />
-                                    </div>
-
-                                    <div class="rounded-2xl border border-blue-100 bg-blue-50 p-5">
-                                        <p class="mb-4 text-sm font-bold uppercase tracking-wide text-blue-700">
-                                            End Date
-                                        </p>
-
-                                        <input
-                                            v-model="reportEndDate"
-                                            type="date"
-                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        />
-                                    </div>
+                                        @change="previewReport"
+                                    >
+                                        <option
+                                            v-for="month in reportMonths"
+                                            :key="month.value || 'all-months'"
+                                            :value="month.value"
+                                        >
+                                            {{ month.label }}
+                                        </option>
+                                    </select>
                                 </div>
 
                                 <div
-                                    v-if="reportErrors.general || reportErrors.date"
-                                    class="rounded-xl border border-red-300 bg-red-50 px-5 py-4 text-sm font-bold text-red-800"
+                                    v-if="reportErrors.general"
+                                    class="rounded-xl border border-red-300 bg-red-50 px-5 py-4 text-sm font-bold text-red-800 lg:col-span-2"
                                 >
-                                    <p v-if="reportErrors.general">
-                                        {{ reportErrors.general }}
-                                    </p>
-
-                                    <p v-if="reportErrors.date">
-                                        {{ reportErrors.date }}
-                                    </p>
+                                    {{ reportErrors.general }}
                                 </div>
 
-                                <div class="flex flex-col justify-end gap-3 border-t border-blue-100 pt-5 sm:flex-row">
-                                    <button
-                                        type="button"
-                                        class="rounded-xl border border-blue-300 bg-white px-7 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
-                                        @click="resetReport"
-                                    >
-                                        Reset
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        class="rounded-xl bg-blue-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
-                                        @click="previewReport"
-                                    >
-                                        Preview
-                                    </button>
-
+                                <div class="flex flex-col justify-end gap-3 border-t border-blue-100 pt-5 sm:flex-row lg:col-span-2">
                                     <button
                                         type="button"
                                         class="rounded-xl bg-green-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-green-700"
@@ -1539,10 +1709,10 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 </p>
 
-                                <p v-if="reportStartDate || reportEndDate" class="mt-1">
-                                    Date Range:
+                                <p class="mt-1">
+                                    Month:
                                     <span class="font-bold">
-                                        {{ reportStartDate || 'Start' }} to {{ reportEndDate || 'End' }}
+                                        {{ reportMonthLabel }}
                                     </span>
                                 </p>
                             </div>
@@ -1554,7 +1724,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[9%] border border-black px-4 py-4 font-bold">
-                                        Doc ID
+                                        DOC ID
                                     </th>
 
                                     <th class="w-[11%] border border-black px-4 py-4 font-bold">
@@ -1590,7 +1760,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-4 py-4 font-bold text-blue-700">
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </td>
 
                                     <td class="border border-black px-4 py-4">
@@ -1630,7 +1800,7 @@ const submitEntryDateUpdate = () => {
                                         </div>
 
                                         <p class="mt-2 text-sm font-medium text-black">
-                                            Try another date range or filter.
+                                            Try another classification or month.
                                         </p>
                                     </td>
                                 </tr>
@@ -1642,7 +1812,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[10%] border border-black px-3 py-3 font-bold">
-                                        Doc ID
+                                        DTS #
                                     </th>
 
                                     <th class="w-[14%] border border-black px-3 py-3 font-bold">
@@ -1674,7 +1844,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-3 font-bold text-black">
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </td>
 
                                     <td class="border border-black px-3 py-3 font-semibold text-black">
@@ -1705,7 +1875,7 @@ const submitEntryDateUpdate = () => {
                                         </div>
 
                                         <p class="mt-2 text-sm font-medium text-black">
-                                            Try another date range or filter.
+                                            Try another classification or month.
                                         </p>
                                     </td>
                                 </tr>
@@ -1740,7 +1910,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, office, subject, or type..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="applyReceivedFilters"
                             />
@@ -1818,7 +1988,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc<br>ID
+                                    DTS<br>#
                                 </th>
 
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
@@ -1854,7 +2024,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </Link>
                                 </td>
 
@@ -1969,7 +2139,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -1998,7 +2168,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[9%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc<br>ID
+                                    DTS<br>#
                                 </th>
 
                                 <th class="w-[11%] border border-black px-4 py-4 text-center font-bold">
@@ -2037,7 +2207,7 @@ const submitEntryDateUpdate = () => {
                                 :href="`/dts/${doc.IDdoc}`"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                {{ doc.document_no || doc.IDdoc }}
+                                {{ formatDtsDocumentNo(doc) }}
                             </Link>
                         </td>
 
@@ -2168,7 +2338,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2197,7 +2367,7 @@ const submitEntryDateUpdate = () => {
                     <thead>
                         <tr class="bg-blue-600 text-white">
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                Doc ID
+                                DTS #
                             </th>
 
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
@@ -2233,7 +2403,7 @@ const submitEntryDateUpdate = () => {
                                     :href="`/dts/${doc.IDdoc}`"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    {{ doc.document_no || doc.IDdoc }}
+                                    {{ formatDtsDocumentNo(doc) }}
                                 </Link>
                             </td>
 
@@ -2342,7 +2512,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2371,7 +2541,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc ID
+                                    DTS #
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2403,7 +2573,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </Link>
                                 </td>
 
@@ -2508,7 +2678,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2537,7 +2707,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc ID
+                                    DTS #
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2580,7 +2750,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </Link>
                                 </td>
 
@@ -2716,7 +2886,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2745,7 +2915,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc ID
+                                    DTS #
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2783,7 +2953,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        {{ formatDtsDocumentNo(doc) }}
                                     </Link>
                                 </td>
 
@@ -2900,7 +3070,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                :placeholder="tableSearchPlaceholder"
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2929,7 +3099,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-600 text-white">
                                     <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                        Doc ID
+                                        DTS #
                                     </th>
 
                                     <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2965,7 +3135,7 @@ const submitEntryDateUpdate = () => {
                                             :href="`/dts/${doc.IDdoc}`"
                                             class="font-bold text-blue-700 hover:underline"
                                         >
-                                            {{ doc.document_no || doc.IDdoc }}
+                                            {{ formatDtsDocumentNo(doc) }}
                                         </Link>
                                     </td>
 
@@ -3183,7 +3353,7 @@ const submitEntryDateUpdate = () => {
                             </h2>
 
                             <p class="mt-1 text-sm text-slate-500">
-                                Search by Document ID, subject, or regarding.
+                                {{ tableSearchDescription }}
                             </p>
                         </div>
 
@@ -3222,7 +3392,7 @@ const submitEntryDateUpdate = () => {
                         <input
                             v-model="search"
                             type="text"
-                            placeholder="Enter Document ID, subject, or regarding..."
+                            :placeholder="tableSearchPlaceholder"
                             class="w-full rounded-xl border border-slate-300 px-5 py-3.5 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
 
@@ -3313,7 +3483,7 @@ const submitEntryDateUpdate = () => {
                                 >
                                     <td class="px-4 py-5 align-top">
                                         <span class="font-bold text-blue-700">
-                                            {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
+                                            {{ formatDtsDocumentNo(doc) }}
                                         </span>
                                     </td>
 
@@ -3431,7 +3601,7 @@ const submitEntryDateUpdate = () => {
                         </p>
 
                         <p class="mt-1 text-lg font-bold text-black">
-                            {{ selectedPendingDocument?.document_no || selectedPendingDocument?.IDdoc }}
+                            {{ formatDtsDocumentNo(selectedPendingDocument || {}) }}
                         </p>
 
                         <p class="mt-4 text-sm font-bold text-blue-700">
@@ -3524,7 +3694,7 @@ const submitEntryDateUpdate = () => {
                         </h2>
 
                         <p class="mt-1 text-sm text-slate-500">
-                            Doc ID: {{ selectedDocument?.IDdoc }}
+                            DTS #: {{ formatDtsId(selectedDocument?.IDdoc) }}
                         </p>
                     </div>
 
