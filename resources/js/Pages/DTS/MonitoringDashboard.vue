@@ -1241,18 +1241,15 @@ const daysPendingClass = (days) => {
                         <div
                             v-for="person in peopleNoAction"
                             :key="`${person.personnel_id || 'unassigned'}-${person.personnel_name}`"
-                            class="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm"
-                        >
+                            class="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
                             <button
                                 type="button"
                                 class="flex w-full flex-col gap-3 p-4 text-left transition hover:bg-blue-50 md:flex-row md:items-center md:justify-between"
-                                @click="togglePerson(person)"
-                            >
+                                @click="togglePerson(person)">
                                 <div class="flex items-center gap-3">
                                     <div
                                         class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-lg font-black transition"
-                                        :class="isPersonExpanded(person) ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'"
-                                    >
+                                        :class="isPersonExpanded(person) ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'">
                                         {{ isPersonExpanded(person) ? '−' : '+' }}
                                     </div>
 
@@ -1292,8 +1289,7 @@ const daysPendingClass = (days) => {
 
                             <div
                                 v-if="isPersonExpanded(person)"
-                                class="border-t border-slate-100 bg-blue-50/50 p-4"
-                            >
+                                class="border-t border-slate-100 bg-blue-50/50 p-4">
                                 <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
                                         Pending Documents of {{ person.personnel_name || 'Unassigned' }}
@@ -1419,13 +1415,11 @@ const daysPendingClass = (days) => {
                 <div class="bg-slate-50 p-6">
                     <div
                         v-if="notificationItems.length"
-                        class="max-h-[55vh] space-y-3 overflow-y-auto pr-1"
-                    >
+                        class="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
                         <div
                             v-for="(item, index) in notificationItems"
                             :key="`monitoring-notification-${item.IDdoc || item.document_no || index}`"
-                            class="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm"
-                        >
+                            class="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
                             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div class="min-w-0">
                                     <div class="flex flex-wrap items-center gap-2">

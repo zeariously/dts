@@ -1537,7 +1537,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Filter documents by classification, keywords, and date range.sssssss
+                                        Filter documents by classification, keywords, and date range.
                                     </p>
                                 </div>
 
