@@ -179,6 +179,8 @@ public function index(Request $request)
             'd.entrydate',
             'd.IDfor',
             'd.IDfrom',
+            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_name' : 'NULL as to_name'),
+            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_name' : 'NULL as from_name'),
             'd.subject',
             'd.regarding',
             'd.remarks',
@@ -818,6 +820,8 @@ public function index(Request $request)
         'IDtransac' => ['nullable', 'integer', 'exists:transactions,ID'],
         'IDfrom' => ['required', 'integer', 'exists:lu_office,ID'],
         'IDfor' => ['required', 'integer', 'exists:lu_office,ID'],
+        'to_name' => ['nullable', 'string', 'max:255'],
+        'from_name' => ['nullable', 'string', 'max:255'],
         'IDdocstatus' => ['nullable', 'integer', 'exists:lu_docstatus,ID'],
         'IDkeeper' => ['nullable', 'integer', 'exists:lu_personnel,ID'],
 
@@ -912,6 +916,29 @@ public function index(Request $request)
             'YNdays' => 'False',
             'datecleared' => null,
         ]);
+
+        /*
+         * Save optional typed names for To/From.
+         * This uses DB::table instead of mass assignment so it will still work
+         * even if the DtsDocument model fillable list is not yet updated.
+         */
+        $documentNameUpdates = [];
+
+        if (Schema::hasColumn('document', 'to_name')) {
+            $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
+            $document->to_name = $validated['to_name'] ?? null;
+        }
+
+        if (Schema::hasColumn('document', 'from_name')) {
+            $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
+            $document->from_name = $validated['from_name'] ?? null;
+        }
+
+        if (! empty($documentNameUpdates)) {
+            DB::table('document')
+                ->where('IDdoc', $document->IDdoc)
+                ->update($documentNameUpdates);
+        }
 
         if (! empty($validated['IDtransac'])) {
             DtsDocTransaction::create([
@@ -1468,6 +1495,8 @@ public function index(Request $request)
 
                 'IDfor' => $document->IDfor,
                 'IDfrom' => $document->IDfrom,
+                'to_name' => Schema::hasColumn('document', 'to_name') ? ($document->to_name ?? null) : null,
+                'from_name' => Schema::hasColumn('document', 'from_name') ? ($document->from_name ?? null) : null,
                 'for_office' => $document->forOffice?->officename,
                 'from_office' => $document->fromOffice?->officename,
 

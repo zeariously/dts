@@ -101,7 +101,9 @@ const form = useForm({
     entry_day: String(today.getDate()).padStart(2, '0'),
     entry_year: String(today.getFullYear()),
     to_office_id: '',
+    to_name: '',
     from_office_id: '',
+    from_name: '',
     subject: '',
     regarding: '',
     remarks: '',
@@ -313,36 +315,70 @@ const submitForm = () => {
 
                 <div>
                     <label class="mb-1 block text-sm font-bold text-slate-700">
-                        To<span class="text-red-600">*</span>
+                        To Office<span class="text-red-600">*</span>
                     </label>
 
-                    <div class="grid gap-2" style="grid-template-columns: minmax(0, 1fr) auto;">
-                        <SearchableSelect
-                            v-model="form.to_office_id"
-                            :key="`to-${officeOptionsKey}`"
-                            :options="officeOptions"
-                            placeholder="Search office..."
-                            :id-keys="['ID', 'id', 'IDoffice']"
-                            :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
-                        />
-                    </div>
+                    <SearchableSelect
+                        v-model="form.to_office_id"
+                        :key="`to-${officeOptionsKey}`"
+                        :options="officeOptions"
+                        placeholder="Search office..."
+                        :id-keys="['ID', 'id', 'IDoffice']"
+                        :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
+                    />
+
+                    <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
+                        To Name
+                    </label>
+
+                    <input
+                        v-model="form.to_name"
+                        type="text"
+                        maxlength="255"
+                        class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        placeholder="Enter recipient name"
+                    />
+
+                    <p
+                        v-if="form.errors.to_name"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.to_name }}
+                    </p>
                 </div>
 
                 <div>
                     <label class="mb-1 block text-sm font-bold text-slate-700">
-                        From<span class="text-red-600">*</span>
+                        From Office<span class="text-red-600">*</span>
                     </label>
 
-                    <div class="grid gap-2" style="grid-template-columns: minmax(0, 1fr) auto;">
-                        <SearchableSelect
-                            v-model="form.from_office_id"
-                            :key="`from-${officeOptionsKey}`"
-                            :options="officeOptions"
-                            placeholder="Search office..."
-                            :id-keys="['ID', 'id', 'IDoffice']"
-                            :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
-                        />
-                    </div>
+                    <SearchableSelect
+                        v-model="form.from_office_id"
+                        :key="`from-${officeOptionsKey}`"
+                        :options="officeOptions"
+                        placeholder="Search office..."
+                        :id-keys="['ID', 'id', 'IDoffice']"
+                        :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
+                    />
+
+                    <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
+                        From Name
+                    </label>
+
+                    <input
+                        v-model="form.from_name"
+                        type="text"
+                        maxlength="255"
+                        class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        placeholder="Enter sender name"
+                    />
+
+                    <p
+                        v-if="form.errors.from_name"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.from_name }}
+                    </p>
                 </div>
 
                 <div>

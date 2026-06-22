@@ -538,6 +538,26 @@ const fromOfficeDisplay = computed(() => {
     )
 })
 
+const toNameDisplay = computed(() => {
+    return getFirstFilled(
+        props.document.to_name,
+        props.document.recipient_name,
+        props.document.addressee_name,
+        props.document.name_to,
+        props.document.to_person_name
+    )
+})
+
+const fromNameDisplay = computed(() => {
+    return getFirstFilled(
+        props.document.from_name,
+        props.document.sender_name,
+        props.document.source_name,
+        props.document.name_from,
+        props.document.from_person_name
+    )
+})
+
 const staffConcernDisplay = computed(() => {
     return getFirstFilled(
         props.document.staff_concern,
@@ -1252,6 +1272,13 @@ const formatFileSize = (bytes) => {
                     <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
                         {{ fromOfficeDisplay }}
                     </p>
+
+                    <p
+                        v-if="hasFilledValue(fromNameDisplay)"
+                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-500"
+                    >
+                        Name: {{ fromNameDisplay }}
+                    </p>
                 </div>
 
                 <div class="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
@@ -1261,6 +1288,13 @@ const formatFileSize = (bytes) => {
 
                     <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
                         {{ toOfficeDisplay }}
+                    </p>
+
+                    <p
+                        v-if="hasFilledValue(toNameDisplay)"
+                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-500"
+                    >
+                        Name: {{ toNameDisplay }}
                     </p>
                 </div>
 
