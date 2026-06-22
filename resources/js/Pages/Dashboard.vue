@@ -977,7 +977,7 @@ const submitEntryDateUpdate = () => {
                         </h1>
 
                         <p class="mt-2 text-sm text-slate-500">
-                            Document Tracking System workspace.
+                            Document Tracking System workspacesssssss
                         </p>
                     </div>
 
