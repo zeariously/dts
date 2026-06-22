@@ -19,19 +19,18 @@ class RegisteredUserController extends Controller
             'password' => ['required', 'confirmed', Rules\Password::defaults()],
         ]);
 
-        User::create([
-            'loginname' => $request->loginname,
-            'name' => $request->name,
-            'username' => $request->loginname,
-            'password' => Hash::make($request->password),
-            'rights' => 2,
-            'idoffice' => 0,
-            'idmapagency' => $request->input('idmapagency') ?? 0,
-            'lastlogin' => now(),
-        ]);
+       User::create([
+    'loginname' => $request->loginname,
+    'name' => $request->name,
+    'password' => Hash::make($request->password),
+    'rights' => 2,
+    'idoffice' => 0,
+    'idmapagency' => $request->input('idmapagency') ?? 0,
+    'lastlogin' => now(),
+]);
 
-        return redirect()
-            ->route('login')
-            ->with('status', 'Account created successfully. You may now log in.');
+return redirect()
+    ->route('login')
+    ->with('status', 'Account created successfully. You may now log in.');
     }
 }
