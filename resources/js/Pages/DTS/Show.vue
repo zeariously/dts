@@ -29,6 +29,14 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    canReceiveDts: {
+        type: Boolean,
+        default: false,
+    },
+    canReattachDts: {
+        type: Boolean,
+        default: false,
+    },
     canRemarkDts: {
         type: Boolean,
         default: false,
@@ -54,7 +62,22 @@ const canManageDts = computed(() => {
 })
 
 const canReceiveDts = computed(() => {
-    return !isSuperAdminViewOnly.value && ['1', '2', '3', '4'].includes(userRights.value)
+    /*
+     * This permission comes from the controller.
+     * Staff users may view documents that are not tagged to them,
+     * but they must not receive/transfer/return/action taken unless
+     * the document is actually tagged to their personnel record.
+     */
+    return !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
+})
+
+const canReattachDts = computed(() => {
+    /*
+     * Re-attach is maintained separately.
+     * Staff users can still re-attach files even when the document is not tagged
+     * to them, as long as the controller allows their role to manage attachments.
+     */
+    return !isSuperAdminViewOnly.value && Boolean(props.canReattachDts)
 })
 
 const canRemarkDts = computed(() => {
@@ -373,7 +396,7 @@ const resetReattachForm = () => {
 }
 
 const openReattachPanel = () => {
-    if (!canReceiveDts.value) {
+    if (!canReattachDts.value) {
         return
     }
 
@@ -386,7 +409,7 @@ const closeReattachPanel = () => {
 }
 
 const reattachFiles = () => {
-    if (!canReceiveDts.value) {
+    if (!canReattachDts.value) {
         return
     }
 
@@ -1478,7 +1501,7 @@ const formatFileSize = (bytes) => {
                         </div>
 
                         <button
-                            v-if="canReceiveDts"
+                            v-if="canReattachDts"
                             type="button"
                             class="mb-4 w-full rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-black text-white hover:bg-emerald-700"
                             @click="openReattachPanel"
@@ -1528,7 +1551,7 @@ const formatFileSize = (bytes) => {
                         </div>
 
                         <div
-                            v-if="canReceiveDts && showReattachPanel"
+                            v-if="canReattachDts && showReattachPanel"
                             class="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4"
                         >
                             <div class="mb-3 flex items-start justify-between gap-3">

@@ -328,7 +328,7 @@ const submitForm = () => {
                     />
 
                     <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
-                        To Name
+                        To 
                     </label>
 
                     <input
@@ -362,7 +362,7 @@ const submitForm = () => {
                     />
 
                     <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
-                        From Name
+                        From 
                     </label>
 
                     <input

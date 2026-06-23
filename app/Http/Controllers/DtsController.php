@@ -1477,6 +1477,8 @@ public function index(Request $request)
 
     return Inertia::render('DTS/Show', [
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
+        'canReceiveDts' => $this->canReceiveDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
+        'canReattachDts' => $this->canReattachDts() && $this->viewerCanAccessDocument((int) $document->IDdoc),
         'canRemarkDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
         'canActionTakenDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
                 'document' => [
@@ -2652,7 +2654,11 @@ public function updateEntryDate(Request $request, $id)
 
 public function storeAttachment(Request $request, $id)
 {
-    $this->ensureCanManageDts();
+    /*
+     * Re-attach is intentionally separate from receive/transfer/return/action.
+     * Staff users can re-attach files even when the document is not tagged to them.
+     */
+    $this->ensureCanReattachDts();
 
     $validated = $request->validate([
         'attachments' => ['required', 'array', 'min:1'],
@@ -3391,10 +3397,14 @@ private function shouldLimitDtsActionToTaggedDocuments(): bool
 {
     /*
      * Action rule:
-     * Role 2 and Role 4 can only receive/transfer/return,
-     * add remarks, and add Action Taken when the document is tagged to them.
+     * Role 2, Role 3, and Role 4 can only receive/transfer/return,
+     * re-attach files, add remarks, and add Action Taken when the document is
+     * tagged to them.
+     *
+     * Role 3 may still VIEW documents, but actions must be hidden/blocked when
+     * the document is not tagged to their mapped personnel record.
      */
-    return in_array($this->currentUserRights(), ['2', '4'], true);
+    return in_array($this->currentUserRights(), ['2', '3', '4'], true);
 }
 
 private function viewerAssignedPersonnelIds(): array
@@ -3729,6 +3739,20 @@ private function ensureCanManageDts(): void
         in_array($this->currentUserRights(), ['1', '3'], true),
         403
     );
+}
+
+private function canReattachDts(): bool
+{
+    /*
+     * Re-attach remains available to staff/manage roles.
+     * This is not tied to document tagging.
+     */
+    return in_array($this->currentUserRights(), ['1', '3'], true);
+}
+
+private function ensureCanReattachDts(): void
+{
+    abort_unless($this->canReattachDts(), 403);
 }
 
 private function canReceiveDts(): bool
