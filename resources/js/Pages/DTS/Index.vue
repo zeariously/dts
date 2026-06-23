@@ -326,6 +326,10 @@ const selectedYear = ref(String(
     new Date().getFullYear()
 ))
 
+const showYearFilter = computed(() => {
+    return activeSection.value !== 'about'
+})
+
 const buildCurrentPayload = () => {
     const payload = {
         per_page: perPage.value,
@@ -1040,13 +1044,14 @@ const submitEntryDateUpdate = () => {
                             {{ pageTitle }}
                         </h1>
 
-                        <p class="mt-2 text-sm text-slate-500">
-                            Document Tracking System workspace.
-                        </p>
+                       
                     </div>
 
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                        <div class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto">
+                        <div
+                            v-if="showYearFilter"
+                            class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto"
+                        >
                             <label class="shrink-0 text-sm font-bold text-blue-800">
                                 Year:
                             </label>
@@ -1353,7 +1358,7 @@ const submitEntryDateUpdate = () => {
                             </div>
 
                             <h2 class="mt-6 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
-                                Pantalan Document Tracking System
+                                 Document Tracking System
                             </h2>
 
                             <p class="mt-4 max-w-4xl text-base font-semibold leading-8 text-slate-600">
@@ -1692,7 +1697,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-white">
-                                        Pantalan Document Tracking System
+                                        Document Tracking System
                                     </p>
 
                                     <p class="mt-1 text-xs font-semibold text-blue-100">

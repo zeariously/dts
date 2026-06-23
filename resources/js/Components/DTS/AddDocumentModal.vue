@@ -131,35 +131,42 @@ const isPdfFile = (file) => {
 
 const handleFileChange = (event) => {
     attachmentError.value = ''
+    form.clearErrors('attachments')
 
     const files = Array.from(event.target.files || [])
 
     if (!files.length) {
+        attachedFiles.value = []
+        syncAttachmentsToForm()
         return
     }
 
-    const invalidFiles = files.filter((file) => !isPdfFile(file))
+    const file = files[0]
 
-    if (invalidFiles.length > 0) {
-        attachmentError.value = 'PDF files only. Please remove non-PDF files and try again.'
+    if (!isPdfFile(file)) {
+        attachedFiles.value = []
+        syncAttachmentsToForm()
+        attachmentError.value = 'PDF file only. Please select a PDF document.'
         fileInputKey.value += 1
         return
     }
 
-    files.forEach((file) => {
-        attachedFiles.value.push({
+    /*
+     * Only one attachment is needed for Add Document.
+     * Replace the current file instead of adding multiple files.
+     */
+    attachedFiles.value = [
+        {
             temp_id: `${Date.now()}-${Math.random()}`,
             type_id: null,
             type_name: 'PDF Document',
             file,
             file_name: file.name,
             file_size: file.size,
-        })
-    })
+        },
+    ]
 
     syncAttachmentsToForm()
-
-    fileInputKey.value += 1
 }
 
 const syncAttachmentsToForm = () => {
@@ -192,8 +199,79 @@ const closeModal = () => {
     emit('close')
 }
 
+const validateRequiredFields = () => {
+    form.clearErrors()
+    attachmentError.value = ''
+
+    const errors = {}
+
+    if (!String(form.classification_id || '').trim()) {
+        errors.classification_id = 'Classification is required.'
+    }
+
+    if (!String(form.type_id || '').trim()) {
+        errors.type_id = 'Type is required.'
+    }
+
+    if (!String(form.entry_month || '').trim()) {
+        errors.entry_month = 'Entry month is required.'
+    }
+
+    if (!String(form.entry_day || '').trim()) {
+        errors.entry_day = 'Entry day is required.'
+    }
+
+    if (!String(form.entry_year || '').trim()) {
+        errors.entry_year = 'Entry year is required.'
+    }
+
+    if (!String(form.to_office_id || '').trim()) {
+        errors.to_office_id = 'To Office is required.'
+    }
+
+    if (!String(form.to_name || '').trim()) {
+        errors.to_name = 'To name is required.'
+    }
+
+    if (!String(form.from_office_id || '').trim()) {
+        errors.from_office_id = 'From Office is required.'
+    }
+
+    if (!String(form.from_name || '').trim()) {
+        errors.from_name = 'From name is required.'
+    }
+
+    if (!String(form.subject || '').trim()) {
+        errors.subject = 'Subject is required.'
+    }
+
+    if (!attachedFiles.value.length) {
+        errors.attachments = 'One PDF attachment is required.'
+        attachmentError.value = errors.attachments
+    }
+
+    if (!String(form.staff_concern_id || '').trim()) {
+        errors.staff_concern_id = 'Staff Concern is required.'
+    }
+
+    Object.entries(errors).forEach(([field, message]) => {
+        form.setError(field, message)
+    })
+
+    if (Object.keys(errors).length > 0) {
+        alert(Object.values(errors).join('\n'))
+        return false
+    }
+
+    return true
+}
+
 const submitForm = () => {
     syncAttachmentsToForm()
+
+    if (!validateRequiredFields()) {
+        return
+    }
 
     form.post('/dts/documents/store', {
         preserveScroll: true,
@@ -263,6 +341,13 @@ const submitForm = () => {
                             :id-keys="['value', 'id', 'ID', 'IDclassification']"
                             :label-keys="['name', 'description', 'classification', 'title']"
                         />
+
+                        <p
+                            v-if="form.errors.classification_id"
+                            class="mt-2 text-xs font-bold text-red-700"
+                        >
+                            {{ form.errors.classification_id }}
+                        </p>
                     </div>
 
                     <div>
@@ -277,6 +362,13 @@ const submitForm = () => {
                             :id-keys="['ID', 'id', 'IDtype']"
                             :label-keys="['description', 'name', 'doctype', 'title']"
                         />
+
+                        <p
+                            v-if="form.errors.type_id"
+                            class="mt-2 text-xs font-bold text-red-700"
+                        >
+                            {{ form.errors.type_id }}
+                        </p>
                     </div>
 
                     <div>
@@ -289,6 +381,7 @@ const submitForm = () => {
                             <input
                                 v-model="form.entry_month"
                                 type="text"
+                                required
                                 maxlength="2"
                                 placeholder="MM"
                                 class="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -297,6 +390,7 @@ const submitForm = () => {
                             <input
                                 v-model="form.entry_day"
                                 type="text"
+                                required
                                 maxlength="2"
                                 placeholder="DD"
                                 class="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -305,11 +399,19 @@ const submitForm = () => {
                             <input
                                 v-model="form.entry_year"
                                 type="text"
+                                required
                                 maxlength="4"
                                 placeholder="YYYY"
                                 class="w-full rounded-xl border border-slate-300 px-3 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                             />
                         </div>
+
+                        <p
+                            v-if="form.errors.entry_month || form.errors.entry_day || form.errors.entry_year"
+                            class="mt-2 text-xs font-bold text-red-700"
+                        >
+                            {{ form.errors.entry_month || form.errors.entry_day || form.errors.entry_year }}
+                        </p>
                     </div>
                 </div>
 
@@ -327,14 +429,22 @@ const submitForm = () => {
                         :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
                     />
 
+                    <p
+                        v-if="form.errors.to_office_id"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.to_office_id }}
+                    </p>
+
                     <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
-                        To 
+                        To<span class="text-red-600">*</span>
                     </label>
 
                     <input
                         v-model="form.to_name"
                         type="text"
                         maxlength="255"
+                        required
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="Enter recipient name"
                     />
@@ -361,14 +471,22 @@ const submitForm = () => {
                         :label-keys="['display_name', 'officename', 'office_name', 'name', 'label']"
                     />
 
+                    <p
+                        v-if="form.errors.from_office_id"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.from_office_id }}
+                    </p>
+
                     <label class="mb-1 mt-3 block text-sm font-bold text-slate-700">
-                        From 
+                        From<span class="text-red-600">*</span>
                     </label>
 
                     <input
                         v-model="form.from_name"
                         type="text"
                         maxlength="255"
+                        required
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="Enter sender name"
                     />
@@ -389,9 +507,17 @@ const submitForm = () => {
                     <textarea
                         v-model="form.subject"
                         rows="4"
+                        required
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="Enter subject"
                     ></textarea>
+
+                    <p
+                        v-if="form.errors.subject"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.subject }}
+                    </p>
                 </div>
 
                 <div>
@@ -409,7 +535,7 @@ const submitForm = () => {
 
                 <div>
                     <label class="mb-1 block text-sm font-bold text-slate-700">
-                        Attachments
+                        Attachments<span class="text-red-600">*</span>
                     </label>
 
                     <div>
@@ -417,13 +543,12 @@ const submitForm = () => {
                             :key="fileInputKey"
                             type="file"
                             accept="application/pdf,.pdf"
-                            multiple
                             class="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                             @change="handleFileChange"
                         />
 
                         <p class="mt-2 text-xs font-semibold text-slate-500">
-                            PDF files only. You may select one or more PDF documents.
+                            PDF file only. Please select one PDF document.
                         </p>
 
                         <p
@@ -502,6 +627,13 @@ const submitForm = () => {
                         :id-keys="['ID', 'id', 'IDpersonnel']"
                         :label-keys="['name', 'personnel_name', 'fullname']"
                     />
+
+                    <p
+                        v-if="form.errors.staff_concern_id"
+                        class="mt-2 text-xs font-bold text-red-700"
+                    >
+                        {{ form.errors.staff_concern_id }}
+                    </p>
                 </div>
 
                 <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">

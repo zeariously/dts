@@ -106,7 +106,6 @@ const libraryMenus = [
     { key: 'personnel', label: 'Personnel' },
     { key: 'office', label: 'Office' },
     { key: 'doctype', label: 'Doc Type' },
-    { key: 'attachment', label: 'Attachment' },
     { key: 'action-types', label: 'Action Taken' },
 ]
 

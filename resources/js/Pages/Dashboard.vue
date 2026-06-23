@@ -1289,11 +1289,11 @@ const submitEntryDateUpdate = () => {
                             </div>
 
                             <h2 class="mt-6 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
-                                Pantalan Document Tracking System
+                                 Document Tracking System
                             </h2>
 
                             <p class="mt-4 max-w-4xl text-base font-semibold leading-8 text-slate-600">
-                                Pantalan DTS is a web-based document tracking platform designed to help offices
+                                 DTS is a web-based document tracking platform designed to help offices
                                 encode, receive, route, return, monitor, and manage official documents in one
                                 organized workspace. It improves visibility of document movement and helps users
                                 quickly identify pending actions, assigned personnel, and document history.
@@ -1687,7 +1687,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-white">
-                                        Pantalan Document Tracking System
+                                         Document Tracking System
                                     </p>
 
                                     <p class="mt-1 text-xs font-semibold text-blue-100">
@@ -2652,7 +2652,7 @@ const submitEntryDateUpdate = () => {
 
                         <p class="mt-2 text-sm font-medium text-black">
                             {{ activeSection === 'incoming' && !activeFilter
-                                ? 'List of incoming documents with current status.'
+                                ? 'List of incoming documents with current statusssss.'
                                 : 'List of documents for receiving.'
                             }}
                         </p>

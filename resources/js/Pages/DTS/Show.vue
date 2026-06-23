@@ -81,7 +81,12 @@ const canReattachDts = computed(() => {
 })
 
 const canRemarkDts = computed(() => {
-    return !isSuperAdminViewOnly.value && Boolean(props.canRemarkDts)
+    /*
+     * All users who can view the document can add remarks.
+     * Receive / Transfer / Action Taken / Return remain controlled separately
+     * and still require the document to be tagged to the user's personnel.
+     */
+    return Boolean(props.canRemarkDts)
 })
 
 const isDocumentReceivedForAction = computed(() => {
@@ -1358,13 +1363,7 @@ const formatFileSize = (bytes) => {
                                 </h3>
                             </div>
 
-                            <button
-                                type="button"
-                                class="w-fit rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 hover:bg-blue-100"
-                                @click="showActionHistoryModal = true"
-                            >
-                                Open Action History
-                            </button>
+                          
                         </div>
 
                         <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">

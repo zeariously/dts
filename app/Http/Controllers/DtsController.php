@@ -61,14 +61,7 @@ public function index(Request $request)
 
     $currentRights = (string) $this->currentUserRights();
 
-    /*
-     * Main DTS Index/Dashboard rule:
-     * Role 2 = can now view ALL documents in the document list/dashboard,
-     *          same as Role 3.
-     * Role 2 notifications are still tagged-only below by forcing the
-     * tagged scope only on the notification query.
-     * Role 4 stays tagged-only here if you still want that view restricted.
-     */
+    
     $shouldLimitToTaggedDocuments = in_array($currentRights, ['4'], true);
 
     $viewerOfficeIds = $this->viewerAssignedOfficeIds();
@@ -105,12 +98,7 @@ public function index(Request $request)
             ->values()
             ->all();
 
-        /*
-         * Strict tagged-only rule:
-         * If the account has no mapped personnel ID, return no documents.
-         * Do not fallback to office, creator, or confirm user because the user
-         * requested that only documents tagged to them should appear.
-         */
+       
         if (empty($personnelIds)) {
             return $query->whereRaw('1 = 0');
         }
@@ -580,14 +568,7 @@ public function index(Request $request)
     $viewerNotifications = collect();
     $creatorReceivedNotifications = collect();
 
-    /*
-     * GLOBAL tagged notification rule:
-     * If a document is tagged to ANY logged-in user's personnel record,
-     * that user should receive the notification.
-     *
-     * document.IDkeeper and distribution.idmapagency are personnel IDs,
-     * NOT username.ID. This is why we always use $viewerPersonnelIds.
-     */
+    
     if (! empty($viewerPersonnelIds)) {
         $viewerNotificationsQuery = DB::table('document as d')
             ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
@@ -917,11 +898,7 @@ public function index(Request $request)
             'datecleared' => null,
         ]);
 
-        /*
-         * Save optional typed names for To/From.
-         * This uses DB::table instead of mass assignment so it will still work
-         * even if the DtsDocument model fillable list is not yet updated.
-         */
+       
         $documentNameUpdates = [];
 
         if (Schema::hasColumn('document', 'to_name')) {
@@ -1162,10 +1139,7 @@ public function index(Request $request)
         ])
         ->get();
 
-    /*
-     * Entry timestamp is used to ignore legacy/unrelated records with the same
-     * numeric IDdoc but dated before this newly created document.
-     */
+   
     $documentEntryTimestamp = ! empty($document->entrydate)
         ? strtotime((string) $document->entrydate)
         : null;
@@ -1262,19 +1236,7 @@ public function index(Request $request)
         ),
     ];
 
-    /*
-     * SUPER STRICT ACTION HISTORY FIX:
-     *
-     * The modal must only show history that belongs to THIS document.
-     * This payload is built only from queries filtered by:
-     * - distribution.IDdoc = $document->IDdoc
-     * - dts_document_remarks.IDdoc = $document->IDdoc
-     * - dts_document_files.IDdoc = $document->IDdoc
-     *
-     * It does NOT use general activity_logs.
-     * It also skips the first distribution as "Transferred Document" because that
-     * first distribution is created together with a new document.
-     */
+   
     $actionHistory = collect();
 
     $addHistory = function (
@@ -1432,11 +1394,7 @@ public function index(Request $request)
     foreach ($uploadedAttachments as $fileItem) {
         $isReattached = ($fileItem['type_name'] ?? null) === 'Re-attached File';
 
-        /*
-         * Do not show initial uploaded files in Action History.
-         * For a newly created document, attachments are part of Document Created.
-         * Only show files that were re-attached later.
-         */
+       
         if (! $isReattached) {
             continue;
         }
@@ -1478,8 +1436,8 @@ public function index(Request $request)
     return Inertia::render('DTS/Show', [
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
         'canReceiveDts' => $this->canReceiveDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
-        'canReattachDts' => $this->canReattachDts() && $this->viewerCanAccessDocument((int) $document->IDdoc),
-        'canRemarkDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
+        'canReattachDts' => $this->viewerCanReattachDocument((int) $document->IDdoc),
+        'canRemarkDts' => $this->canRemarkDts() && $this->viewerCanRemarkDocument((int) $document->IDdoc),
         'canActionTakenDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
                 'document' => [
                 'IDdoc' => $document->IDdoc,
@@ -1767,11 +1725,7 @@ public function returnDocument(Request $request, $id)
         ]);
     }
 
-    /*
-     * Returning a document should also create a new transfer back to the sender/previous handler.
-     * The current distribution is marked as returned, then a new distribution is created
-     * so the returned document will appear in the target user's For Receiving list.
-     */
+    
     $returnTarget = $this->resolveReturnTarget($document, $latestDistribution);
 
     if (empty($returnTarget['office_id'])) {
@@ -2654,11 +2608,8 @@ public function updateEntryDate(Request $request, $id)
 
 public function storeAttachment(Request $request, $id)
 {
-    /*
-     * Re-attach is intentionally separate from receive/transfer/return/action.
-     * Staff users can re-attach files even when the document is not tagged to them.
-     */
-    $this->ensureCanReattachDts();
+    
+    $this->ensureViewerCanReattachDocument((int) $id);
 
     $validated = $request->validate([
         'attachments' => ['required', 'array', 'min:1'],
@@ -2670,11 +2621,7 @@ public function storeAttachment(Request $request, $id)
         'attachments.*.mimetypes' => 'Only PDF files are allowed.',
     ]);
 
-    /*
-     * IMPORTANT:
-     * Your DTS document table is named `document`, not `dts_documents`.
-     * So this method checks `document.IDdoc` directly to avoid 404.
-     */
+    
     if (! Schema::hasTable('document')) {
         return back()->with('error', 'Document table not found. Expected table name: document.');
     }
@@ -2749,13 +2696,9 @@ public function storeAttachment(Request $request, $id)
 
 public function storeRemark(Request $request, $id)
 {
-    /*
-     * Remarks should be allowed for roles 1, 2, and 3.
-     * Role 2 can add remarks only to documents that are tagged/assigned to them.
-     * Role 4 remains view-only.
-     */
+    
     $this->ensureCanRemarkDts();
-    $this->ensureViewerCanActOnDocument((int) $id);
+    $this->ensureViewerCanRemarkDocument((int) $id);
 
     $validated = $request->validate([
         'remarks' => ['required', 'string'],
@@ -2814,12 +2757,7 @@ public function storeRemark(Request $request, $id)
 
 public function actionTakenDocument(Request $request, $id)
 {
-    /*
-     * Action Taken:
-     * The dropdown comes from dts_action_types, and each record is a one-word action choice.
-     * Roles 1, 2, and 3 can save action taken on a tagged/assigned document.
-     * Role 4 remains view-only.
-     */
+    
     $this->ensureCanRemarkDts();
     $this->ensureViewerCanActOnDocument((int) $id);
 
@@ -2903,10 +2841,7 @@ public function actionTakenDocument(Request $request, $id)
 
         DB::table('dts_document_remarks')->insert($insertData);
 
-        /*
-         * Action type is only an action/history item.
-         * It does NOT transfer or re-tag the document to personnel.
-         */
+       
         $document->update([
             'remarks' => $remarks,
         ]);
@@ -2929,11 +2864,7 @@ public function actionTakenDocument(Request $request, $id)
 
 public function closeActionTaken(Request $request, $id, $remarkId)
 {
-    /*
-     * Monitoring Dashboard is view-only.
-     * Action Taken records are for monitoring per document only,
-     * so the old close/open workflow is intentionally disabled.
-     */
+   
     return back()->withErrors([
         'action' => 'Monitoring Dashboard is view-only. Action Taken records cannot be closed here.',
     ]);
@@ -2984,11 +2915,7 @@ public function monitoringDashboard(Request $request)
         $selectedYear = '';
     }
 
-    /*
-     * Main table: simplified list of document transactions.
-     * Columns needed in Vue:
-     * Doc ID, Subject, Assigned Personnel, Days Pending.
-     */
+    
     $transactionsQuery = DB::table('distribution as dist')
         ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
@@ -3115,11 +3042,7 @@ public function monitoringDashboard(Request $request)
         });
 
     $stats = [
-        /*
-         * Correct value for the first card.
-         * total_transactions is kept only as fallback for old Vue code,
-         * but its value is now also document count.
-         */
+        
         'total_documents' => $totalDocuments,
         'total_transactions' => $totalDocuments,
 
@@ -3156,10 +3079,7 @@ public function monitoringDashboard(Request $request)
             ->count('dist.IDdoc'),
     ];
 
-    /*
-     * Table: Sino ang hindi uma-action?
-     * Group pending documents by assigned personnel, then attach the document list per person.
-     */
+   
     $peopleNoAction = DB::table('distribution as dist')
         ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
         ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
@@ -3234,11 +3154,7 @@ public function monitoringDashboard(Request $request)
 
         return $person;
     });
-    /*
-     * Monitoring Dashboard only:
-     * Show Action Taken records per document for monitoring.
-     * No close/open workflow and no action_status column required.
-     */
+    
     $actionTakenItems = collect();
     $actionTakenCount = 0;
 
@@ -3336,7 +3252,6 @@ private function recordDtsActivity(
             $properties
         );
     } catch (\Throwable $e) {
-        // Activity logging should never block the main DTS transaction.
     }
 }
 
@@ -3367,11 +3282,7 @@ private function cleanIntegerIds(array $ids): array
 
 private function isSuperAdminViewOnly(?int $documentId = null): bool
 {
-    /*
-     * Role 4 is view-only ONLY when the document is not tagged to them.
-     * If the document is tagged to the logged-in Role 4 personnel, they can receive,
-     * add remarks, and add Action Taken like a normal assigned receiver.
-     */
+    
     if ($this->currentUserRights() !== '4') {
         return false;
     }
@@ -3385,26 +3296,14 @@ private function isSuperAdminViewOnly(?int $documentId = null): bool
 
 private function shouldLimitDtsToTaggedDocuments(): bool
 {
-    /*
-     * Direct document viewing rule:
-     * Role 2 can now VIEW all document details like Role 3.
-     * Actions are still protected separately by viewerCanActOnDocument().
-     */
+    
     return false;
 }
 
 private function shouldLimitDtsActionToTaggedDocuments(): bool
 {
-    /*
-     * Action rule:
-     * Role 2, Role 3, and Role 4 can only receive/transfer/return,
-     * re-attach files, add remarks, and add Action Taken when the document is
-     * tagged to them.
-     *
-     * Role 3 may still VIEW documents, but actions must be hidden/blocked when
-     * the document is not tagged to their mapped personnel record.
-     */
-    return in_array($this->currentUserRights(), ['2', '3', '4'], true);
+   
+    return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
 private function viewerAssignedPersonnelIds(): array
@@ -3418,9 +3317,7 @@ private function viewerAssignedPersonnelIds(): array
     $ids = [];
     $userId = $this->currentUserId();
 
-    /*
-     * Best mapping: username.idmapagency / personnel columns must match lu_personnel.ID.
-     */
+   
     foreach ([
         'idmapagency',
         'IDmapagency',
@@ -3723,6 +3620,44 @@ private function viewerCanActOnDocument(int $documentId): bool
     return $query->exists();
 }
 
+private function viewerCanRemarkDocument(int $documentId): bool
+{
+    
+    return $this->viewerCanAccessDocument($documentId);
+}
+
+private function ensureViewerCanRemarkDocument(int $documentId): void
+{
+    abort_unless(
+        $this->canRemarkDts() && $this->viewerCanRemarkDocument($documentId),
+        403
+    );
+}
+
+private function viewerCanReattachDocument(int $documentId): bool
+{
+   
+    if (! $this->canReattachDts()) {
+        return false;
+    }
+
+    $currentUserId = $this->currentUserId();
+
+    if (! $currentUserId || ! Schema::hasTable('document')) {
+        return false;
+    }
+
+    return DB::table('document')
+        ->where('IDdoc', $documentId)
+        ->where('IDuser', $currentUserId)
+        ->exists();
+}
+
+private function ensureViewerCanReattachDocument(int $documentId): void
+{
+    abort_unless($this->viewerCanReattachDocument($documentId), 403);
+}
+
 private function ensureViewerCanActOnDocument(int $documentId): void
 {
     abort_unless($this->viewerCanActOnDocument($documentId), 403);
@@ -3743,11 +3678,8 @@ private function ensureCanManageDts(): void
 
 private function canReattachDts(): bool
 {
-    /*
-     * Re-attach remains available to staff/manage roles.
-     * This is not tied to document tagging.
-     */
-    return in_array($this->currentUserRights(), ['1', '3'], true);
+   
+    return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
 private function ensureCanReattachDts(): void
@@ -3757,10 +3689,7 @@ private function ensureCanReattachDts(): void
 
 private function canReceiveDts(): bool
 {
-    /*
-     * Role 4 can receive/act ONLY when the document is tagged to them.
-     * The tagged-only protection is handled by viewerCanActOnDocument().
-     */
+   
     return in_array((string) optional(Auth::user())->rights, ['1', '2', '3', '4'], true);
 }
 
@@ -3771,12 +3700,7 @@ private function ensureCanReceiveDts(): void
 
 private function canRemarkDts(): bool
 {
-    /*
-     * Role 1 = admin/manage
-     * Role 2 = user/receiver, allowed to add remarks on assigned documents
-     * Role 3 = staff/admin, allowed to add remarks
-     * Role 4 = allowed only when the document is tagged to them
-     */
+    
     return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
