@@ -1,5 +1,5 @@
 <script setup>
-import { Head, Link, useForm, usePage } from '@inertiajs/vue3'
+import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3'
 import { computed, reactive, ref } from 'vue'
 import DTSLayout from '@/Layouts/DTSLayout.vue'
 
@@ -81,11 +81,7 @@ const canReattachDts = computed(() => {
 })
 
 const canRemarkDts = computed(() => {
-    /*
-     * All users who can view the document can add remarks.
-     * Receive / Transfer / Action Taken / Return remain controlled separately
-     * and still require the document to be tagged to the user's personnel.
-     */
+    
     return Boolean(props.canRemarkDts)
 })
 
@@ -296,6 +292,14 @@ const receiveDocument = () => {
         preserveScroll: true,
         onSuccess: () => {
             showReceiveModal.value = false
+
+            /*
+             * Reload the page after receiving so the workflow status updates.
+             * Once the document is received, the Select Action button will appear.
+             */
+            router.reload({
+                preserveScroll: true,
+            })
         },
     })
 }
@@ -833,8 +837,8 @@ const remarksHistory = computed(() => {
 
         history.push({
             id: `${isActionTaken ? 'action-taken' : 'saved-remark'}-${item.id}`,
-            type: isActionTaken ? 'Action Taken' : 'Remark',
-            title: isActionTaken ? 'Action Taken' : 'Added Remark',
+            type: isActionTaken ? 'Select Action' : 'Remark',
+            title: isActionTaken ? 'Select Action' : 'Added Remark',
             description: isActionTaken
                 ? `Selected action: ${actionTarget || 'Action'}.`
                 : 'A remark was added to this document.',
@@ -1229,14 +1233,6 @@ const formatFileSize = (bytes) => {
 
                         <div class="mt-4 grid grid-cols-1 gap-2">
                             <button
-                                type="button"
-                                class="rounded-xl bg-white px-5 py-2.5 text-sm font-black text-blue-700 shadow-sm hover:bg-blue-50"
-                                @click="showActionHistoryModal = true"
-                            >
-                                View Action History
-                            </button>
-
-                            <button
                                 v-if="!isSuperAdminViewOnly && canReceiveCurrentDocument"
                                 type="button"
                                 class="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60"
@@ -1244,6 +1240,16 @@ const formatFileSize = (bytes) => {
                                 @click="receiveDocument"
                             >
                                 {{ receiveForm.processing ? 'Receiving...' : 'Receive Document' }}
+                            </button>
+
+                            <button
+                                v-if="canActionTakenDts"
+                                type="button"
+                                class="rounded-xl bg-cyan-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-cyan-600 disabled:opacity-60"
+                                :disabled="actionTakenForm.processing"
+                                @click="openActionTakenModal"
+                            >
+                                Select Action
                             </button>
 
                             <button
@@ -1257,26 +1263,6 @@ const formatFileSize = (bytes) => {
                             </button>
 
                             <button
-                                v-if="!isSuperAdminViewOnly && props.canActionTakenDts"
-                                type="button"
-                                class="rounded-xl px-5 py-2.5 text-sm font-black text-white shadow-sm disabled:opacity-60"
-                                :class="isDocumentReceivedForAction
-                                    ? 'bg-cyan-500 hover:bg-cyan-600'
-                                    : 'cursor-not-allowed bg-cyan-300 opacity-70'"
-                                :disabled="actionTakenForm.processing"
-                                @click="handleActionTakenClick"
-                            >
-                                Action Taken
-                            </button>
-
-                            <p
-                                v-if="showActionTakenReceiveWarning && !isDocumentReceivedForAction"
-                                class="rounded-xl bg-white/15 px-4 py-3 text-xs font-bold leading-5 text-blue-50"
-                            >
-                                Action Taken will appear after the document is received.
-                            </p>
-
-                            <button
                                 v-if="!isSuperAdminViewOnly && canReturnCurrentDocument"
                                 type="button"
                                 class="rounded-xl bg-rose-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-rose-600 disabled:opacity-60"
@@ -1284,6 +1270,14 @@ const formatFileSize = (bytes) => {
                                 @click="openReturnModal"
                             >
                                 Return Document
+                            </button>
+
+                            <button
+                                type="button"
+                                class="mt-2 rounded-xl bg-white px-5 py-2.5 text-sm font-black text-blue-700 shadow-sm hover:bg-blue-50"
+                                @click="showActionHistoryModal = true"
+                            >
+                                View Action History
                             </button>
                         </div>
                     </div>
@@ -1756,7 +1750,7 @@ const formatFileSize = (bytes) => {
     </div>
 
 
-    <!-- Action Taken Modal -->
+    <!-- Select Action Modal -->
     <div
         v-if="showActionTakenModal"
         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8"
@@ -1770,11 +1764,11 @@ const formatFileSize = (bytes) => {
                         </p>
 
                         <h2 class="mt-2 text-2xl font-black">
-                            Add Action Taken
+                            Select Action
                         </h2>
 
                         <p class="mt-1 text-sm font-semibold text-cyan-100">
-                            Select the action done for this document.
+                            Select the appropriate action for this document.
                         </p>
                     </div>
 

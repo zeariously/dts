@@ -148,6 +148,13 @@ const isMonitoringUser = computed(() => {
     return userRights.value === '4'
 })
 
+const canViewAllDocuments = computed(() => {
+    // All Documents module is only for Role 2.
+    // In this module, Role 2 can see all documents,
+    // but non-tagged documents are viewing-only on the details page.
+    return userRights.value === '2'
+})
+
 const currentParams = computed(() => {
     const queryString = page.url.includes('?') ? page.url.split('?')[1] : ''
 
@@ -167,6 +174,7 @@ const incomingSections = [
     'received-docs',
     'pending-docs',
     'pending-docs-07',
+    'addressed-docs',
 ]
 
 const outgoingSections = [
@@ -181,8 +189,10 @@ const collaborationSections = [
 
 const collaborationFilters = [
     'for-receiving',
+    'received',
     'collab-received',
     'for-action',
+    'addressed',
     'returned',
 ]
 
@@ -196,6 +206,10 @@ const isReportsActive = computed(() => {
 
 const isAboutActive = computed(() => {
     return activeSection.value === 'about'
+})
+
+const isAllDocumentsActive = computed(() => {
+    return activeSection.value === 'all-documents'
 })
 
 const isAdminUsersActive = computed(() => {
@@ -221,6 +235,7 @@ const isDocumentsActive = computed(() => {
         && !isLibraryActive.value
         && !isReportsActive.value
         && !isAboutActive.value
+        && !isAllDocumentsActive.value
         && !isIncomingActive.value
         && !isOutgoingActive.value
         && !isCollaborationActive.value
@@ -279,6 +294,21 @@ const emit = defineEmits([
 
                             <span
                                 v-if="isDocumentsActive"
+                                class="text-xs font-bold"
+                            >
+                            </span>
+                        </Link>
+
+                        <Link
+                            v-if="canViewAllDocuments"
+                            href="/dts?section=all-documents"
+                            class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
+                            :class="navLinkClass(isAllDocumentsActive)"
+                        >
+                            <span>All Documents</span>
+
+                            <span
+                                v-if="isAllDocumentsActive"
                                 class="text-xs font-bold"
                             >
                             </span>

@@ -61,8 +61,27 @@ public function index(Request $request)
 
     $currentRights = (string) $this->currentUserRights();
 
-    
-    $shouldLimitToTaggedDocuments = in_array($currentRights, ['4'], true);
+    /*
+     * Main DTS Index/Dashboard rule:
+     * Role 2 normally sees only documents tagged to their mapped personnel record.
+     *
+     * All Documents module:
+     * Only Role 2 can access this module. In this section, Role 2 can see all
+     * documents regardless of tagging, but non-tagged documents are viewing-only
+     * on the details page.
+     */
+    $isAllDocumentsSection = $section === 'all-documents';
+    $canViewAllDocumentsModule = $currentRights === '2';
+
+    $shouldLimitToTaggedDocuments = in_array($currentRights, ['2', '4'], true);
+
+    if ($isAllDocumentsSection && $canViewAllDocumentsModule) {
+        $shouldLimitToTaggedDocuments = false;
+    }
+
+    if ($isAllDocumentsSection && ! $canViewAllDocumentsModule) {
+        abort(403);
+    }
 
     $viewerOfficeIds = $this->viewerAssignedOfficeIds();
     $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
@@ -98,7 +117,12 @@ public function index(Request $request)
             ->values()
             ->all();
 
-       
+        /*
+         * Strict tagged-only rule:
+         * If the account has no mapped personnel ID, return no documents.
+         * Do not fallback to office, creator, or confirm user because the user
+         * requested that only documents tagged to them should appear.
+         */
         if (empty($personnelIds)) {
             return $query->whereRaw('1 = 0');
         }
@@ -145,6 +169,18 @@ public function index(Request $request)
         })
         ->groupBy('rx.IDdoc');
 
+    $latestSelectedAction = DB::table('dts_document_remarks as selectedActionLatest')
+        ->select([
+            'selectedActionLatest.IDdoc',
+            DB::raw('MAX(selectedActionLatest.id) as latest_selected_action_id'),
+        ])
+        ->where('selectedActionLatest.action_type', 'action_taken')
+        ->groupBy('selectedActionLatest.IDdoc');
+
+    $selectedActionLabelExpression = Schema::hasColumn('dts_document_remarks', 'action_label')
+        ? "COALESCE(selectedActionRemark.action_label, selectedActionType.name, 'Select Action')"
+        : "COALESCE(selectedActionType.name, 'Select Action')";
+
     $documentsQuery = DB::table('document as d')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
         ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
@@ -153,6 +189,11 @@ public function index(Request $request)
             $join->on('ld.IDdoc', '=', 'd.IDdoc');
         })
         ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ld.latest_IDdist')
+        ->leftJoinSub($latestSelectedAction, 'lsa', function ($join) {
+            $join->on('lsa.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('dts_document_remarks as selectedActionRemark', 'selectedActionRemark.id', '=', 'lsa.latest_selected_action_id')
+        ->leftJoin('dts_action_types as selectedActionType', 'selectedActionType.id', '=', 'selectedActionRemark.action_type_id')
         ->leftJoinSub($latestReturnedDistribution, 'lrd', function ($join) {
             $join->on('lrd.IDdoc', '=', 'd.IDdoc');
         })
@@ -196,6 +237,11 @@ public function index(Request $request)
             'dist.YNreturn',
             'dist.YNpulled',
             'dist.remarks as distribution_remarks',
+
+            DB::raw($selectedActionLabelExpression . ' as selected_action'),
+            DB::raw($selectedActionLabelExpression . ' as action_label'),
+            'selectedActionRemark.remarks as selected_action_remarks',
+            'selectedActionRemark.created_at as selected_action_date',
         ]);
 
     $applyTaggedDocumentScope($documentsQuery, 'd', 'dist');
@@ -208,7 +254,7 @@ public function index(Request $request)
         $searchLike = "%{$search}%";
         $statusSearch = strtolower($search);
 
-        $documentsQuery->where(function ($query) use ($searchLike, $statusSearch, $doctypeCodeColumn, $trueValues) {
+        $documentsQuery->where(function ($query) use ($searchLike, $statusSearch, $doctypeCodeColumn, $selectedActionLabelExpression, $trueValues) {
             $query->where('d.IDdoc', 'like', $searchLike)
                 ->orWhere('d.subject', 'like', $searchLike)
                 ->orWhere('d.regarding', 'like', $searchLike)
@@ -221,6 +267,9 @@ public function index(Request $request)
                 ->orWhere('distOffice.officename', 'like', $searchLike)
                 ->orWhere('receiverPersonnel.name', 'like', $searchLike)
                 ->orWhere('dist.remarks', 'like', $searchLike)
+                ->orWhere('selectedActionRemark.remarks', 'like', $searchLike)
+                ->orWhere('selectedActionType.name', 'like', $searchLike)
+                ->orWhereRaw($selectedActionLabelExpression . ' LIKE ?', [$searchLike])
                 ->orWhereRaw('CAST(d.IDdocstatus AS CHAR) LIKE ?', [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
@@ -403,13 +452,32 @@ public function index(Request $request)
     }
 
     if (in_array($filter, ['collab-received', 'received'], true)) {
+        /*
+         * Received flow:
+         * Show only documents that have been received but do NOT have
+         * a selected action yet. Once Select Action is saved, the document
+         * moves to Addressed.
+         */
         $documentsQuery
             ->whereNotNull('dist.IDdist')
             ->whereNotNull('dist.confirmdate')
             ->where(function ($query) use ($trueValues) {
                 $query->whereNull('dist.YNreturn')
                     ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
             });
+
+        if (Schema::hasTable('dts_document_remarks')) {
+            $documentsQuery->whereNotExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('dts_document_remarks as receivedActionRemarks')
+                    ->whereColumn('receivedActionRemarks.IDdoc', 'd.IDdoc')
+                    ->where('receivedActionRemarks.action_type', 'action_taken');
+            });
+        }
     }
 
     if ($filter === 'for-action') {
@@ -424,6 +492,35 @@ public function index(Request $request)
                 $query->whereNull('dist.YNpulled')
                     ->orWhereNotIn('dist.YNpulled', $trueValues);
             });
+    }
+
+    if ($filter === 'addressed' || $section === 'addressed-docs') {
+        /*
+         * Addressed flow:
+         * Show only documents that have been received AND already have
+         * a saved Select Action.
+         */
+        if (Schema::hasTable('dts_document_remarks')) {
+            $documentsQuery
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.confirmdate')
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNreturn')
+                        ->orWhereNotIn('dist.YNreturn', $trueValues);
+                })
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNpulled')
+                        ->orWhereNotIn('dist.YNpulled', $trueValues);
+                })
+                ->whereExists(function ($query) {
+                    $query->select(DB::raw(1))
+                        ->from('dts_document_remarks as addressedRemarks')
+                        ->whereColumn('addressedRemarks.IDdoc', 'd.IDdoc')
+                        ->where('addressedRemarks.action_type', 'action_taken');
+                });
+        } else {
+            $documentsQuery->whereRaw('1 = 0');
+        }
     }
 
     if ($filter === 'returned') {
@@ -511,6 +608,9 @@ public function index(Request $request)
             ->distinct()
             ->count('d.IDdoc'),
 
+        /*
+         * Received = already received but waiting for Select Action.
+         */
         'received' => (clone $makeStatsBaseQuery())
             ->whereNotNull('dist.IDdist')
             ->whereNotNull('dist.confirmdate')
@@ -522,8 +622,41 @@ public function index(Request $request)
                 $query->whereNull('dist.YNpulled')
                     ->orWhereNotIn('dist.YNpulled', $trueValues);
             })
+            ->when(Schema::hasTable('dts_document_remarks'), function ($query) {
+                $query->whereNotExists(function ($subQuery) {
+                    $subQuery->select(DB::raw(1))
+                        ->from('dts_document_remarks as receivedActionRemarks')
+                        ->whereColumn('receivedActionRemarks.IDdoc', 'd.IDdoc')
+                        ->where('receivedActionRemarks.action_type', 'action_taken');
+                });
+            })
             ->distinct()
             ->count('d.IDdoc'),
+
+        /*
+         * Addressed = already received and already has Select Action.
+         */
+        'addressed' => Schema::hasTable('dts_document_remarks')
+            ? (clone $makeStatsBaseQuery())
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.confirmdate')
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNreturn')
+                        ->orWhereNotIn('dist.YNreturn', $trueValues);
+                })
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNpulled')
+                        ->orWhereNotIn('dist.YNpulled', $trueValues);
+                })
+                ->whereExists(function ($query) {
+                    $query->select(DB::raw(1))
+                        ->from('dts_document_remarks as addressedRemarks')
+                        ->whereColumn('addressedRemarks.IDdoc', 'd.IDdoc')
+                        ->where('addressedRemarks.action_type', 'action_taken');
+                })
+                ->distinct()
+                ->count('d.IDdoc')
+            : 0,
 
         'returned' => (clone $makeStatsBaseQuery())
             ->whereNotNull('dist.IDdist')
@@ -568,7 +701,14 @@ public function index(Request $request)
     $viewerNotifications = collect();
     $creatorReceivedNotifications = collect();
 
-    
+    /*
+     * GLOBAL tagged notification rule:
+     * If a document is tagged to ANY logged-in user's personnel record,
+     * that user should receive the notification.
+     *
+     * document.IDkeeper and distribution.idmapagency are personnel IDs,
+     * NOT username.ID. This is why we always use $viewerPersonnelIds.
+     */
     if (! empty($viewerPersonnelIds)) {
         $viewerNotificationsQuery = DB::table('document as d')
             ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
@@ -766,8 +906,7 @@ public function index(Request $request)
                 ->get()
             : [],
         'staffConcerns' => $staffConcernsForDropdown,
-        'viewerNotifications' => $viewerNotifications,
-        'creatorReceivedNotifications' => $creatorReceivedNotifications,
+        ...$this->dtsNotificationProps(),
     ]);
 }
 
@@ -776,6 +915,7 @@ public function index(Request $request)
     {
     $this->ensureCanManageDts();
         return Inertia::render('DTS/Create', [
+            ...$this->dtsNotificationProps(),
             'documentTypes' => DtsDocType::orderBy('description')->get(),
             'offices' => DtsOffice::orderBy('officename')->get(),
             'statuses' => DtsDocStatus::orderBy('name')->get(),
@@ -898,7 +1038,11 @@ public function index(Request $request)
             'datecleared' => null,
         ]);
 
-       
+        /*
+         * Save optional typed names for To/From.
+         * This uses DB::table instead of mass assignment so it will still work
+         * even if the DtsDocument model fillable list is not yet updated.
+         */
         $documentNameUpdates = [];
 
         if (Schema::hasColumn('document', 'to_name')) {
@@ -1139,7 +1283,10 @@ public function index(Request $request)
         ])
         ->get();
 
-   
+    /*
+     * Entry timestamp is used to ignore legacy/unrelated records with the same
+     * numeric IDdoc but dated before this newly created document.
+     */
     $documentEntryTimestamp = ! empty($document->entrydate)
         ? strtotime((string) $document->entrydate)
         : null;
@@ -1236,7 +1383,19 @@ public function index(Request $request)
         ),
     ];
 
-   
+    /*
+     * SUPER STRICT ACTION HISTORY FIX:
+     *
+     * The modal must only show history that belongs to THIS document.
+     * This payload is built only from queries filtered by:
+     * - distribution.IDdoc = $document->IDdoc
+     * - dts_document_remarks.IDdoc = $document->IDdoc
+     * - dts_document_files.IDdoc = $document->IDdoc
+     *
+     * It does NOT use general activity_logs.
+     * It also skips the first distribution as "Transferred Document" because that
+     * first distribution is created together with a new document.
+     */
     $actionHistory = collect();
 
     $addHistory = function (
@@ -1394,7 +1553,11 @@ public function index(Request $request)
     foreach ($uploadedAttachments as $fileItem) {
         $isReattached = ($fileItem['type_name'] ?? null) === 'Re-attached File';
 
-       
+        /*
+         * Do not show initial uploaded files in Action History.
+         * For a newly created document, attachments are part of Document Created.
+         * Only show files that were re-attached later.
+         */
         if (! $isReattached) {
             continue;
         }
@@ -1434,6 +1597,7 @@ public function index(Request $request)
         : collect();
 
     return Inertia::render('DTS/Show', [
+        ...$this->dtsNotificationProps(),
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
         'canReceiveDts' => $this->canReceiveDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
         'canReattachDts' => $this->viewerCanReattachDocument((int) $document->IDdoc),
@@ -1725,7 +1889,11 @@ public function returnDocument(Request $request, $id)
         ]);
     }
 
-    
+    /*
+     * Returning a document should also create a new transfer back to the sender/previous handler.
+     * The current distribution is marked as returned, then a new distribution is created
+     * so the returned document will appear in the target user's For Receiving list.
+     */
     $returnTarget = $this->resolveReturnTarget($document, $latestDistribution);
 
     if (empty($returnTarget['office_id'])) {
@@ -2008,6 +2176,7 @@ public function library()
         : collect();
 
     return Inertia::render('DTS/Library', [
+        ...$this->dtsNotificationProps(),
         'offices' => $offices,
         'personnel' => $personnel,
         'docTypes' => $docTypes,
@@ -2608,7 +2777,10 @@ public function updateEntryDate(Request $request, $id)
 
 public function storeAttachment(Request $request, $id)
 {
-    
+    /*
+     * Re-attach is intentionally separate from receive/transfer/return/action.
+     * User can re-attach only if they are the one who added/encoded the document.
+     */
     $this->ensureViewerCanReattachDocument((int) $id);
 
     $validated = $request->validate([
@@ -2621,7 +2793,11 @@ public function storeAttachment(Request $request, $id)
         'attachments.*.mimetypes' => 'Only PDF files are allowed.',
     ]);
 
-    
+    /*
+     * IMPORTANT:
+     * Your DTS document table is named `document`, not `dts_documents`.
+     * So this method checks `document.IDdoc` directly to avoid 404.
+     */
     if (! Schema::hasTable('document')) {
         return back()->with('error', 'Document table not found. Expected table name: document.');
     }
@@ -2696,7 +2872,11 @@ public function storeAttachment(Request $request, $id)
 
 public function storeRemark(Request $request, $id)
 {
-    
+    /*
+     * Remarks should be allowed for roles 1, 2, and 3.
+     * Role 2 can add remarks only to documents that are tagged/assigned to them.
+     * Role 4 remains view-only.
+     */
     $this->ensureCanRemarkDts();
     $this->ensureViewerCanRemarkDocument((int) $id);
 
@@ -2757,7 +2937,12 @@ public function storeRemark(Request $request, $id)
 
 public function actionTakenDocument(Request $request, $id)
 {
-    
+    /*
+     * Action Taken:
+     * The dropdown comes from dts_action_types, and each record is a one-word action choice.
+     * Roles 1, 2, and 3 can save action taken on a tagged/assigned document.
+     * Role 4 remains view-only.
+     */
     $this->ensureCanRemarkDts();
     $this->ensureViewerCanActOnDocument((int) $id);
 
@@ -2841,7 +3026,10 @@ public function actionTakenDocument(Request $request, $id)
 
         DB::table('dts_document_remarks')->insert($insertData);
 
-       
+        /*
+         * Action type is only an action/history item.
+         * It does NOT transfer or re-tag the document to personnel.
+         */
         $document->update([
             'remarks' => $remarks,
         ]);
@@ -2864,7 +3052,11 @@ public function actionTakenDocument(Request $request, $id)
 
 public function closeActionTaken(Request $request, $id, $remarkId)
 {
-   
+    /*
+     * Monitoring Dashboard is view-only.
+     * Action Taken records are for monitoring per document only,
+     * so the old close/open workflow is intentionally disabled.
+     */
     return back()->withErrors([
         'action' => 'Monitoring Dashboard is view-only. Action Taken records cannot be closed here.',
     ]);
@@ -2915,7 +3107,11 @@ public function monitoringDashboard(Request $request)
         $selectedYear = '';
     }
 
-    
+    /*
+     * Main table: simplified list of document transactions.
+     * Columns needed in Vue:
+     * Doc ID, Subject, Assigned Personnel, Days Pending.
+     */
     $transactionsQuery = DB::table('distribution as dist')
         ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
@@ -3042,7 +3238,11 @@ public function monitoringDashboard(Request $request)
         });
 
     $stats = [
-        
+        /*
+         * Correct value for the first card.
+         * total_transactions is kept only as fallback for old Vue code,
+         * but its value is now also document count.
+         */
         'total_documents' => $totalDocuments,
         'total_transactions' => $totalDocuments,
 
@@ -3079,7 +3279,10 @@ public function monitoringDashboard(Request $request)
             ->count('dist.IDdoc'),
     ];
 
-   
+    /*
+     * Table: Sino ang hindi uma-action?
+     * Group pending documents by assigned personnel, then attach the document list per person.
+     */
     $peopleNoAction = DB::table('distribution as dist')
         ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
         ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
@@ -3154,7 +3357,11 @@ public function monitoringDashboard(Request $request)
 
         return $person;
     });
-    
+    /*
+     * Monitoring Dashboard only:
+     * Show Action Taken records per document for monitoring.
+     * No close/open workflow and no action_status column required.
+     */
     $actionTakenItems = collect();
     $actionTakenCount = 0;
 
@@ -3216,6 +3423,7 @@ public function monitoringDashboard(Request $request)
     $stats['action_taken_documents'] = $actionTakenCount;
 
     return Inertia::render('DTS/MonitoringDashboard', [
+        ...$this->dtsNotificationProps(),
         'stats' => $stats,
         'transactions' => $transactions,
         'peopleNoAction' => $peopleNoAction,
@@ -3252,6 +3460,7 @@ private function recordDtsActivity(
             $properties
         );
     } catch (\Throwable $e) {
+        // Activity logging should never block the main DTS transaction.
     }
 }
 
@@ -3282,7 +3491,11 @@ private function cleanIntegerIds(array $ids): array
 
 private function isSuperAdminViewOnly(?int $documentId = null): bool
 {
-    
+    /*
+     * Role 4 is view-only ONLY when the document is not tagged to them.
+     * If the document is tagged to the logged-in Role 4 personnel, they can receive,
+     * add remarks, and add Action Taken like a normal assigned receiver.
+     */
     if ($this->currentUserRights() !== '4') {
         return false;
     }
@@ -3296,13 +3509,24 @@ private function isSuperAdminViewOnly(?int $documentId = null): bool
 
 private function shouldLimitDtsToTaggedDocuments(): bool
 {
-    
+    /*
+     * Direct document viewing rule:
+     * Role 2 can now VIEW all document details like Role 3.
+     * Actions are still protected separately by viewerCanActOnDocument().
+     */
     return false;
 }
 
 private function shouldLimitDtsActionToTaggedDocuments(): bool
 {
-   
+    /*
+     * Applies to all DTS roles:
+     * Receive / Transfer / Return / Action Taken are only allowed when the
+     * document is tagged to the user's mapped personnel record.
+     *
+     * If the document is not tagged to them, they may only View Action History
+     * and Add Remarks. Re-attach is only allowed if they added/encoded the document.
+     */
     return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
@@ -3317,7 +3541,9 @@ private function viewerAssignedPersonnelIds(): array
     $ids = [];
     $userId = $this->currentUserId();
 
-   
+    /*
+     * Best mapping: username.idmapagency / personnel columns must match lu_personnel.ID.
+     */
     foreach ([
         'idmapagency',
         'IDmapagency',
@@ -3523,6 +3749,15 @@ private function applyViewerActionScope($query, string $documentAlias = 'd', str
 
 private function viewerCanAccessDocument(int $documentId): bool
 {
+    /*
+     * Role 2 can view all documents through the All Documents module.
+     * Non-tagged documents remain viewing-only because action permissions
+     * still use viewerCanActOnDocument().
+     */
+    if ($this->currentUserRights() === '2') {
+        return true;
+    }
+
     if (! $this->shouldLimitDtsToTaggedDocuments()) {
         return true;
     }
@@ -3622,7 +3857,14 @@ private function viewerCanActOnDocument(int $documentId): bool
 
 private function viewerCanRemarkDocument(int $documentId): bool
 {
-    
+    /*
+     * Role 2 can view all documents through All Documents,
+     * but if a document is not tagged to them, it must be viewing-only.
+     */
+    if ($this->currentUserRights() === '2') {
+        return $this->viewerCanActOnDocument($documentId);
+    }
+
     return $this->viewerCanAccessDocument($documentId);
 }
 
@@ -3636,8 +3878,16 @@ private function ensureViewerCanRemarkDocument(int $documentId): void
 
 private function viewerCanReattachDocument(int $documentId): bool
 {
-   
+    /*
+     * Re-attach is allowed only to the user who added/encoded the document.
+     * For Role 2, non-tagged documents in All Documents are viewing-only,
+     * so they must also be tagged before re-attach can be allowed.
+     */
     if (! $this->canReattachDts()) {
+        return false;
+    }
+
+    if ($this->currentUserRights() === '2' && ! $this->viewerCanActOnDocument($documentId)) {
         return false;
     }
 
@@ -3678,7 +3928,11 @@ private function ensureCanManageDts(): void
 
 private function canReattachDts(): bool
 {
-   
+    /*
+     * Base permission for re-attach.
+     * Actual document-level permission is checked by viewerCanReattachDocument().
+     * If the user added/encoded the document, they can re-attach.
+     */
     return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
@@ -3689,7 +3943,10 @@ private function ensureCanReattachDts(): void
 
 private function canReceiveDts(): bool
 {
-   
+    /*
+     * Role 4 can receive/act ONLY when the document is tagged to them.
+     * The tagged-only protection is handled by viewerCanActOnDocument().
+     */
     return in_array((string) optional(Auth::user())->rights, ['1', '2', '3', '4'], true);
 }
 
@@ -3700,13 +3957,184 @@ private function ensureCanReceiveDts(): void
 
 private function canRemarkDts(): bool
 {
-    
+    /*
+     * All DTS users who can view the document can add remarks.
+     * This is separate from receive/transfer/return/action taken.
+     */
     return in_array($this->currentUserRights(), ['1', '2', '3', '4'], true);
 }
 
 private function ensureCanRemarkDts(): void
 {
     abort_unless($this->canRemarkDts(), 403);
+}
+
+
+private function dtsNotificationProps(): array
+{
+    /*
+     * Shared notification props for every DTS page.
+     * Without this, the notification bell count appears only on pages that
+     * manually pass viewerNotifications/creatorReceivedNotifications.
+     */
+    $viewerNotifications = collect();
+    $creatorReceivedNotifications = collect();
+
+    if (! Schema::hasTable('document') || ! Schema::hasTable('distribution')) {
+        return [
+            'viewerNotifications' => [],
+            'creatorReceivedNotifications' => [],
+        ];
+    }
+
+    $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
+    $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
+    $currentUserId = $this->currentUserId();
+
+    $doctypeCodeColumn = 'dt.description';
+
+    if (Schema::hasTable('lu_doctype')) {
+        if (Schema::hasColumn('lu_doctype', 'abbreviation')) {
+            $doctypeCodeColumn = 'dt.abbreviation';
+        } elseif (Schema::hasColumn('lu_doctype', 'abbr')) {
+            $doctypeCodeColumn = 'dt.abbr';
+        } elseif (Schema::hasColumn('lu_doctype', 'code')) {
+            $doctypeCodeColumn = 'dt.code';
+        }
+    }
+
+    $makeLatestDistribution = function () {
+        return DB::table('distribution as dx')
+            ->select([
+                'dx.IDdoc',
+                DB::raw('MAX(dx.IDdist) as latest_IDdist'),
+            ])
+            ->groupBy('dx.IDdoc');
+    };
+
+    if (! empty($viewerPersonnelIds)) {
+        $viewerNotificationsQuery = DB::table('document as d')
+            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
+            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
+            ->leftJoinSub($makeLatestDistribution(), 'viewerLd', function ($join) {
+                $join->on('viewerLd.IDdoc', '=', 'd.IDdoc');
+            })
+            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'viewerLd.latest_IDdist')
+            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.distdate')
+            ->whereNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->where(function ($query) use ($viewerPersonnelIds) {
+                $query->whereIn('d.IDkeeper', $viewerPersonnelIds);
+
+                if (Schema::hasColumn('distribution', 'idmapagency')) {
+                    $query->orWhereIn('dist.idmapagency', $viewerPersonnelIds);
+                }
+            });
+
+        $viewerNotifications = $viewerNotificationsQuery
+            ->select([
+                DB::raw("'for_receiving' as notification_type"),
+                'd.IDdoc',
+                'd.IDdoc as document_no',
+                'd.subject',
+                'd.entrydate',
+                DB::raw($doctypeCodeColumn . ' as code'),
+                'dt.description as doctype',
+                'fromOffice.officename as from_office',
+                'distOffice.officename as transferred_to',
+                'dist.distdate as transfer_date',
+                DB::raw('DATE_ADD(dist.distdate, INTERVAL 7 DAY) as due_date'),
+            ])
+            ->orderBy('dist.distdate')
+            ->limit(50)
+            ->get()
+            ->map(function ($doc) {
+                $transferDate = $doc->transfer_date ? Carbon::parse($doc->transfer_date) : null;
+                $dueDate = $transferDate ? $transferDate->copy()->addDays(7) : null;
+
+                return [
+                    'notification_type' => 'for_receiving',
+                    'IDdoc' => $doc->IDdoc,
+                    'document_no' => $doc->document_no,
+                    'subject' => $doc->subject,
+                    'entrydate' => $doc->entrydate,
+                    'code' => $doc->code,
+                    'doctype' => $doc->doctype,
+                    'from_office' => $doc->from_office,
+                    'transferred_to' => $doc->transferred_to,
+                    'transfer_date' => $doc->transfer_date,
+                    'due_date' => $dueDate ? $dueDate->format('Y-m-d H:i:s') : null,
+                    'days_since_transfer' => $transferDate ? $transferDate->diffInDays(now()) : 0,
+                    'is_overdue' => $dueDate ? now()->greaterThanOrEqualTo($dueDate) : false,
+                ];
+            })
+            ->values();
+    }
+
+    if ($currentUserId) {
+        $creatorReceivedNotifications = DB::table('document as d')
+            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
+            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
+            ->leftJoinSub($makeLatestDistribution(), 'creatorLd', function ($join) {
+                $join->on('creatorLd.IDdoc', '=', 'd.IDdoc');
+            })
+            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'creatorLd.latest_IDdist')
+            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
+            ->leftJoin('username as receiveUser', 'receiveUser.ID', '=', 'dist.confirmuser')
+            ->where('d.IDuser', $currentUserId)
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->select([
+                DB::raw("'received_by_addressee' as notification_type"),
+                'd.IDdoc',
+                'd.IDdoc as document_no',
+                'd.subject',
+                'd.entrydate',
+                DB::raw($doctypeCodeColumn . ' as code'),
+                'dt.description as doctype',
+                'fromOffice.officename as from_office',
+                'distOffice.officename as received_office',
+                'dist.distdate as transfer_date',
+                'dist.confirmdate as received_date',
+                'receiveUser.loginname as received_by',
+            ])
+            ->orderByDesc('dist.confirmdate')
+            ->limit(20)
+            ->get()
+            ->map(function ($doc) {
+                return [
+                    'notification_type' => 'received_by_addressee',
+                    'IDdoc' => $doc->IDdoc,
+                    'document_no' => $doc->document_no,
+                    'subject' => $doc->subject,
+                    'entrydate' => $doc->entrydate,
+                    'code' => $doc->code,
+                    'doctype' => $doc->doctype,
+                    'from_office' => $doc->from_office,
+                    'transferred_to' => $doc->received_office,
+                    'received_office' => $doc->received_office,
+                    'transfer_date' => $doc->transfer_date,
+                    'received_date' => $doc->received_date,
+                    'received_by' => $doc->received_by,
+                    'is_overdue' => false,
+                ];
+            })
+            ->values();
+    }
+
+    return [
+        'viewerNotifications' => $viewerNotifications,
+        'creatorReceivedNotifications' => $creatorReceivedNotifications,
+    ];
 }
 
 private function canAccessMonitoringDashboard(): bool

@@ -23,6 +23,7 @@ const props = defineProps({
             total: 0,
             for_receiving: 0,
             received: 0,
+            addressed: 0,
             returned: 0,
         }),
     },
@@ -189,6 +190,14 @@ const transferNotificationCount = computed(() => {
     return transferNotifications.value.length
 })
 
+const addressedCount = computed(() => {
+    return props.stats.addressed
+        ?? props.stats.address
+        ?? props.stats.action_taken
+        ?? props.stats.for_action
+        ?? 0
+})
+
 const forReceivingNotifications = computed(() => {
     return transferNotifications.value.filter((item) => item.notification_type !== 'received_by_addressee')
 })
@@ -215,18 +224,12 @@ const closeTransferNotificationModal = () => {
 watch(
     transferNotifications,
     (items) => {
-        // If notifications are empty, always keep the modal closed.
+        /*
+         * Notifications should no longer auto-prompt as a popup.
+         * They will stay inside the notification bell only.
+         */
         if (!items.length) {
             showTransferNotificationModal.value = false
-            return
-        }
-
-        const hasForReceiving = items.some((item) => item.notification_type !== 'received_by_addressee')
-
-        // Auto popup is only for viewer accounts with documents for receiving.
-        // Staff/admin notifications should stay inside the bell only.
-        if (isViewerAccount.value && hasForReceiving) {
-            showTransferNotificationModal.value = true
         }
     },
     { immediate: true }
@@ -261,6 +264,15 @@ const currentParams = computed(() => {
 const activeSection = computed(() => {
     return currentParams.value.get('section') || 'documents'
 })
+
+const isAllDocumentsSection = computed(() => {
+    return activeSection.value === 'all-documents'
+})
+
+const isAddressedDocumentsSection = computed(() => {
+    return activeSection.value === 'addressed-docs'
+})
+
 const activeFilter = computed(() => {
     return currentParams.value.get('filter') || ''
 })
@@ -302,6 +314,14 @@ const tableSearchPlaceholder = computed(() => {
 })
 
 const tableSearchDescription = computed(() => {
+    if (isAllDocumentsSection.value) {
+        return 'Search the complete document registry across document number, type, offices, subject, dates, status, personnel, and remarks.'
+    }
+
+    if (isAddressedDocumentsSection.value) {
+        return 'Search addressed documents that were received and already have a selected action.'
+    }
+
     return 'Search checks all visible table columns, including document number, type, offices, subject, dates, status, personnel, and remarks.'
 })
 
@@ -443,6 +463,8 @@ const pageTitle = computed(() => {
     if (activeSection.value === 'search') return 'Search'
     if (activeSection.value === 'reports') return 'Reports'
     if (activeSection.value === 'about') return 'About'
+    if (activeSection.value === 'all-documents') return 'All Documents'
+    if (activeSection.value === 'addressed-docs') return 'Addressed Documents'
     if (activeSection.value === 'incoming') return 'Incoming Documents'
     if (activeSection.value === 'outgoing') return 'Outgoing'
     if (activeSection.value === 'collaboration') return 'Incoming Documents'
@@ -455,6 +477,7 @@ const pageTitle = computed(() => {
     if (activeFilter.value === 'for-receiving') return 'For Receiving'
     if (['collab-received', 'received'].includes(activeFilter.value)) return 'Received'
     if (activeFilter.value === 'for-action') return 'For Action'
+    if (activeFilter.value === 'addressed') return 'Addressed'
     if (activeFilter.value === 'returned') return 'Returned'
 
     return 'Documents'
@@ -464,9 +487,9 @@ const isPendingDocs07 = computed(() => {
     return activeSection.value === 'pending-docs-07'
 })
 
-const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07']
+const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07', 'addressed-docs']
 const outgoingSections = ['outgoing', 'sent-docs', 'pulled-out-docs']
-const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'returned']
+const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'addressed', 'returned']
 
 const isIncomingGroup = computed(() => {
     return incomingSections.includes(activeSection.value)
@@ -536,6 +559,12 @@ const incomingTabs = computed(() => {
             count: props.stats.received ?? 0,
         },
         {
+            label: 'Addressed',
+            href: buildDtsUrl({ section: 'addressed-docs' }),
+            active: activeSection.value === 'addressed-docs' || activeFilter.value === 'addressed',
+            count: addressedCount.value,
+        },
+        {
             label: 'For Action',
             href: buildDtsUrl({ section: 'incoming', filter: 'for-action' }),
             active: activeFilter.value === 'for-action',
@@ -580,6 +609,12 @@ const collaborationTabs = computed(() => {
             href: buildDtsUrl({ section: 'incoming', filter: 'received' }),
             active: ['received', 'collab-received'].includes(activeFilter.value),
             count: props.stats.received,
+        },
+        {
+            label: 'Addressed',
+            href: buildDtsUrl({ section: 'addressed-docs' }),
+            active: activeSection.value === 'addressed-docs' || activeFilter.value === 'addressed',
+            count: addressedCount.value,
         },
         {
             label: 'For Action',
@@ -867,6 +902,20 @@ const documentStatusLabel = (doc) => {
         || doc.status_label
         || doc.status
         || '-'
+}
+
+const selectedActionLabel = (doc) => {
+    return doc.selected_action
+        || doc.action_label
+        || doc.action_name
+        || doc.selected_action_name
+        || 'No selected action'
+}
+
+const selectedActionClass = (doc) => {
+    return selectedActionLabel(doc) === 'No selected action'
+        ? 'border-slate-300 bg-slate-100 text-slate-700'
+        : 'border-cyan-300 bg-cyan-100 text-cyan-800'
 }
 
 const documentStatusClass = (doc) => {
@@ -1362,7 +1411,7 @@ const submitEntryDateUpdate = () => {
                             </h2>
 
                             <p class="mt-4 max-w-4xl text-base font-semibold leading-8 text-slate-600">
-                                Pantalan DTS is a web-based document tracking platform designed to help offices
+                                 DTS is a web-based document tracking platform designed to help offices
                                 encode, receive, route, return, monitor, and manage official documents in one
                                 organized workspace. It improves visibility of document movement and helps users
                                 quickly identify pending actions, assigned personnel, and document history.
@@ -3232,7 +3281,7 @@ const submitEntryDateUpdate = () => {
                 <!-- Stats Cards -->
                 <div
                     v-if="activeSection === 'documents'"
-                    class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-4"
+                    class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5"
                 >
                     <Link
                         :href="buildDtsUrl({})"
@@ -3313,7 +3362,36 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Click to view received documents
+                                    Received, waiting for Select Action
+                                </p>
+                            </div>
+                        </div>
+                    </Link>
+
+                    <Link
+                        :href="buildDtsUrl({ section: 'addressed-docs' })"
+                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-6 text-white shadow-xl shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                    >
+                        <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
+
+                        <div class="relative flex h-full items-start gap-5">
+                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                                📌
+                            </div>
+
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-start justify-between gap-3">
+                                    <p class="text-base font-black text-white/90">
+                                        Addressed
+                                    </p>
+                                </div>
+
+                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                    {{ addressedCount }}
+                                </p>
+
+                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                    Received documents with Selected Action
                                 </p>
                             </div>
                         </div>
@@ -3424,11 +3502,19 @@ const submitEntryDateUpdate = () => {
                         <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div>
                                 <h2 class="text-xl font-bold text-white">
-                                    Document List
+                                    {{ isAllDocumentsSection
+                                        ? 'All Documents List'
+                                        : (isAddressedDocumentsSection ? 'Addressed Documents List' : 'Document List')
+                                    }}
                                 </h2>
 
                                 <p class="mt-1 text-sm text-white">
-                                    Latest document records from the DTS database.
+                                    {{ isAllDocumentsSection
+                                        ? 'Complete registry for Role 2. Non-tagged documents are available for viewing only.'
+                                        : (isAddressedDocumentsSection
+                                            ? 'Documents that were received and already have Select Action.'
+                                            : 'Latest document records from the DTS database.')
+                                    }}
                                 </p>
                             </div>
 
@@ -3471,7 +3557,7 @@ const submitEntryDateUpdate = () => {
                                     </th>
 
                                     <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
-                                        STATUS
+                                        {{ isAddressedDocumentsSection ? 'SELECTED ACTION' : 'STATUS' }}
                                     </th>
 
                                     <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
@@ -3513,10 +3599,17 @@ const submitEntryDateUpdate = () => {
                                     <td class="px-4 py-5 text-center align-top">
                                         <span
                                             class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
-                                            :class="documentStatusClass(doc)"
+                                            :class="isAddressedDocumentsSection ? selectedActionClass(doc) : documentStatusClass(doc)"
                                         >
-                                            {{ documentStatusLabel(doc) }}
+                                            {{ isAddressedDocumentsSection ? selectedActionLabel(doc) : documentStatusLabel(doc) }}
                                         </span>
+
+                                        <p
+                                            v-if="isAddressedDocumentsSection && doc.selected_action_date"
+                                            class="mt-2 text-[11px] font-semibold text-slate-500"
+                                        >
+                                            {{ formatDateTime(doc.selected_action_date) }}
+                                        </p>
                                     </td>
 
                                     <td class="px-4 py-5 text-center align-top">

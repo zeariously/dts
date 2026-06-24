@@ -2652,7 +2652,7 @@ const submitEntryDateUpdate = () => {
 
                         <p class="mt-2 text-sm font-medium text-black">
                             {{ activeSection === 'incoming' && !activeFilter
-                                ? 'List of incoming documents with current statusssss.'
+                                ? 'List of incoming documents with current status.'
                                 : 'List of documents for receiving.'
                             }}
                         </p>
@@ -3274,7 +3274,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Click to view pending receiving
+                                    Click to view pending receivingsssss
                                 </p>
                             </div>
                         </div>
