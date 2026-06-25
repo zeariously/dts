@@ -1167,27 +1167,29 @@ const formatFileSize = (bytes) => {
     <div class="min-h-screen bg-slate-100">
         <!-- Header -->
         <header class="border-b border-slate-200 bg-white">
-            <div class="mx-auto flex max-w-screen-2xl flex-col gap-3 px-6 py-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
+            <div class="mx-auto max-w-screen-2xl px-6 py-4">
+                <div class="flex min-w-0 flex-col gap-3">
                     <p class="text-xs font-black uppercase tracking-[0.24em] text-blue-600">
                         Document Tracking System
                     </p>
 
-                    <h1 class="mt-1 text-2xl font-black tracking-tight text-slate-950">
-                        Document Details
-                    </h1>
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <h1 class="text-2xl font-black tracking-tight text-slate-950">
+                            Document Details
+                        </h1>
 
-                    <p class="mt-1 text-sm font-semibold text-slate-500">
-                        Compact document workspace with actions, files, and remarks.
+                        <Link
+                            href="/dts"
+                            class="inline-flex w-fit items-center justify-center rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 shadow-sm hover:border-blue-300 hover:bg-blue-100"
+                        >
+                            ← Back to Homepage
+                        </Link>
+                    </div>
+
+                    <p class="text-sm font-semibold text-slate-500">
+                        Document workspace with quick actions, files, and remarks.
                     </p>
                 </div>
-
-                <Link
-                    href="/dts"
-                    class="inline-flex w-fit items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-black text-slate-700 shadow-sm hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-                >
-                    ← Back to Homepage
-                </Link>
             </div>
         </header>
 
@@ -1287,9 +1289,9 @@ const formatFileSize = (bytes) => {
             <!-- Info Cards -->
             <section class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div class="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-600">
-                        From
-                    </p>
+                  <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
+                    From
+                </p>
 
                     <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
                         {{ fromOfficeDisplay }}
@@ -1297,14 +1299,14 @@ const formatFileSize = (bytes) => {
 
                     <p
                         v-if="hasFilledValue(fromNameDisplay)"
-                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-500"
+                        class="mt-1 break-words text-sm font-extrabold leading-5 text-slate-600"
                     >
                         Name: {{ fromNameDisplay }}
                     </p>
                 </div>
 
                 <div class="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-emerald-600">
+                    <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
                         To
                     </p>
 
@@ -1313,15 +1315,15 @@ const formatFileSize = (bytes) => {
                     </p>
 
                     <p
-                        v-if="hasFilledValue(toNameDisplay)"
-                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-500"
+                         v-if="hasFilledValue(toNameDisplay)"
+                         class="mt-1 break-words text-sm font-extrabold leading-5 text-slate-600"
                     >
                         Name: {{ toNameDisplay }}
                     </p>
                 </div>
 
                 <div class="rounded-2xl border border-purple-100 bg-white p-4 shadow-sm">
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-purple-600">
+                    <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
                         Type
                     </p>
 
@@ -1331,7 +1333,7 @@ const formatFileSize = (bytes) => {
                 </div>
 
                 <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                    <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
                         Entry Date
                     </p>
 
@@ -1353,37 +1355,31 @@ const formatFileSize = (bytes) => {
                                 </p>
 
                                 <h3 class="mt-1 text-xl font-black text-slate-950">
-                                    Summary Details
+                                    Key Details
                                 </h3>
                             </div>
 
                           
                         </div>
 
-                        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                            <div class="rounded-2xl bg-slate-50 p-4">
-                                <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
-                                    Classification
-                                </p>
+                        <!-- Compact key details: status is already shown in the top badge -->
+                        <div class="grid grid-cols-1 gap-4 xl:grid-cols-[0.75fr_1fr_1.45fr]">
+                            <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
+                                        Classification
+                                    </p>
+
+                                    <span class="rounded-full bg-white px-3 py-1 text-[11px] font-black text-blue-700">
+                                        Class
+                                    </span>
+                                </div>
 
                                 <p class="mt-2 text-sm font-black text-slate-950">
                                     {{ classificationLabel }}
                                 </p>
                             </div>
 
-                            <div class="rounded-2xl bg-slate-50 p-4">
-                                <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
-                                    Current Status
-                                </p>
-
-                                <p class="mt-2 text-sm font-black text-slate-950">
-                                    {{ currentWorkflowStatus || 'No status' }}
-                                </p>
-                            </div>
-                        </div>
-
-                        <!-- Staff Concern + Current Remarks only: compact height -->
-                        <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
                             <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                                 <div class="flex items-center justify-between gap-3">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
@@ -1400,38 +1396,38 @@ const formatFileSize = (bytes) => {
                                 </p>
                             </div>
 
-                            <div class="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+                            <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                                 <div class="flex items-center justify-between gap-3">
-                                    <p class="text-xs font-black uppercase tracking-[0.18em] text-indigo-700">
+                                    <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
                                         Current Remarks
                                     </p>
 
-                                    <span class="rounded-full bg-white px-3 py-1 text-[11px] font-black text-indigo-700">
+                                    <span class="rounded-full bg-white px-3 py-1 text-[11px] font-black text-blue-700">
                                         Latest
                                     </span>
                                 </div>
 
-                                <p class="mt-2 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
+                                <p class="mt-2 max-h-28 overflow-y-auto whitespace-pre-line break-words pr-1 text-sm font-semibold leading-6 text-slate-800">
                                     {{ hasFilledValue(currentRemarksDisplay) ? currentRemarksDisplay : 'No current remarks.' }}
                                 </p>
                             </div>
                         </div>
 
                         <!-- Add Remarks below Staff Concern and Current Remarks -->
-                        <div class="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                        <div class="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                             <div class="mb-3 flex items-center justify-between gap-3">
                                 <div>
-                                    <p class="text-xs font-black uppercase tracking-[0.18em] text-emerald-700">
+                                    <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-700">
                                         Add Remarks
                                     </p>
 
-                                    <p class="mt-1 text-xs font-semibold text-emerald-700">
-                                        Add new remarks for this document.
+                                    <p class="mt-1 text-xs font-semibold text-slate-500">
+                                        Add a short note or update for this document.
                                     </p>
                                 </div>
 
-                                <span class="rounded-full bg-white px-3 py-1 text-[11px] font-black text-emerald-700">
-                                    New Note
+                                <span class="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-600">
+                                    Optional Note
                                 </span>
                             </div>
 
@@ -1439,7 +1435,7 @@ const formatFileSize = (bytes) => {
                                 <textarea
                                     v-model="remarkForm.remarks"
                                     rows="3"
-                                    class="w-full resize-none rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                    class="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100"
                                     placeholder="Type new remarks here..."
                                 ></textarea>
 
@@ -1453,7 +1449,7 @@ const formatFileSize = (bytes) => {
                                 <div class="mt-3 flex justify-end">
                                     <button
                                         type="button"
-                                        class="rounded-xl bg-emerald-600 px-6 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                                        class="rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60"
                                         :disabled="remarkForm.processing"
                                         @click="addRemark"
                                     >
@@ -1464,7 +1460,7 @@ const formatFileSize = (bytes) => {
 
                             <div
                                 v-else
-                                class="rounded-xl border border-dashed border-emerald-200 bg-white px-4 py-6 text-center"
+                                class="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center"
                             >
                                 <p class="text-sm font-black text-slate-600">
                                     Remarks action is not available for this access level.

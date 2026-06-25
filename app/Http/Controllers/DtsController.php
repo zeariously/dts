@@ -927,6 +927,8 @@ public function index(Request $request)
 {
     $this->ensureCanManageDts();
     
+    $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
+
     $request->merge([
         'classification' => $request->input('classification_id', $request->input('classification')),
         'IDdoctype' => $request->input('type_id', $request->input('IDdoctype')),
@@ -957,7 +959,7 @@ public function index(Request $request)
         'attachments' => ['nullable', 'array'],
         'attachments.*.type_id' => ['nullable', 'integer'],
         'attachments.*.type_name' => ['nullable', 'string', 'max:255'],
-        'attachments.*.file' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', 'max:10240'],
+        'attachments.*.file' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', "max:{$maxPdfKilobytes}"],
     ]);
 
     $entryDate = now()->format('Y-m-d H:i:s');
@@ -1383,19 +1385,6 @@ public function index(Request $request)
         ),
     ];
 
-    /*
-     * SUPER STRICT ACTION HISTORY FIX:
-     *
-     * The modal must only show history that belongs to THIS document.
-     * This payload is built only from queries filtered by:
-     * - distribution.IDdoc = $document->IDdoc
-     * - dts_document_remarks.IDdoc = $document->IDdoc
-     * - dts_document_files.IDdoc = $document->IDdoc
-     *
-     * It does NOT use general activity_logs.
-     * It also skips the first distribution as "Transferred Document" because that
-     * first distribution is created together with a new document.
-     */
     $actionHistory = collect();
 
     $addHistory = function (
@@ -2783,14 +2772,17 @@ public function storeAttachment(Request $request, $id)
      */
     $this->ensureViewerCanReattachDocument((int) $id);
 
+    $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
+
     $validated = $request->validate([
         'attachments' => ['required', 'array', 'min:1'],
-        'attachments.*' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', 'max:10240'],
+        'attachments.*' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', "max:{$maxPdfKilobytes}"],
         'remarks' => ['nullable', 'string', 'max:2000'],
     ], [
         'attachments.required' => 'Please select at least one PDF file.',
         'attachments.*.mimes' => 'Only PDF files are allowed.',
         'attachments.*.mimetypes' => 'Only PDF files are allowed.',
+        'attachments.*.max' => 'Each PDF file must not exceed 500MB.',
     ]);
 
     /*

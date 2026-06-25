@@ -38,6 +38,9 @@ const attachedFiles = ref([])
 const fileInputKey = ref(0)
 const attachmentError = ref('')
 
+const MAX_FILE_SIZE_MB = 500
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 
 const officeOptions = computed(() => {
     const seen = new Set()
@@ -147,6 +150,14 @@ const handleFileChange = (event) => {
         attachedFiles.value = []
         syncAttachmentsToForm()
         attachmentError.value = 'PDF file only. Please select a PDF document.'
+        fileInputKey.value += 1
+        return
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+        attachedFiles.value = []
+        syncAttachmentsToForm()
+        attachmentError.value = `Maximum file size is ${MAX_FILE_SIZE_MB}MB per PDF.`
         fileInputKey.value += 1
         return
     }
@@ -548,7 +559,7 @@ const submitForm = () => {
                         />
 
                         <p class="mt-2 text-xs font-semibold text-slate-500">
-                            PDF file only. Please select one PDF document.
+                            PDF file only. Maximum 500MB per PDF document.
                         </p>
 
                         <p
