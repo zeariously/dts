@@ -59,6 +59,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    nextDocumentId: {
+        type: [Number, String],
+        default: null,
+    },
     viewerNotifications: {
         type: Array,
         default: () => [],
@@ -935,6 +939,10 @@ const documentStatusClass = (doc) => {
 
     if (status.includes('pending')) {
         return 'border-yellow-300 bg-yellow-100 text-yellow-900'
+    }
+
+    if (status.includes('completed') || status.includes('complete') || status.includes('cleared') || status.includes('approved')) {
+        return 'border-green-300 bg-green-100 text-green-800'
     }
 
     if (status.includes('return')) {
@@ -3391,7 +3399,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Received documents with Selected Action
+                                    Received documents with Select Action
                                 </p>
                             </div>
                         </div>
@@ -3776,6 +3784,7 @@ const submitEntryDateUpdate = () => {
             :classifications="props.classifications"
             :attachments="props.attachments"
             :staff-concerns="props.staffConcerns"
+            :next-document-id="props.nextDocumentId"
             @close="closeAddDocumentModal"
         />
 

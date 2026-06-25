@@ -553,8 +553,10 @@ const entryDateDisplay = computed(() => {
 
 const toOfficeDisplay = computed(() => {
     return getFirstFilled(
-        props.document.for_office,
+        props.document.to_office_name,
+        props.document.for_office_name,
         props.document.to_office,
+        props.document.for_office,
         props.document.recipient_office,
         props.document.office_to,
         props.document.IDfor ? `Office #${props.document.IDfor}` : null
@@ -563,6 +565,8 @@ const toOfficeDisplay = computed(() => {
 
 const fromOfficeDisplay = computed(() => {
     return getFirstFilled(
+        props.document.from_office_name,
+        props.document.sender_office_name,
         props.document.from_office,
         props.document.sender_office,
         props.document.office_from,
@@ -1287,19 +1291,12 @@ const formatFileSize = (bytes) => {
             <!-- Info Cards -->
             <section class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div class="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm">
-                  <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
-                    From
-                </p>
-
-                    <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
-                        {{ fromOfficeDisplay }}
+                    <p class="text-sm font-black uppercase tracking-[0.12em] text-blue-800">
+                        From
                     </p>
 
-                    <p
-                        v-if="hasFilledValue(fromNameDisplay)"
-                        class="mt-1 break-words text-sm font-extrabold leading-5 text-slate-600"
-                    >
-                        Name: {{ fromNameDisplay }}
+                    <p class="mt-2 break-words text-base font-black leading-6 text-slate-950">
+                        {{ fromOfficeDisplay }}
                     </p>
                 </div>
 
@@ -1308,15 +1305,8 @@ const formatFileSize = (bytes) => {
                         To
                     </p>
 
-                    <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
+                    <p class="mt-2 break-words text-base font-black leading-6 text-slate-950">
                         {{ toOfficeDisplay }}
-                    </p>
-
-                    <p
-                         v-if="hasFilledValue(toNameDisplay)"
-                         class="mt-1 break-words text-sm font-extrabold leading-5 text-slate-600"
-                    >
-                        Name: {{ toNameDisplay }}
                     </p>
                 </div>
 

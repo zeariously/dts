@@ -28,6 +28,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    nextDocumentId: {
+        type: [Number, String],
+        default: null,
+    },
 })
 
 const emit = defineEmits(['close'])
@@ -112,6 +116,12 @@ const form = useForm({
     remarks: '',
     staff_concern_id: '',
     attachments: [],
+})
+
+const nextDocumentIdDisplay = computed(() => {
+    const value = String(props.nextDocumentId ?? '').trim()
+
+    return value ? `DTS - ${value}` : 'Generating...'
 })
 
 
@@ -327,6 +337,16 @@ const submitForm = () => {
                     <p class="mt-1 text-sm text-slate-500">
                         Fill out the document details below.
                     </p>
+
+                    <div class="mt-3 inline-flex items-center gap-2 rounded-full border border-green-200 bg-green-50 px-3 py-1.5">
+                        <span class="text-xs font-black uppercase tracking-[0.16em] text-green-700">
+                            Doc ID
+                        </span>
+
+                        <span class="text-sm font-black text-green-900">
+                            {{ nextDocumentIdDisplay }}
+                        </span>
+                    </div>
                 </div>
 
                 <button

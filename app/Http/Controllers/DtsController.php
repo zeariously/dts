@@ -558,6 +558,13 @@ public function index(Request $request)
                 $doc->workflow_status = 'For Receiving';
             } elseif ((int) ($doc->IDdocstatus ?? 0) === 7) {
                 $doc->workflow_status = 'Pending 07';
+            } elseif ((int) ($doc->IDdocstatus ?? 0) === 6) {
+                /*
+                 * Legacy/imported documents may not have distribution workflow rows.
+                 * If the document status is Completed, show it as Completed instead
+                 * of falling back to Pending.
+                 */
+                $doc->workflow_status = 'Completed';
             } else {
                 $doc->workflow_status = 'Pending';
             }
@@ -906,6 +913,7 @@ public function index(Request $request)
                 ->get()
             : [],
         'staffConcerns' => $staffConcernsForDropdown,
+        'nextDocumentId' => ((int) DB::table('document')->max('IDdoc')) + 1,
         ...$this->dtsNotificationProps(),
     ]);
 }
@@ -999,15 +1007,21 @@ public function index(Request $request)
             ->select(['ID', 'name', 'IDoffice'])
             ->first();
 
-        if (! $selectedPersonnel || empty($selectedPersonnel->IDoffice)) {
+        if (! $selectedPersonnel) {
             return back()
                 ->withErrors([
-                    'IDkeeper' => 'Selected staff concern does not have an assigned office.',
+                    'IDkeeper' => 'Selected staff concern was not found.',
                 ])
                 ->withInput();
         }
 
-        $validated['IDfor'] = (int) $selectedPersonnel->IDoffice;
+        /*
+         * IMPORTANT:
+         * Do not overwrite To Office with the Staff Concern office.
+         *
+         * IDfor must always be the office selected in the To Office dropdown.
+         * IDkeeper is only the assigned/tagged personnel.
+         */
     }
 
     $document = DB::transaction(function () use ($request, $validated, $entryDate, $defaultDocStatusId) {
@@ -1356,6 +1370,13 @@ public function index(Request $request)
         $currentWorkflowStatus = 'For Receiving';
     } elseif ((int) ($document->IDdocstatus ?? 0) === 7) {
         $currentWorkflowStatus = 'Pending 07';
+    } elseif ((int) ($document->IDdocstatus ?? 0) === 6) {
+        /*
+         * Legacy/imported documents may not have distribution workflow rows.
+         * If the document status is Completed, show it as Completed instead
+         * of falling back to Pending.
+         */
+        $currentWorkflowStatus = 'Completed';
     }
 
     $latestTransferDate = ! empty($latestDistributionForSummary?->distdate)
