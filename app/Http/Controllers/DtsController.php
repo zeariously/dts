@@ -1385,6 +1385,19 @@ public function index(Request $request)
         ),
     ];
 
+    /*
+     * SUPER STRICT ACTION HISTORY FIX:
+     *
+     * The modal must only show history that belongs to THIS document.
+     * This payload is built only from queries filtered by:
+     * - distribution.IDdoc = $document->IDdoc
+     * - dts_document_remarks.IDdoc = $document->IDdoc
+     * - dts_document_files.IDdoc = $document->IDdoc
+     *
+     * It does NOT use general activity_logs.
+     * It also skips the first distribution as "Transferred Document" because that
+     * first distribution is created together with a new document.
+     */
     $actionHistory = collect();
 
     $addHistory = function (
@@ -3099,6 +3112,36 @@ public function monitoringDashboard(Request $request)
         $selectedYear = '';
     }
 
+    $hasAddressedActionTables = Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn('dts_document_remarks', 'action_type')
+        && Schema::hasTable('dts_action_types');
+
+    $latestAddressedAction = null;
+    $addressedActionLabelExpression = "'Addressed'";
+    $addressedSelectFields = [
+        DB::raw("'Addressed' as latest_action_label"),
+        DB::raw('NULL as latest_action_at'),
+    ];
+
+    if ($hasAddressedActionTables) {
+        $latestAddressedAction = DB::table('dts_document_remarks as addressedLatest')
+            ->select([
+                'addressedLatest.IDdoc',
+                DB::raw('MAX(addressedLatest.id) as latest_addressed_action_id'),
+            ])
+            ->where('addressedLatest.action_type', 'action_taken')
+            ->groupBy('addressedLatest.IDdoc');
+
+        $addressedActionLabelExpression = Schema::hasColumn('dts_document_remarks', 'action_label')
+            ? "COALESCE(addressedRemark.action_label, addressedActionType.name, 'Addressed')"
+            : "COALESCE(addressedActionType.name, 'Addressed')";
+
+        $addressedSelectFields = [
+            DB::raw($addressedActionLabelExpression . ' as latest_action_label'),
+            'addressedRemark.created_at as latest_action_at',
+        ];
+    }
+
     /*
      * Main table: simplified list of document transactions.
      * Columns needed in Vue:
@@ -3108,6 +3151,14 @@ public function monitoringDashboard(Request $request)
         ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
         ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
+        ->when($hasAddressedActionTables, function ($query) use ($latestAddressedAction) {
+            $query
+                ->leftJoinSub($latestAddressedAction, 'latestAddressedAction', function ($join) {
+                    $join->on('latestAddressedAction.IDdoc', '=', 'd.IDdoc');
+                })
+                ->leftJoin('dts_document_remarks as addressedRemark', 'addressedRemark.id', '=', 'latestAddressedAction.latest_addressed_action_id')
+                ->leftJoin('dts_action_types as addressedActionType', 'addressedActionType.id', '=', 'addressedRemark.action_type_id');
+        })
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
         })
@@ -3124,6 +3175,7 @@ public function monitoringDashboard(Request $request)
             'd.IDkeeper',
             'dt.description as document_type',
             'assignedPersonnel.name as assigned_personnel',
+            ...$addressedSelectFields,
             DB::raw("\n                CASE\n                    WHEN dist.confirmdate IS NULL\n                         AND dist.distdate IS NOT NULL\n                         AND (dist.YNreturn IS NULL OR dist.YNreturn NOT IN ('True', 'true', 'Y', 'y', '1'))\n                         AND (dist.YNpulled IS NULL OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1'))\n                    THEN DATEDIFF(NOW(), dist.distdate)\n                    ELSE 0\n                END as days_pending\n            "),
         ]);
 
@@ -3131,12 +3183,18 @@ public function monitoringDashboard(Request $request)
         $searchLike = "%{$search}%";
         $statusSearch = strtolower($search);
 
-        $transactionsQuery->where(function ($query) use ($searchLike, $statusSearch, $trueValues) {
+        $transactionsQuery->where(function ($query) use ($searchLike, $statusSearch, $trueValues, $hasAddressedActionTables, $addressedActionLabelExpression) {
             $query->where('d.IDdoc', 'like', $searchLike)
                 ->orWhere('d.subject', 'like', $searchLike)
                 ->orWhere('dt.description', 'like', $searchLike)
                 ->orWhere('assignedPersonnel.name', 'like', $searchLike)
                 ->orWhere('dist.IDdist', 'like', $searchLike)
+                ->when($hasAddressedActionTables, function ($query) use ($searchLike, $addressedActionLabelExpression) {
+                    $query
+                        ->orWhere('addressedRemark.remarks', 'like', $searchLike)
+                        ->orWhere('addressedActionType.name', 'like', $searchLike)
+                        ->orWhereRaw($addressedActionLabelExpression . ' LIKE ?', [$searchLike]);
+                })
                 ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(d.entrydate, '%b %e, %Y') LIKE ?", [$searchLike])
@@ -3198,6 +3256,21 @@ public function monitoringDashboard(Request $request)
 
     if ($status === 'received') {
         $transactionsQuery->whereNotNull('dist.confirmdate');
+    }
+
+    if ($status === 'addressed') {
+        if ($hasAddressedActionTables) {
+            $transactionsQuery
+                ->whereNotNull('dist.confirmdate')
+                ->whereExists(function ($query) {
+                    $query->select(DB::raw(1))
+                        ->from('dts_document_remarks as addressedFilterRemarks')
+                        ->whereColumn('addressedFilterRemarks.IDdoc', 'd.IDdoc')
+                        ->where('addressedFilterRemarks.action_type', 'action_taken');
+                });
+        } else {
+            $transactionsQuery->whereRaw('1 = 0');
+        }
     }
 
     if ($status === 'returned') {
@@ -3373,7 +3446,7 @@ public function monitoringDashboard(Request $request)
             'remarksTable.remarks',
             'remarksTable.created_at',
             'remarkUser.loginname as actor_name',
-            DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Action Taken') as action_label"),
+            DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Addressed') as action_label"),
         ];
 
         $actionTakenBase = DB::table('dts_document_remarks as remarksTable')

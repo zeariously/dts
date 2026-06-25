@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { router, usePage } from '@inertiajs/vue3'
+import { Head, router, usePage } from '@inertiajs/vue3'
 
 const props = defineProps({
     stats: {
@@ -154,7 +154,7 @@ const actionTakenRows = computed(() => {
 
         const actionItem = {
             id: item.id,
-            action_label: item.action_label || 'Action Taken',
+            action_label: item.action_label || 'Addressed',
             remarks: item.remarks || '',
             actor_name: item.actor_name || '-',
             created_at: item.created_at || null,
@@ -250,6 +250,11 @@ const statusOptions = [
         shortLabel: 'Received',
     },
     {
+        label: 'Addressed',
+        value: 'addressed',
+        shortLabel: 'Addressed',
+    },
+    {
         label: 'Returned',
         value: 'returned',
         shortLabel: 'Returned',
@@ -263,6 +268,10 @@ const statusOptions = [
 
 const activeStatusLabel = computed(() => {
     return statusOptions.find((item) => item.value === status.value)?.label || 'Overview'
+})
+
+const isAddressedView = computed(() => {
+    return status.value === 'addressed'
 })
 
 const documentSectionTitle = computed(() => {
@@ -324,6 +333,11 @@ const resetFilters = () => {
     )
 }
 
+const clearSearch = () => {
+    search.value = ''
+    submitFilters()
+}
+
 watch(search, () => {
     if (skipNextSearchWatch) {
         skipNextSearchWatch = false
@@ -335,7 +349,7 @@ watch(search, () => {
 
     searchTimer = setTimeout(() => {
         submitFilters()
-    }, 500)
+    }, 350)
 })
 
 onBeforeUnmount(() => {
@@ -426,6 +440,8 @@ const daysPendingClass = (days) => {
 </script>
 
 <template>
+    <Head title="Monitoring Dashboard" />
+
     <div class="min-h-screen bg-[#f4f8ff]">
         <!-- Top Bar -->
         <header class="sticky top-0 z-30 border-b border-blue-100 bg-white/90 px-4 py-3 shadow-sm backdrop-blur-xl sm:px-6 lg:px-8">
@@ -550,94 +566,7 @@ const daysPendingClass = (days) => {
             </div>
         </header>
 
-        <main class="mx-auto grid max-w-[1700px] grid-cols-1 gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[360px_1fr] lg:px-8">
-            <!-- Left Summary Panel -->
-            <aside class="space-y-5">
-                <!-- Pending Queue -->
-                <section class="overflow-hidden rounded-[2rem] bg-white shadow-sm ring-1 ring-blue-100">
-                    <div class="bg-blue-600 px-5 py-5 text-white">
-                        <div class="flex items-center justify-between gap-3">
-                            <div>
-                                <p class="text-xs font-black uppercase tracking-[0.2em] text-blue-100">
-                                    Pending Queue
-                                </p>
-
-                                <h3 class="mt-1 text-xl font-black">
-                                    People needing action
-                                </h3>
-                            </div>
-
-                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 text-2xl ring-1 ring-white/20">
-                                👥
-                            </div>
-                        </div>
-
-                        <p class="mt-3 text-xs font-semibold leading-5 text-blue-100">
-                            Quick preview of personnel with the longest pending documents.
-                        </p>
-                    </div>
-
-                    <div class="p-5">
-                        <div
-                            v-if="topPendingPeople.length"
-                            class="space-y-3"
-                        >
-                            <button
-                                v-for="person in topPendingPeople"
-                                :key="`queue-${person.personnel_id || 'unassigned'}-${person.personnel_name}`"
-                                type="button"
-                                class="w-full rounded-2xl border border-blue-100 bg-blue-50/60 p-4 text-left transition hover:border-blue-200 hover:bg-blue-50"
-                                @click="openPendingModal"
-                            >
-                                <div class="flex items-start justify-between gap-3">
-                                    <div class="min-w-0">
-                                        <p class="truncate text-sm font-black text-slate-900">
-                                            {{ person.personnel_name || 'Unassigned' }}
-                                        </p>
-
-                                        <p class="mt-1 text-xs font-semibold text-slate-500">
-                                            {{ pendingCount(person) }} pending document(s)
-                                        </p>
-                                    </div>
-
-                                    <span
-                                        class="shrink-0 rounded-full border px-3 py-1.5 text-xs font-black"
-                                        :class="daysPendingClass(person.max_days_pending)"
-                                    >
-                                        {{ person.max_days_pending ?? 0 }} day(s)
-                                    </span>
-                                </div>
-                            </button>
-                        </div>
-
-                        <div
-                            v-else
-                            class="rounded-2xl bg-emerald-50 px-5 py-8 text-center ring-1 ring-emerald-100"
-                        >
-                            <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm">
-                                ✅
-                            </div>
-
-                            <h3 class="mt-4 text-base font-black text-emerald-800">
-                                No pending action
-                            </h3>
-
-                            <p class="mt-2 text-xs font-semibold leading-5 text-emerald-700">
-                                Everything looks clear for now.
-                            </p>
-                        </div>
-
-                        <button
-                            type="button"
-                            class="mt-5 w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-blue-100 transition hover:bg-blue-700"
-                            @click="openPendingModal"
-                        >
-                            Open Full Pending Monitoring
-                        </button>
-                    </div>
-                </section>
-            </aside>
-
+        <main class="mx-auto max-w-[1700px] px-4 py-6 sm:px-6 lg:px-8">
             <!-- Main Workspace -->
             <section class="space-y-5">
                 <!-- Stats Cards -->
@@ -693,15 +622,15 @@ const daysPendingClass = (days) => {
                     <button
                         type="button"
                         class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
-                        @click="openActionTakenModal"
+                        @click="setStatus('addressed')"
                     >
                         <div class="flex items-center justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-2xl">
-                                ☑️
+                                📌
                             </div>
 
                             <span class="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
-                                Actions
+                                Addressed
                             </span>
                         </div>
 
@@ -710,7 +639,7 @@ const daysPendingClass = (days) => {
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
-                            Action Taken
+                            Addressed
                         </p>
 
                     </button>
@@ -775,6 +704,10 @@ const daysPendingClass = (days) => {
                             <h2 class="mt-1 text-lg font-black text-slate-900">
                                 Find a document
                             </h2>
+
+                            <p class="mt-1 text-xs font-semibold text-slate-500">
+                                Search runs automatically while typing.
+                            </p>
                         </div>
 
                         <div class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700">
@@ -783,7 +716,7 @@ const daysPendingClass = (days) => {
                     </div>
 
                     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                        <div class="lg:col-span-6">
+                        <div class="lg:col-span-8">
                             <label class="mb-2 block text-xs font-black uppercase tracking-[0.18em] text-slate-500">
                                 Search
                             </label>
@@ -793,12 +726,22 @@ const daysPendingClass = (days) => {
                                     v-model="search"
                                     type="text"
                                     placeholder="Search Document ID, subject, or assigned personnel..."
-                                    class="w-full rounded-2xl border border-blue-100 bg-blue-50/60 px-5 py-3.5 pl-11 text-sm font-semibold text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                                    class="w-full rounded-2xl border border-blue-100 bg-blue-50/60 px-5 py-3.5 pl-11 pr-12 text-sm font-semibold text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
                                 />
 
                                 <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
                                     🔍
                                 </span>
+
+                                <button
+                                    v-if="search"
+                                    type="button"
+                                    class="absolute right-3 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-xl bg-white text-sm font-black text-slate-500 shadow-sm ring-1 ring-blue-100 transition hover:bg-blue-50 hover:text-blue-700"
+                                    title="Clear search"
+                                    @click="clearSearch"
+                                >
+                                    ×
+                                </button>
                             </div>
                         </div>
 
@@ -842,23 +785,7 @@ const daysPendingClass = (days) => {
                             </select>
                         </div>
 
-                        <div class="flex items-end gap-2 lg:col-span-2">
-                            <button
-                                type="button"
-                                class="w-full rounded-2xl bg-blue-600 px-4 py-3.5 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
-                                @click="submitFilters"
-                            >
-                                Apply
-                            </button>
 
-                            <button
-                                type="button"
-                                class="w-full rounded-2xl border border-blue-100 bg-white px-4 py-3.5 text-sm font-black text-slate-600 transition hover:bg-slate-50"
-                                @click="resetFilters"
-                            >
-                                Reset
-                            </button>
-                        </div>
                     </div>
                 </section>
 
@@ -880,6 +807,15 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <div class="flex flex-wrap gap-2">
+                            <button
+                                v-if="status === 'no-action'"
+                                type="button"
+                                class="rounded-full bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
+                                @click="openPendingModal"
+                            >
+                                View by Personnel
+                            </button>
+
                             <span class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700 ring-1 ring-blue-100">
                                 {{ documentRows.length }} shown
                             </span>
@@ -907,7 +843,7 @@ const daysPendingClass = (days) => {
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-center">
-                                        Days Pending
+                                        {{ isAddressedView ? 'Selected Action' : 'Days Pending' }}
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-right">
@@ -942,12 +878,27 @@ const daysPendingClass = (days) => {
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
-                                        <span
-                                            class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
-                                            :class="daysPendingClass(document.days_pending)"
-                                        >
-                                            {{ document.days_pending ?? 0 }} day(s)
-                                        </span>
+                                        <template v-if="isAddressedView">
+                                            <span class="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700">
+                                                {{ document.latest_action_label || document.selected_action || 'Addressed' }}
+                                            </span>
+
+                                            <p
+                                                v-if="document.latest_action_at"
+                                                class="mt-2 text-[11px] font-bold text-slate-500"
+                                            >
+                                                {{ formatDate(document.latest_action_at) }}
+                                            </p>
+                                        </template>
+
+                                        <template v-else>
+                                            <span
+                                                class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
+                                                :class="daysPendingClass(document.days_pending)"
+                                            >
+                                                {{ document.days_pending ?? 0 }} day(s)
+                                            </span>
+                                        </template>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-right align-top">
@@ -1021,7 +972,7 @@ const daysPendingClass = (days) => {
             </section>
         </main>
 
-        <!-- Action Taken Modal -->
+        <!-- Addressed Modal -->
         <div
             v-if="showActionTakenModal"
             class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
@@ -1032,15 +983,15 @@ const daysPendingClass = (days) => {
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                             <p class="text-xs font-black uppercase tracking-[0.22em] text-indigo-100">
-                                Action Taken
+                                Addressed
                             </p>
 
                             <h2 class="mt-2 text-2xl font-black">
-                                Documents with Action Taken
+                                Addressed Documents
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-indigo-100">
-                                Review Action Taken records by document for monitoring.
+                                Review addressed documents by document for monitoring.
                             </p>
                         </div>
 
@@ -1058,7 +1009,7 @@ const daysPendingClass = (days) => {
                     <div class="mb-5 grid grid-cols-1 gap-3 md:grid-cols-2">
                         <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-indigo-100">
                             <p class="text-xs font-black uppercase tracking-[0.18em] text-indigo-600">
-                                Total Actions
+                                Total Addressed
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-indigo-800">
@@ -1085,7 +1036,7 @@ const daysPendingClass = (days) => {
                                         </span>
 
                                         <span class="rounded-full bg-indigo-600 px-3 py-1 text-xs font-black text-white">
-                                            {{ item.actions?.length || 0 }} action(s) taken
+                                            {{ item.actions?.length || 0 }} addressed action(s)
                                         </span>
 
                                         <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
@@ -1099,8 +1050,8 @@ const daysPendingClass = (days) => {
 
                                     <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-600 md:grid-cols-3">
                                         <p>
-                                            <span class="text-slate-900">Latest Action:</span>
-                                            {{ item.latest_action_label || 'Action Taken' }}
+                                            <span class="text-slate-900">Selected Action:</span>
+                                            {{ item.latest_action_label || 'Addressed' }}
                                         </p>
 
                                         <p>
@@ -1130,7 +1081,7 @@ const daysPendingClass = (days) => {
                                         >
                                             <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                                                 <p class="text-sm font-black text-indigo-700">
-                                                    {{ action.action_label || 'Action Taken' }}
+                                                    {{ action.action_label || 'Addressed' }}
                                                 </p>
 
                                                 <p class="text-xs font-bold text-slate-500">
@@ -1170,11 +1121,11 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <h3 class="mt-4 text-lg font-black text-slate-900">
-                            No action taken records
+                            No addressed records
                         </h3>
 
                         <p class="mt-2 text-sm font-semibold text-slate-600">
-                            Documents with saved Action Taken records will appear here.
+                            Addressed document records will appear here.
                         </p>
                     </div>
                 </div>
