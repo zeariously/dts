@@ -84,8 +84,31 @@ const canRemarkDts = computed(() => {
     return Boolean(props.canRemarkDts)
 })
 
+const isDocumentClosedOrEnded = computed(() => {
+    const status = String(currentWorkflowStatus.value || '').toLowerCase()
+
+    /*
+     * End-process statuses: hide Select Action, Transfer, and Return.
+     * These are the states where the document should no longer be acted on
+     * by the current tagged user.
+     */
+    return status.includes('completed')
+        || status.includes('complete')
+        || status.includes('cleared')
+        || status.includes('closed')
+        || status.includes('filed')
+        || status.includes('final')
+        || status.includes('done')
+        || status.includes('pulled')
+        || status.includes('returned')
+})
+
 const isDocumentReceivedForAction = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
+
+    if (isDocumentClosedOrEnded.value) {
+        return false
+    }
 
     return status.includes('received')
         || status.includes('for action')
@@ -94,6 +117,7 @@ const isDocumentReceivedForAction = computed(() => {
 
 const canActionTakenDts = computed(() => {
     return !isSuperAdminViewOnly.value
+        && !isDocumentClosedOrEnded.value
         && Boolean(props.canActionTakenDts)
         && isDocumentReceivedForAction.value
 })
@@ -268,6 +292,20 @@ const closeActionTakenModal = () => {
     showActionTakenModal.value = false
     actionTakenForm.reset()
     actionTakenForm.clearErrors()
+}
+
+const openForwardFromActionModal = () => {
+    if (!canTransferCurrentDocument.value) return
+
+    showActionTakenModal.value = false
+    openForwardModal()
+}
+
+const openReturnFromActionModal = () => {
+    if (!canReturnCurrentDocument.value) return
+
+    showActionTakenModal.value = false
+    openReturnModal()
 }
 
 const closeReturnModal = () => {
@@ -696,20 +734,41 @@ const currentWorkflowStatus = computed(() => {
 })
 
 const canReceiveCurrentDocument = computed(() => {
-    return canReceiveDts.value && currentWorkflowStatus.value === 'For Receiving'
+    return canReceiveDts.value
+        && !isDocumentClosedOrEnded.value
+        && currentWorkflowStatus.value === 'For Receiving'
 })
 
 const canTransferCurrentDocument = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
 
+    /*
+     * This is NOT role-based.
+     * The controller sends canReceiveDts=true only when the logged-in user
+     * is allowed to act on this document, usually because the document is
+     * tagged to their personnel record.
+     *
+     * Before receive: only Receive Document + View Action History are shown.
+     * After receive: Select Action appears, and Transfer/Return are inside it.
+     */
     return canReceiveDts.value
+        && !isDocumentClosedOrEnded.value
+        && isDocumentReceivedForAction.value
         && !status.includes('pulled')
 })
 
 const canReturnCurrentDocument = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
 
+    /*
+     * This is NOT role-based.
+     * The controller sends canReceiveDts=true only when the logged-in user
+     * is allowed to act on this document, usually because the document is
+     * tagged to their personnel record.
+     */
     return canReceiveDts.value
+        && !isDocumentClosedOrEnded.value
+        && isDocumentReceivedForAction.value
         && !status.includes('returned')
         && !status.includes('pulled')
 })
@@ -1256,26 +1315,6 @@ const formatFileSize = (bytes) => {
                                 @click="openActionTakenModal"
                             >
                                 Select Action
-                            </button>
-
-                            <button
-                                v-if="!isSuperAdminViewOnly && canTransferCurrentDocument"
-                                type="button"
-                                class="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-indigo-600 disabled:opacity-60"
-                                :disabled="forwardForm.processing"
-                                @click="openForwardModal"
-                            >
-                                Transfer Document
-                            </button>
-
-                            <button
-                                v-if="!isSuperAdminViewOnly && canReturnCurrentDocument"
-                                type="button"
-                                class="rounded-xl bg-rose-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-rose-600 disabled:opacity-60"
-                                :disabled="returnForm.processing"
-                                @click="openReturnModal"
-                            >
-                                Return Document
                             </button>
 
                             <button
@@ -1840,7 +1879,40 @@ const formatFileSize = (bytes) => {
                     </p>
                 </div>
 
-               
+                <div
+                    v-if="canTransferCurrentDocument || canReturnCurrentDocument"
+                    class="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                >
+                    <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                        Other Document Actions
+                    </p>
+
+                    <p class="mt-1 text-sm font-semibold text-slate-600">
+                        Transfer and Return are under Select Action. They are available only after the tagged document has been received and before the document reaches an end process.
+                    </p>
+
+                    <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <button
+                            v-if="canTransferCurrentDocument"
+                            type="button"
+                            class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-black text-white hover:bg-indigo-700 disabled:opacity-60"
+                            :disabled="forwardForm.processing || actionTakenForm.processing"
+                            @click="openForwardFromActionModal"
+                        >
+                            Transfer Document
+                        </button>
+
+                        <button
+                            v-if="canReturnCurrentDocument"
+                            type="button"
+                            class="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-black text-white hover:bg-rose-700 disabled:opacity-60"
+                            :disabled="returnForm.processing || actionTakenForm.processing"
+                            @click="openReturnFromActionModal"
+                        >
+                            Return Document
+                        </button>
+                    </div>
+                </div>
 
                 <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
                     <button
