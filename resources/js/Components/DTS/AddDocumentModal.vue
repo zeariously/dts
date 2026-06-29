@@ -625,12 +625,7 @@ const submitForm = () => {
                         </div>
                     </div>
 
-                    <p
-                        v-else
-                        class="mt-2 text-xs text-slate-500"
-                    >
-                        No files attached yet. You can still save this document and attach files later from the document details page.
-                    </p>
+                   
                 </div>
 
                 <div>
