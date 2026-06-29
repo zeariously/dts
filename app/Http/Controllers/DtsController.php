@@ -210,6 +210,10 @@ public function index(Request $request)
             'd.IDfrom',
             DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_name' : 'NULL as to_name'),
             DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_name' : 'NULL as from_name'),
+            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as recipient_name' : 'NULL as recipient_name'),
+            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as sender_name' : 'NULL as sender_name'),
+            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_person_name' : 'NULL as to_person_name'),
+            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_person_name' : 'NULL as from_person_name'),
             'd.subject',
             'd.regarding',
             'd.remarks',
@@ -264,6 +268,12 @@ public function index(Request $request)
                 ->orWhereRaw($doctypeCodeColumn . ' LIKE ?', [$searchLike])
                 ->orWhere('fromOffice.officename', 'like', $searchLike)
                 ->orWhere('forOffice.officename', 'like', $searchLike)
+                ->when(Schema::hasColumn('document', 'to_name'), function ($nameQuery) use ($searchLike) {
+                    $nameQuery->orWhere('d.to_name', 'like', $searchLike);
+                })
+                ->when(Schema::hasColumn('document', 'from_name'), function ($nameQuery) use ($searchLike) {
+                    $nameQuery->orWhere('d.from_name', 'like', $searchLike);
+                })
                 ->orWhere('distOffice.officename', 'like', $searchLike)
                 ->orWhere('receiverPersonnel.name', 'like', $searchLike)
                 ->orWhere('dist.remarks', 'like', $searchLike)
@@ -960,7 +970,7 @@ public function index(Request $request)
         'entry_day' => ['nullable', 'digits_between:1,2'],
         'entry_year' => ['nullable', 'digits_between:2,4'],
 
-        'subject' => ['required', 'string', 'max:255'],
+        'subject' => ['required', 'string'],
         'regarding' => ['nullable', 'string'],
         'remarks' => ['nullable', 'string'],
 
@@ -1619,6 +1629,38 @@ public function index(Request $request)
             ->get()
         : collect();
 
+    /*
+     * To/From typed names:
+     * These are separate from the office names. The old system displayed
+     * personnel names for To/From, while the new DTS stores office IDs in
+     * IDfor/IDfrom and stores the displayed names in to_name/from_name.
+     */
+    $documentToName = null;
+    $documentFromName = null;
+
+    if (Schema::hasColumn('document', 'to_name') || Schema::hasColumn('document', 'from_name')) {
+        $nameSelect = [];
+
+        $nameSelect[] = Schema::hasColumn('document', 'to_name')
+            ? 'to_name'
+            : DB::raw('NULL as to_name');
+
+        $nameSelect[] = Schema::hasColumn('document', 'from_name')
+            ? 'from_name'
+            : DB::raw('NULL as from_name');
+
+        $documentNames = DB::table('document')
+            ->where('IDdoc', $document->IDdoc)
+            ->select($nameSelect)
+            ->first();
+
+        $toNameValue = trim((string) ($documentNames->to_name ?? ''));
+        $fromNameValue = trim((string) ($documentNames->from_name ?? ''));
+
+        $documentToName = $toNameValue !== '' ? $toNameValue : null;
+        $documentFromName = $fromNameValue !== '' ? $fromNameValue : null;
+    }
+
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
@@ -1642,8 +1684,12 @@ public function index(Request $request)
 
                 'IDfor' => $document->IDfor,
                 'IDfrom' => $document->IDfrom,
-                'to_name' => Schema::hasColumn('document', 'to_name') ? ($document->to_name ?? null) : null,
-                'from_name' => Schema::hasColumn('document', 'from_name') ? ($document->from_name ?? null) : null,
+                'to_name' => $documentToName,
+                'from_name' => $documentFromName,
+                'recipient_name' => $documentToName,
+                'sender_name' => $documentFromName,
+                'to_person_name' => $documentToName,
+                'from_person_name' => $documentFromName,
                 'for_office' => $document->forOffice?->officename,
                 'from_office' => $document->fromOffice?->officename,
 
@@ -3164,12 +3210,26 @@ public function monitoringDashboard(Request $request)
     }
 
     /*
-     * Main table: simplified list of document transactions.
-     * Columns needed in Vue:
-     * Doc ID, Subject, Assigned Personnel, Days Pending.
+     * Main Monitoring Dashboard table:
+     *
+     * Use document as the base table so Role 4/Admin Monitoring can see ALL
+     * documents, including legacy/imported Completed documents that do not have
+     * rows in distribution. The previous query started from distribution, so
+     * documents without distribution rows were excluded and the Vue table showed
+     * "No documents found."
      */
-    $transactionsQuery = DB::table('distribution as dist')
-        ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
+    $latestDistributionForMonitoring = DB::table('distribution as latestDist')
+        ->select([
+            'latestDist.IDdoc',
+            DB::raw('MAX(latestDist.IDdist) as latest_IDdist'),
+        ])
+        ->groupBy('latestDist.IDdoc');
+
+    $transactionsQuery = DB::table('document as d')
+        ->leftJoinSub($latestDistributionForMonitoring, 'latestMonitoringDist', function ($join) {
+            $join->on('latestMonitoringDist.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestMonitoringDist.latest_IDdist')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
         ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
         ->when($hasAddressedActionTables, function ($query) use ($latestAddressedAction) {
@@ -3185,7 +3245,8 @@ public function monitoringDashboard(Request $request)
         })
         ->select([
             'dist.IDdist',
-            'dist.IDdoc',
+            'd.IDdoc',
+            'd.IDdoc as document_no',
             'dist.distdate',
             'dist.confirmdate',
             'dist.YNreturn',
@@ -3306,7 +3367,8 @@ public function monitoringDashboard(Request $request)
     }
 
     $transactions = $transactionsQuery
-        ->orderByDesc('dist.IDdist')
+        ->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'))
+        ->orderByDesc('d.IDdoc')
         ->paginate($perPage)
         ->appends($request->query());
 

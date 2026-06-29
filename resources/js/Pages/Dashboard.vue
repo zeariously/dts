@@ -3274,7 +3274,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Click to view pending receivingsssss
+                                    Click to view pending receiving
                                 </p>
                             </div>
                         </div>

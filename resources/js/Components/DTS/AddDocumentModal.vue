@@ -266,11 +266,6 @@ const validateRequiredFields = () => {
         errors.subject = 'Subject is required.'
     }
 
-    if (!attachedFiles.value.length) {
-        errors.attachments = 'One PDF attachment is required.'
-        attachmentError.value = errors.attachments
-    }
-
     if (!String(form.staff_concern_id || '').trim()) {
         errors.staff_concern_id = 'Staff Concern is required.'
     }
@@ -288,6 +283,11 @@ const validateRequiredFields = () => {
 }
 
 const submitForm = () => {
+    /*
+     * Attachments are optional during Add Document.
+     * If no file is selected, form.attachments will be an empty array.
+     * The user can attach PDF files later in the Show/Details page.
+     */
     syncAttachmentsToForm()
 
     if (!validateRequiredFields()) {
@@ -566,7 +566,7 @@ const submitForm = () => {
 
                 <div>
                     <label class="mb-1 block text-sm font-bold text-slate-700">
-                        Attachments<span class="text-red-600">*</span>
+                        Attachments <span class="text-xs font-semibold text-slate-500">(Optional)</span>
                     </label>
 
                     <div>
@@ -579,7 +579,7 @@ const submitForm = () => {
                         />
 
                         <p class="mt-2 text-xs font-semibold text-slate-500">
-                            PDF file only. Maximum 500MB per PDF document.
+                            Optional. PDF file only. Maximum 500MB per PDF document.
                         </p>
 
                         <p
@@ -629,7 +629,7 @@ const submitForm = () => {
                         v-else
                         class="mt-2 text-xs text-slate-500"
                     >
-                        No files attached yet.
+                        No files attached yet. You can still save this document and attach files later from the document details page.
                     </p>
                 </div>
 

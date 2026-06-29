@@ -73,11 +73,10 @@ const canReceiveDts = computed(() => {
 
 const canReattachDts = computed(() => {
     /*
-     * Re-attach is maintained separately.
-     * Staff users can still re-attach files even when the document is not tagged
-     * to them, as long as the controller allows their role to manage attachments.
+     * Attach File is allowed from the document details page.
+     * The backend route still validates the actual upload request.
      */
-    return !isSuperAdminViewOnly.value && Boolean(props.canReattachDts)
+    return !isSuperAdminViewOnly.value
 })
 
 const canRemarkDts = computed(() => {
@@ -864,12 +863,15 @@ const remarksHistory = computed(() => {
     })
 
     ;(props.document.attachments || []).forEach((file) => {
-        const isReattachedFile = file.type_name === 'Re-attached File'
+        const isReattachedFile = file.type_name === 'Attached File'
+            || file.type_name === 'Re-attached File'
+            || file.type_name === 'PDF Document'
+            || file.type_name === 'Uploaded File'
 
         /*
          * Do not show initial uploaded files in Action History.
          * For a newly created document, attachments are part of Document Created.
-         * Only show Re-attached File actions.
+         * Only show Attached File actions.
          */
         if (!isReattachedFile) {
             return
@@ -886,20 +888,20 @@ const remarksHistory = computed(() => {
         })
 
         if (matchingRemark) {
-            matchingRemark.type = 'Re-attached File'
-            matchingRemark.title = 'Re-attached File with Remarks'
+            matchingRemark.type = 'Attached File'
+            matchingRemark.title = 'Attached File with Remarks'
             matchingRemark.files.push(file)
             return
         }
 
         history.push({
-            id: `reattached-file-${file.id}`,
-            type: 'Re-attached File',
-            title: 'Re-attached File',
+            id: `attached-file-${file.id}`,
+            type: 'Attached File',
+            title: 'Attached File',
             actor: file.uploaded_by_name || (file.uploaded_by ? `Account #${file.uploaded_by}` : 'Unknown account'),
             office: file.uploaded_by_name || (file.uploaded_by ? `Account #${file.uploaded_by}` : 'Unknown account'),
             date: file.created_at,
-            remarks: `Re-attached file: ${file.original_name || file.stored_name || 'Uploaded file'}`,
+            remarks: `Attached file: ${file.original_name || file.stored_name || 'Uploaded file'}`,
             created_by: file.uploaded_by,
             created_time: fileTime,
             files: [file],
@@ -1298,6 +1300,13 @@ const formatFileSize = (bytes) => {
                     <p class="mt-2 break-words text-base font-black leading-6 text-slate-950">
                         {{ fromOfficeDisplay }}
                     </p>
+
+                    <p
+                        v-if="hasFilledValue(fromNameDisplay)"
+                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-600"
+                    >
+                        Name: {{ fromNameDisplay }}
+                    </p>
                 </div>
 
                 <div class="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
@@ -1307,6 +1316,13 @@ const formatFileSize = (bytes) => {
 
                     <p class="mt-2 break-words text-base font-black leading-6 text-slate-950">
                         {{ toOfficeDisplay }}
+                    </p>
+
+                    <p
+                        v-if="hasFilledValue(toNameDisplay)"
+                        class="mt-1 break-words text-xs font-bold leading-5 text-slate-600"
+                    >
+                        Name: {{ toNameDisplay }}
                     </p>
                 </div>
 
@@ -1483,7 +1499,7 @@ const formatFileSize = (bytes) => {
                             class="mb-4 w-full rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-black text-white hover:bg-emerald-700"
                             @click="openReattachPanel"
                         >
-                            + Re-attach File
+                            + Attach File
                         </button>
 
                         <div
@@ -1523,7 +1539,7 @@ const formatFileSize = (bytes) => {
                             class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-7 text-center"
                         >
                             <p class="text-sm font-black text-slate-600">
-                                No attachments uploaded.
+                                No attachments uploaded yet. Click Attach File to upload a PDF document.
                             </p>
                         </div>
 
@@ -1534,7 +1550,7 @@ const formatFileSize = (bytes) => {
                             <div class="mb-3 flex items-start justify-between gap-3">
                                 <div>
                                     <p class="text-sm font-black text-emerald-800">
-                                        Re-attach New File
+                                        Attach New File
                                     </p>
                                     <p class="mt-1 text-xs font-semibold text-emerald-700">
                                         PDF files only.
