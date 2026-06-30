@@ -2,6 +2,26 @@
 import { Link, router, usePage } from '@inertiajs/vue3'
 import { computed, onMounted, ref } from 'vue'
 
+
+const formatNotificationDate = (value) => {
+    if (!value) {
+        return ''
+    }
+
+    const normalized = String(value).replace(' ', 'T')
+    const parsedDate = new Date(normalized)
+
+    if (Number.isNaN(parsedDate.getTime())) {
+        return value
+    }
+
+    return new Intl.DateTimeFormat('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+    }).format(parsedDate)
+}
+
 const props = defineProps({
     stats: {
         type: Object,
@@ -116,6 +136,32 @@ const visibleNotificationItems = computed(() => {
         return !seenNotificationKeys.value.includes(notificationKey(item))
     })
 })
+
+const notificationReceiverName = (item) => {
+    return item.received_by_name
+        || item.received_by
+        || item.receiver_name
+        || item.confirmed_by_name
+        || item.confirmuser_name
+        || (item.confirmuser ? `Account #${item.confirmuser}` : 'Someone')
+}
+
+const notificationSubject = (item) => {
+    return item.subject
+        || item.document_subject
+        || item.regarding
+        || 'No subject'
+}
+
+const notificationDate = (item) => {
+    return item.confirmdate
+        || item.received_at
+        || item.received_date
+        || item.distdate
+        || item.transfer_date
+        || item.created_at
+        || ''
+}
 
 const displayNotificationCount = computed(() => {
     return visibleNotificationItems.value.length
@@ -540,67 +586,101 @@ const emit = defineEmits([
                         <div class="p-6">
                             <div
                                 v-if="visibleNotificationItems.length"
-                                class="max-h-[55vh] space-y-3 overflow-y-auto pr-1"
+                                class="max-h-[58vh] space-y-4 overflow-y-auto pr-1"
                             >
                                 <div
                                     v-for="(item, index) in visibleNotificationItems"
                                     :key="`layout-notification-${item.IDdoc || item.document_no || index}`"
-                                    class="rounded-2xl border border-blue-100 bg-blue-50 p-4"
+                                    class="group overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg"
                                 >
-                                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                        <div class="min-w-0">
-                                            <div class="flex flex-wrap items-center gap-2">
-                                                <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                    Doc ID: {{ item.document_no || item.IDdoc || '-' }}
-                                                </span>
+                                    <div
+                                        class="h-1.5"
+                                        :class="item.notification_type === 'received_by_addressee'
+                                            ? 'bg-emerald-500'
+                                            : item.is_overdue
+                                                ? 'bg-red-500'
+                                                : 'bg-blue-500'"
+                                    ></div>
 
-                                                <span
-                                                    v-if="item.notification_type === 'received_by_addressee'"
-                                                    class="rounded-full bg-emerald-600 px-3 py-1 text-xs font-black text-white"
-                                                >
-                                                    Received
-                                                </span>
+                                    <div class="p-5">
+                                        <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                                            <div class="min-w-0 flex-1">
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                    <span
+                                                        v-if="item.notification_type === 'received_by_addressee'"
+                                                        class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700"
+                                                    >
+                                                        ✓ Received
+                                                    </span>
 
-                                                <span
-                                                    v-else-if="item.is_overdue"
-                                                    class="rounded-full bg-red-600 px-3 py-1 text-xs font-black text-white"
-                                                >
-                                                    Overdue
-                                                </span>
+                                                    <span
+                                                        v-else-if="item.is_overdue"
+                                                        class="rounded-full bg-red-100 px-3 py-1 text-xs font-black text-red-700"
+                                                    >
+                                                        Overdue
+                                                    </span>
 
-                                                <span
-                                                    v-else
-                                                    class="rounded-full bg-blue-600 px-3 py-1 text-xs font-black text-white"
-                                                >
-                                                    For Receiving
-                                                </span>
+                                                    <span
+                                                        v-else
+                                                        class="rounded-full bg-blue-100 px-3 py-1 text-xs font-black text-blue-700"
+                                                    >
+                                                        For Receiving
+                                                    </span>
+
+                                                    <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
+                                                        DTS #{{ item.document_no || item.IDdoc || '-' }}
+                                                    </span>
+                                                </div>
+
+                                                <!-- <p class="mt-3 break-words text-xl font-black leading-8 text-slate-950">
+                                                    <template v-if="item.notification_type === 'received_by_addressee'">
+                                                        {{ notificationReceiverName(item) }} received DTS #{{ item.document_no || item.IDdoc || '-' }}
+                                                    </template>
+
+                                                    <template v-else-if="item.is_overdue">
+                                                        DTS #{{ item.document_no || item.IDdoc || '-' }} is overdue
+                                                    </template>
+
+                                                    <template v-else>
+                                                        DTS #{{ item.document_no || item.IDdoc || '-' }} is waiting to be received
+                                                    </template>
+                                                </p> -->
+
+                                                <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                                    <p class="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+                                                        Document
+                                                    </p>
+
+                                                    <p class="mt-1 break-words text-sm font-bold leading-6 text-slate-800">
+                                                        {{ notificationSubject(item) }}
+                                                    </p>
+                                                </div>
+
+                                               <p
+                                                v-if="notificationDate(item)"
+                                                class="mt-3 text-xs font-bold text-slate-500"
+                                            >
+                                                {{ formatNotificationDate(notificationDate(item)) }}
+                                            </p>
                                             </div>
-
-                                            <p class="mt-3 break-words text-base font-black text-slate-900">
-                                                {{ item.subject || 'No subject' }}
-                                            </p>
-
-                                            <p class="mt-2 text-sm font-semibold text-slate-600">
-                                                {{ item.transferred_to || item.received_office || item.from_office || '-' }}
-                                            </p>
+                                            <div class="flex shrink-0 items-center sm:self-stretch">
+                                                <Link
+                                                    v-if="item.IDdoc"
+                                                    :href="`/dts/${item.IDdoc}`"
+                                                    class="inline-flex items-center justify-center rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-blue-700"
+                                                    @click="markNotificationSeen(item); closeNotifications()"
+                                                >
+                                                    View Details
+                                                </Link>
+                                            </div>
                                         </div>
-
-                                        <Link
-                                            v-if="item.IDdoc"
-                                            :href="`/dts/${item.IDdoc}`"
-                                            class="shrink-0 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-black text-white hover:bg-blue-700"
-                                            @click="markNotificationSeen(item); closeNotifications()"
-                                        >
-                                            View Details
-                                        </Link>
                                     </div>
                                 </div>
                             </div>
 
                             <div
                                 v-else
-                                class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center"
-                            >
+                                class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-12 text-center">
                                 <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm">
                                     🔔
                                 </div>

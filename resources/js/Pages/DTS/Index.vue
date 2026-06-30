@@ -3399,7 +3399,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Received documents with Select Action
+                                    Received documents with Selected Action
                                 </p>
                             </div>
                         </div>

@@ -2071,19 +2071,14 @@ const formatFileSize = (bytes) => {
                                     </span>
                                 </div>
 
-                                <p class="mt-2 text-sm font-semibold leading-6 text-slate-800">
+                                <!-- <p class="mt-2 text-sm font-semibold leading-6 text-slate-800">
                                     {{ item.description || '-' }}
-                                </p>
+                                </p> -->
 
-                                <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-700 md:grid-cols-3">
-                                    <p>
-                                        <span class="text-slate-900">Actor:</span>
+                                <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-700 md:grid-cols-2">
+                                    <p class="text-sm font-black text-slate-800">
+                                        <span class="text-slate-950">Actor:</span>
                                         {{ item.actor || '-' }}
-                                    </p>
-
-                                    <p>
-                                        <span class="text-slate-900">Office:</span>
-                                        {{ item.office || '-' }}
                                     </p>
 
                                     <p v-if="item.target_personnel || item.target_action">
