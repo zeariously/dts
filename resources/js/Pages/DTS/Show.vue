@@ -1513,7 +1513,7 @@ const formatFileSize = (bytes) => {
                             <button
                                 v-if="canQuickTransferCurrentDocument"
                                 type="button"
-                                class="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-indigo-600 disabled:opacity-60"
+                                class="rounded-xl bg-amber-400 px-5 py-2.5 text-sm font-black text-slate-950 shadow-lg ring-2 ring-white/70 hover:bg-amber-300 disabled:opacity-60"
                                 :disabled="forwardForm.processing"
                                 @click="openForwardModal"
                             >
