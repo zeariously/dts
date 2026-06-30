@@ -62,12 +62,7 @@ const canManageDts = computed(() => {
 })
 
 const canReceiveDts = computed(() => {
-    /*
-     * This permission comes from the controller.
-     * Staff users may view documents that are not tagged to them,
-     * but they must not receive/transfer/return/action taken unless
-     * the document is actually tagged to their personnel record.
-     */
+    
     return !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
 })
 
@@ -87,11 +82,7 @@ const canRemarkDts = computed(() => {
 const isDocumentClosedOrEnded = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
 
-    /*
-     * End-process statuses: hide Select Action, Transfer, and Return.
-     * These are the states where the document should no longer be acted on
-     * by the current tagged user.
-     */
+   
     return status.includes('completed')
         || status.includes('complete')
         || status.includes('cleared')
@@ -1131,53 +1122,110 @@ const actionHistory = computed(() => {
     })
 })
 
-const historyTypeClass = (type) => {
-    const value = String(type || '').toLowerCase()
-
-    if (value.includes('created')) {
-        return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+const getHistoryColorText = (itemOrType) => {
+    if (typeof itemOrType === 'object' && itemOrType !== null) {
+        return normalizeText([
+            itemOrType.type,
+            itemOrType.title,
+            itemOrType.description,
+            itemOrType.action_name,
+            itemOrType.action_type,
+        ].filter(Boolean).join(' '))
     }
 
-    if (value.includes('received')) {
-        return 'border-green-200 bg-green-50 text-green-800'
-    }
-
-    if (value.includes('transfer') || value.includes('forward')) {
-        return 'border-blue-200 bg-blue-50 text-blue-800'
-    }
-
-    if (value.includes('action')) {
-        return 'border-cyan-200 bg-cyan-50 text-cyan-800'
-    }
-
-    if (value.includes('returned')) {
-        return 'border-red-200 bg-red-50 text-red-800'
-    }
-
-    if (value.includes('pulled')) {
-        return 'border-slate-200 bg-slate-50 text-slate-800'
-    }
-
-    if (value.includes('remark')) {
-        return 'border-amber-200 bg-amber-50 text-amber-800'
-    }
-
-    if (value.includes('attached') || value.includes('file')) {
-        return 'border-purple-200 bg-purple-50 text-purple-800'
-    }
-
-    return 'border-blue-200 bg-blue-50 text-blue-800'
+    return normalizeText(itemOrType)
 }
 
-const historyDotClass = (type) => {
-    const value = String(type || '').toLowerCase()
+const historyTypeClass = (itemOrType) => {
+    const value = getHistoryColorText(itemOrType)
 
-    if (value.includes('created')) return 'bg-emerald-600'
-    if (value.includes('received')) return 'bg-green-600'
-    if (value.includes('transfer') || value.includes('forward')) return 'bg-blue-600'
-    if (value.includes('action')) return 'bg-cyan-600'
-    if (value.includes('returned')) return 'bg-red-600'
-    if (value.includes('pulled')) return 'bg-slate-600'
+    // Added / New document
+    if (
+        value.includes('added document')
+        || value.includes('document created')
+        || value.includes('created')
+        || value.includes('encoded')
+        || value === 'new'
+    ) {
+        return 'border-blue-200 bg-blue-50 text-blue-900 shadow-sm ring-1 ring-blue-100'
+    }
+
+    // Received document
+    if (value.includes('received')) {
+        return 'border-emerald-200 bg-emerald-50 text-emerald-900 shadow-sm ring-1 ring-emerald-100'
+    }
+
+    // Transferred / Forwarded document
+    if (value.includes('transfer') || value.includes('transferred') || value.includes('forward')) {
+        return 'border-indigo-200 bg-indigo-50 text-indigo-900 shadow-sm ring-1 ring-indigo-100'
+    }
+
+    // Select Action / Action Taken
+    if (value.includes('select action') || value.includes('action taken') || value.includes('action')) {
+        return 'border-cyan-200 bg-cyan-50 text-cyan-900 shadow-sm ring-1 ring-cyan-100'
+    }
+
+    // Returned document
+    if (value.includes('return') || value.includes('returned')) {
+        return 'border-rose-200 bg-rose-50 text-rose-900 shadow-sm ring-1 ring-rose-100'
+    }
+
+    // Pulled out document
+    if (value.includes('pulled')) {
+        return 'border-slate-300 bg-slate-100 text-slate-900 shadow-sm ring-1 ring-slate-200'
+    }
+
+    // Remarks
+    if (value.includes('remark')) {
+        return 'border-amber-200 bg-amber-50 text-amber-900 shadow-sm ring-1 ring-amber-100'
+    }
+
+    // Attached / Re-attached files
+    if (value.includes('attached') || value.includes('file')) {
+        return 'border-purple-200 bg-purple-50 text-purple-900 shadow-sm ring-1 ring-purple-100'
+    }
+
+    return 'border-blue-200 bg-blue-50 text-blue-900 shadow-sm ring-1 ring-blue-100'
+}
+
+const historyDotClass = (itemOrType) => {
+    const value = getHistoryColorText(itemOrType)
+
+    if (
+        value.includes('added document')
+        || value.includes('document created')
+        || value.includes('created')
+        || value.includes('encoded')
+        || value === 'new'
+    ) return 'bg-blue-600 ring-4 ring-blue-100'
+
+    if (value.includes('received')) return 'bg-emerald-600 ring-4 ring-emerald-100'
+    if (value.includes('transfer') || value.includes('transferred') || value.includes('forward')) return 'bg-indigo-600 ring-4 ring-indigo-100'
+    if (value.includes('select action') || value.includes('action taken') || value.includes('action')) return 'bg-cyan-600 ring-4 ring-cyan-100'
+    if (value.includes('return') || value.includes('returned')) return 'bg-rose-600 ring-4 ring-rose-100'
+    if (value.includes('pulled')) return 'bg-slate-700 ring-4 ring-slate-200'
+    if (value.includes('remark')) return 'bg-amber-500 ring-4 ring-amber-100'
+    if (value.includes('attached') || value.includes('file')) return 'bg-purple-600 ring-4 ring-purple-100'
+
+    return 'bg-blue-600 ring-4 ring-blue-100'
+}
+
+const historyStripClass = (itemOrType) => {
+    const value = getHistoryColorText(itemOrType)
+
+    if (
+        value.includes('added document')
+        || value.includes('document created')
+        || value.includes('created')
+        || value.includes('encoded')
+        || value === 'new'
+    ) return 'bg-blue-600'
+
+    if (value.includes('received')) return 'bg-emerald-600'
+    if (value.includes('transfer') || value.includes('transferred') || value.includes('forward')) return 'bg-indigo-600'
+    if (value.includes('select action') || value.includes('action taken') || value.includes('action')) return 'bg-cyan-600'
+    if (value.includes('return') || value.includes('returned')) return 'bg-rose-600'
+    if (value.includes('pulled')) return 'bg-slate-700'
     if (value.includes('remark')) return 'bg-amber-500'
     if (value.includes('attached') || value.includes('file')) return 'bg-purple-600'
 
@@ -2049,15 +2097,20 @@ const formatFileSize = (bytes) => {
                     <div
                         v-for="(item, index) in actionHistory"
                         :key="item.id || `${item.type}-${index}`"
-                        class="relative rounded-2xl border p-4"
-                        :class="historyTypeClass(item.type)"
+                        class="relative overflow-hidden rounded-2xl border p-4 pl-6"
+                        :class="historyTypeClass(item)"
                     >
+                        <div
+                            class="absolute inset-y-0 left-0 w-1.5"
+                            :class="historyStripClass(item)"
+                        ></div>
+
                         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                             <div class="min-w-0">
                                 <div class="flex flex-wrap items-center gap-2">
                                     <span
                                         class="inline-flex h-3 w-3 rounded-full"
-                                        :class="historyDotClass(item.type)"
+                                        :class="historyDotClass(item)"
                                     ></span>
 
                                     <p class="text-base font-black text-slate-900">

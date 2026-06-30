@@ -21,6 +21,28 @@ const showCreateConfirmPassword = ref(false)
 const showSuccessModal = ref(false)
 const successMessage = ref('')
 
+const showUserGuideModal = ref(false)
+const selectedUserGuide = ref('')
+
+const userGuideOptions = [
+    {
+        key: 'project-manager',
+        label: 'Project Manager',
+        description: 'Guide for project managers who will track, receive, and monitor documents.',
+        file: '/user-guides/project-manager-user-guide.pdf',
+    },
+    {
+        key: 'admin-staff',
+        label: 'Admin Staff',
+        description: 'Guide for admin staff who will encode, route, receive, and manage DTS documents.',
+        file: '/user-guides/admin-staff-user-guide.pdf',
+    },
+]
+
+const selectedUserGuideDetails = () => {
+    return userGuideOptions.find((guide) => guide.key === selectedUserGuide.value) || null
+}
+
 const form = useForm({
     loginname: '',
     password: '',
@@ -33,6 +55,31 @@ const registerForm = useForm({
     password: '',
     password_confirmation: '',
 })
+
+const openUserGuideModal = () => {
+    selectedUserGuide.value = ''
+    showUserGuideModal.value = true
+}
+
+const closeUserGuideModal = () => {
+    showUserGuideModal.value = false
+    selectedUserGuide.value = ''
+}
+
+const downloadSelectedUserGuide = () => {
+    const guide = selectedUserGuideDetails()
+
+    if (!guide) {
+        return
+    }
+
+    const link = document.createElement('a')
+    link.href = guide.file
+    link.download = guide.file.split('/').pop() || 'user-guide.pdf'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+}
 
 const submit = () => {
     form.post(route('login'), {
@@ -329,6 +376,28 @@ const closeCreateAccountModal = () => {
                                 </p>
                             </div>
 
+                            <div class="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4">
+                                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <p class="text-sm font-black text-blue-800">
+                                            Need help using DTS?
+                                        </p>
+
+                                        <p class="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                                            Select your account type and download the correct user guide.
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        type="button"
+                                        class="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-sm hover:bg-blue-700"
+                                        @click="openUserGuideModal"
+                                    >
+                                        User Guides
+                                    </button>
+                                </div>
+                            </div>
+
                             <div class="mt-9 flex items-center gap-4">
                                 <div class="h-px flex-1 bg-slate-200"></div>
                                 <span class="text-sm font-semibold text-slate-400">
@@ -345,6 +414,105 @@ const closeCreateAccountModal = () => {
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- User Guide Modal -->
+    <div
+        v-if="showUserGuideModal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4"
+        @click.self="closeUserGuideModal"
+    >
+        <div class="w-full max-w-lg overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+            <div class="bg-blue-600 px-7 py-6 text-white">
+                <div class="flex items-center gap-4">
+                    <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white text-3xl shadow-lg">
+                        📘
+                    </div>
+
+                    <div>
+                        <h3 class="text-xl font-black">
+                            DTS User Guides
+                        </h3>
+
+                        <p class="mt-1 text-sm font-semibold text-blue-100">
+                            Choose your account type to download the correct guide.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-7 py-6">
+                <label
+                    for="user-guide-role"
+                    class="mb-2 block text-sm font-black uppercase tracking-wide text-slate-700"
+                >
+                    Select User Account Type
+                </label>
+
+                <select
+                    id="user-guide-role"
+                    v-model="selectedUserGuide"
+                    class="w-full rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-bold text-slate-800 shadow-lg shadow-slate-100 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                >
+                    <option value="">
+                        Select user guide
+                    </option>
+
+                    <option
+                        v-for="guide in userGuideOptions"
+                        :key="guide.key"
+                        :value="guide.key"
+                    >
+                        {{ guide.label }}
+                    </option>
+                </select>
+
+                <div
+                    v-if="selectedUserGuideDetails()"
+                    class="mt-5 rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4"
+                >
+                    <p class="text-sm font-black text-blue-800">
+                        {{ selectedUserGuideDetails().label }} User Guide
+                    </p>
+
+                    <p class="mt-2 text-sm font-semibold leading-6 text-slate-600">
+                        {{ selectedUserGuideDetails().description }}
+                    </p>
+
+                    <p class="mt-3 break-words text-xs font-bold text-slate-500">
+                        File: {{ selectedUserGuideDetails().file }}
+                    </p>
+                </div>
+
+                <div
+                    v-else
+                    class="mt-5 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-5 text-center"
+                >
+                    <p class="text-sm font-bold text-slate-600">
+                        Please choose a user account type first.
+                    </p>
+                </div>
+
+                <div class="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                    <button
+                        type="button"
+                        class="rounded-2xl border border-slate-200 bg-white px-6 py-3 text-sm font-black text-slate-600 transition hover:bg-slate-50"
+                        @click="closeUserGuideModal"
+                    >
+                        Cancel
+                    </button>
+
+                    <button
+                        type="button"
+                        class="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-blue-100 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        :disabled="!selectedUserGuide"
+                        @click="downloadSelectedUserGuide"
+                    >
+                        Download Guide
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Create Account Modal -->

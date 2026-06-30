@@ -7,6 +7,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 
 class PasswordController extends Controller
 {
@@ -16,14 +17,33 @@ class PasswordController extends Controller
     public function update(Request $request): RedirectResponse
     {
         $validated = $request->validate([
-            'current_password' => ['required', 'current_password'],
-            'password' => ['required', Password::defaults(), 'confirmed'],
+            'current_password' => ['required'],
+            'password' => ['required', 'confirmed', Password::defaults()],
         ]);
 
-        $request->user()->update([
-            'password' => Hash::make($validated['password']),
-        ]);
+        $user = $request->user();
 
-        return back();
+        $storedPassword = (string) $user->password;
+        $currentPassword = (string) $validated['current_password'];
+
+        $passwordMatches = false;
+
+        try {
+            $passwordMatches = Hash::check($currentPassword, $storedPassword);
+        } catch (\RuntimeException $e) {
+            
+            $passwordMatches = hash_equals($storedPassword, $currentPassword);
+        }
+
+        if (! $passwordMatches) {
+            throw ValidationException::withMessages([
+                'current_password' => 'The current password is incorrect.',
+            ]);
+        }
+
+        $user->password = Hash::make($validated['password']);
+        $user->save();
+
+        return back()->with('status', 'password-updated');
     }
 }

@@ -19,6 +19,9 @@ const formatNotificationDate = (value) => {
         month: 'long',
         day: 'numeric',
         year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
     }).format(parsedDate)
 }
 
@@ -47,9 +50,9 @@ const seenNotificationKeys = ref([])
 const authUser = computed(() => page.props.auth?.user || {})
 
 const userDisplayName = computed(() => {
-    return authUser.value?.loginname
+    return authUser.value?.name
+        || authUser.value?.loginname
         || authUser.value?.username
-        || authUser.value?.name
         || 'User'
 })
 
@@ -657,11 +660,11 @@ const emit = defineEmits([
                                                 </div>
 
                                                <p
-                                                v-if="notificationDate(item)"
-                                                class="mt-3 text-xs font-bold text-slate-500"
-                                            >
-                                                {{ formatNotificationDate(notificationDate(item)) }}
-                                            </p>
+                                                    v-if="notificationDate(item)"
+                                                    class="mt-3 text-xs font-bold text-slate-500"
+                                                >
+                                                    {{ formatNotificationDate(notificationDate(item)) }}
+                                                </p>
                                             </div>
                                             <div class="flex shrink-0 items-center sm:self-stretch">
                                                 <Link

@@ -50,6 +50,14 @@ const canManageDts = computed(() => {
     return ['1', '3'].includes(userRights.value)
 })
 
+const canManageActionTakenLibrary = computed(() => {
+    /*
+     * Role 2 can manage only the Action Taken library.
+     * Other library tabs remain viewer-only for Role 2.
+     */
+    return userRights.value === '2' && activeLibrary.value === 'action-types'
+})
+
 const currentParams = computed(() => {
     const queryString = page.url.includes('?') ? page.url.split('?')[1] : ''
 
@@ -118,7 +126,11 @@ const libraryTabHref = (tab) => {
 }
 
 const canManageActiveLibrary = computed(() => {
-    return canManageDts.value && ['personnel', 'office', 'doctype', 'attachment', 'action-types'].includes(activeLibrary.value)
+    if (activeLibrary.value === 'action-types') {
+        return canManageDts.value || canManageActionTakenLibrary.value
+    }
+
+    return canManageDts.value && ['personnel', 'office', 'doctype', 'attachment'].includes(activeLibrary.value)
 })
 
 const getValue = (row, keys) => {
@@ -626,7 +638,7 @@ const confirmDeleteRecord = () => {
                         </p>
 
                         <p
-                            v-if="!canManageDts"
+                            v-if="!canManageActiveLibrary"
                             class="mt-3 inline-flex rounded-full border border-yellow-300 bg-yellow-50 px-4 py-2 text-xs font-bold uppercase tracking-wide text-yellow-800"
                         >
                             Viewer only access
