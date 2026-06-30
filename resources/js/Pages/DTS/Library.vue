@@ -52,8 +52,8 @@ const canManageDts = computed(() => {
 
 const canManageActionTakenLibrary = computed(() => {
     /*
-     * Role 2 can manage only the Action Taken library.
-     * Other library tabs remain viewer-only for Role 2.
+     * Role 2 can manage ONLY the Action Taken library.
+     * Other Library tabs stay viewer-only for Role 2.
      */
     return userRights.value === '2' && activeLibrary.value === 'action-types'
 })

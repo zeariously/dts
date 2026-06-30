@@ -827,7 +827,7 @@ public function index(Request $request)
                 'distOffice.officename as received_office',
                 'dist.distdate as transfer_date',
                 'dist.confirmdate as received_date',
-                'receiveUser.loginname as received_by',
+                DB::raw("COALESCE(NULLIF(TRIM(receiveUser.name), ''), NULLIF(TRIM(receiveUser.loginname), ''), CONCAT('Account #', receiveUser.ID)) as received_by"),
             ])
             ->orderByDesc('dist.confirmdate')
             ->limit(20)
@@ -1194,7 +1194,7 @@ public function index(Request $request)
                 'dts_document_files.size',
                 'dts_document_files.uploaded_by',
                 'dts_document_files.created_at',
-                'fileUser.loginname as uploaded_by_name',
+                DB::raw("COALESCE(NULLIF(TRIM(fileUser.name), ''), NULLIF(TRIM(fileUser.loginname), ''), CONCAT('Account #', fileUser.ID)) as uploaded_by_name"),
             ])
             ->get()
             ->map(function ($file) {
@@ -1235,7 +1235,7 @@ public function index(Request $request)
             'dts_document_remarks.remarks',
             'dts_document_remarks.created_by',
             'dts_document_remarks.created_at',
-            'remarkUser.loginname as created_by_name',
+            DB::raw("COALESCE(NULLIF(TRIM(remarkUser.name), ''), NULLIF(TRIM(remarkUser.loginname), ''), CONCAT('Account #', remarkUser.ID)) as created_by_name"),
         ];
 
         if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
@@ -1278,7 +1278,8 @@ public function index(Request $request)
     if (Schema::hasTable('username') && ! empty($document->IDuser)) {
         $documentCreatorName = DB::table('username')
             ->where('ID', $document->IDuser)
-            ->value('loginname');
+            ->selectRaw("COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(loginname), ''), CONCAT('Account #', ID)) as display_name")
+            ->value('display_name');
     }
 
     $distributionRowsForHistory = DB::table('distribution as dist')
@@ -1304,8 +1305,8 @@ public function index(Request $request)
             'dist.remarks',
             'office.officename as office_name',
             'targetPersonnel.name as target_personnel_name',
-            'transferUser.loginname as transferred_by_name',
-            'receiveUser.loginname as received_by_name',
+            DB::raw("COALESCE(NULLIF(TRIM(transferUser.name), ''), NULLIF(TRIM(transferUser.loginname), ''), CONCAT('Account #', transferUser.ID)) as transferred_by_name"),
+            DB::raw("COALESCE(NULLIF(TRIM(receiveUser.name), ''), NULLIF(TRIM(receiveUser.loginname), ''), CONCAT('Account #', receiveUser.ID)) as received_by_name"),
         ])
         ->get();
 
@@ -2144,7 +2145,7 @@ private function personnelAndOfficeForUser(int $userId): array
         if ($user && Schema::hasColumn('username', $column) && ! empty($user->{$column})) {
             return [
                 'personnel_id' => null,
-                'name' => $user->loginname ?? $user->username ?? 'User #' . $userId,
+                'name' => $user->name ?? $user->loginname ?? $user->username ?? 'User #' . $userId,
                 'office_id' => (int) $user->{$column},
                 'office_name' => DB::table('lu_office')
                     ->where('ID', $user->{$column})
@@ -2155,7 +2156,7 @@ private function personnelAndOfficeForUser(int $userId): array
 
     return [
         'personnel_id' => null,
-        'name' => $user->loginname ?? $user->username ?? 'User #' . $userId,
+        'name' => $user->name ?? $user->loginname ?? $user->username ?? 'User #' . $userId,
         'office_id' => null,
         'office_name' => null,
     ];
@@ -2315,7 +2316,7 @@ public function deletePersonnel(Request $request)
 
 public function storeActionType(Request $request)
 {
-    $this->ensureCanManageDts();
+    $this->ensureCanManageActionTypes();
 
     $validated = $request->validate([
         'name' => ['required', 'string', 'max:255'],
@@ -2352,7 +2353,7 @@ public function storeActionType(Request $request)
 
 public function updateActionType(Request $request, $id)
 {
-    $this->ensureCanManageDts();
+    $this->ensureCanManageActionTypes();
 
     $validated = $request->validate([
         'name' => ['required', 'string', 'max:255'],
@@ -2391,7 +2392,7 @@ public function updateActionType(Request $request, $id)
 
 public function deleteActionType(Request $request)
 {
-    $this->ensureCanManageDts();
+    $this->ensureCanManageActionTypes();
 
     $validated = $request->validate([
         'ids' => ['required', 'array'],
@@ -3528,7 +3529,7 @@ public function monitoringDashboard(Request $request)
             'assignedPersonnel.name as assigned_personnel',
             'remarksTable.remarks',
             'remarksTable.created_at',
-            'remarkUser.loginname as actor_name',
+            DB::raw("COALESCE(NULLIF(TRIM(remarkUser.name), ''), NULLIF(TRIM(remarkUser.loginname), ''), CONCAT('Account #', remarkUser.ID)) as actor_name"),
             DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Addressed') as action_label"),
         ];
 
@@ -3550,7 +3551,8 @@ public function monitoringDashboard(Request $request)
                     ->orWhere('remarksTable.action_label', 'like', "%{$search}%")
                     ->orWhere('actionType.name', 'like', "%{$search}%")
                     ->orWhere('assignedPersonnel.name', 'like', "%{$search}%")
-                    ->orWhere('remarkUser.loginname', 'like', "%{$search}%");
+                    ->orWhere('remarkUser.loginname', 'like', "%{$search}%")
+                    ->orWhere('remarkUser.name', 'like', "%{$search}%");
             });
         }
 
@@ -4074,6 +4076,21 @@ private function ensureCanManageDts(): void
     );
 }
 
+private function canManageActionTypes(): bool
+{
+    /*
+     * Action Taken library:
+     * Role 1 and 3 can manage all DTS libraries.
+     * Role 2 can add, edit, and delete Action Taken choices only.
+     */
+    return in_array($this->currentUserRights(), ['1', '2', '3'], true);
+}
+
+private function ensureCanManageActionTypes(): void
+{
+    abort_unless($this->canManageActionTypes(), 403);
+}
+
 private function canReattachDts(): bool
 {
     /*
@@ -4253,7 +4270,7 @@ private function dtsNotificationProps(): array
                 'distOffice.officename as received_office',
                 'dist.distdate as transfer_date',
                 'dist.confirmdate as received_date',
-                'receiveUser.loginname as received_by',
+                DB::raw("COALESCE(NULLIF(TRIM(receiveUser.name), ''), NULLIF(TRIM(receiveUser.loginname), ''), CONCAT('Account #', receiveUser.ID)) as received_by"),
             ])
             ->orderByDesc('dist.confirmdate')
             ->limit(20)

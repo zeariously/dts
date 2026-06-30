@@ -138,6 +138,9 @@ const returnForm = useForm({
     remarks: '',
 })
 
+const TRANSFER_DOCUMENT_ACTION = '__transfer_document__'
+const RETURN_DOCUMENT_ACTION = '__return_document__'
+
 const remarkForm = useForm({
     remarks: '',
 })
@@ -247,6 +250,10 @@ const openActionTakenModal = () => {
     showActionTakenReceiveWarning.value = false
     actionTakenForm.reset()
     actionTakenForm.clearErrors()
+    forwardForm.reset()
+    forwardForm.clearErrors()
+    returnForm.reset()
+    returnForm.clearErrors()
     showActionTakenModal.value = true
 }
 
@@ -278,11 +285,15 @@ const closeForwardModal = () => {
 }
 
 const closeActionTakenModal = () => {
-    if (actionTakenForm.processing) return
+    if (actionTakenForm.processing || forwardForm.processing || returnForm.processing) return
 
     showActionTakenModal.value = false
     actionTakenForm.reset()
     actionTakenForm.clearErrors()
+    forwardForm.reset()
+    forwardForm.clearErrors()
+    returnForm.reset()
+    returnForm.clearErrors()
 }
 
 const openForwardFromActionModal = () => {
@@ -346,6 +357,36 @@ const forwardDocument = () => {
 
 const actionTakenDocument = () => {
     if (!canActionTakenDts.value || !documentId.value) return
+
+    if (isTransferDocumentActionSelected.value) {
+        if (!canTransferCurrentDocument.value) return
+
+        forwardForm.post(`/dts/${documentId.value}/forward`, {
+            preserveScroll: true,
+            onSuccess: () => {
+                showActionTakenModal.value = false
+                actionTakenForm.reset()
+                forwardForm.reset()
+            },
+        })
+
+        return
+    }
+
+    if (isReturnDocumentActionSelected.value) {
+        if (!canReturnCurrentDocument.value) return
+
+        returnForm.post(`/dts/${documentId.value}/return`, {
+            preserveScroll: true,
+            onSuccess: () => {
+                showActionTakenModal.value = false
+                actionTakenForm.reset()
+                returnForm.reset()
+            },
+        })
+
+        return
+    }
 
     actionTakenForm.post(`/dts/${documentId.value}/action-taken`, {
         preserveScroll: true,
@@ -763,6 +804,86 @@ const canReturnCurrentDocument = computed(() => {
         && !status.includes('returned')
         && !status.includes('pulled')
 })
+
+const actionDropdownOptions = computed(() => {
+    const options = (props.actionTypes || []).map((actionType) => ({
+        value: actionType.id ?? actionType.ID,
+        label: actionType.name ?? actionType.label ?? actionType.description ?? 'Unnamed Action',
+        isSystemAction: false,
+    }))
+
+    if (canTransferCurrentDocument.value) {
+        options.push({
+            value: TRANSFER_DOCUMENT_ACTION,
+            label: 'Transfer Document',
+            isSystemAction: true,
+        })
+    }
+
+    if (canReturnCurrentDocument.value) {
+        options.push({
+            value: RETURN_DOCUMENT_ACTION,
+            label: 'Return Document',
+            isSystemAction: true,
+        })
+    }
+
+    return options
+})
+
+const isTransferDocumentActionSelected = computed(() => {
+    return String(actionTakenForm.IDactionType || '') === TRANSFER_DOCUMENT_ACTION
+})
+
+const isReturnDocumentActionSelected = computed(() => {
+    return String(actionTakenForm.IDactionType || '') === RETURN_DOCUMENT_ACTION
+})
+
+const confirmActionTakenLabel = computed(() => {
+    if (isTransferDocumentActionSelected.value) {
+        return forwardForm.processing ? 'Transferring...' : 'Confirm Transfer'
+    }
+
+    if (isReturnDocumentActionSelected.value) {
+        return returnForm.processing ? 'Returning...' : 'Confirm Return'
+    }
+
+    return actionTakenForm.processing ? 'Saving...' : 'Confirm'
+})
+
+const isSelectedActionProcessing = computed(() => {
+    return actionTakenForm.processing || forwardForm.processing || returnForm.processing
+})
+
+const isConfirmActionDisabled = computed(() => {
+    if (isSelectedActionProcessing.value || !actionTakenForm.IDactionType) {
+        return true
+    }
+
+    if (isTransferDocumentActionSelected.value) {
+        return !forwardForm.IDpersonnel
+    }
+
+    if (isReturnDocumentActionSelected.value) {
+        return !String(returnForm.remarks || '').trim()
+    }
+
+    return false
+})
+
+const handleActionDropdownChange = () => {
+    actionTakenForm.clearErrors()
+    forwardForm.clearErrors()
+    returnForm.clearErrors()
+
+    if (!isTransferDocumentActionSelected.value) {
+        forwardForm.reset()
+    }
+
+    if (!isReturnDocumentActionSelected.value) {
+        returnForm.reset()
+    }
+}
 
 const normalizeId = (value) => {
     return String(value ?? '').trim()
@@ -1878,17 +1999,18 @@ const formatFileSize = (bytes) => {
                     <select
                         v-model="actionTakenForm.IDactionType"
                         class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                        @change="handleActionDropdownChange"
                     >
                         <option value="">
                             Select action
                         </option>
 
                         <option
-                            v-for="actionType in actionTypes"
-                            :key="`action-type-${actionType.id}`"
-                            :value="actionType.id"
+                            v-for="actionType in actionDropdownOptions"
+                            :key="`action-type-${actionType.value}`"
+                            :value="actionType.value"
                         >
-                            {{ actionType.name }}
+                            {{ actionType.label }}
                         </option>
                     </select>
 
@@ -1907,7 +2029,98 @@ const formatFileSize = (bytes) => {
                     </p>
                 </div>
 
-                <div class="mt-5">
+                <div
+                    v-if="isTransferDocumentActionSelected"
+                    class="mt-5 rounded-2xl border border-indigo-200 bg-indigo-50 p-4"
+                >
+                    <p class="text-xs font-black uppercase tracking-[0.18em] text-indigo-700">
+                        Transfer Details
+                    </p>
+
+                    <div class="mt-4">
+                        <label class="text-sm font-black uppercase tracking-wide text-indigo-700">
+                            Transfer To Personnel <span class="text-red-600">*</span>
+                        </label>
+
+                        <select
+                            v-model="forwardForm.IDpersonnel"
+                            class="mt-2 w-full rounded-xl border border-indigo-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                        >
+                            <option value="">
+                                Select personnel
+                            </option>
+
+                            <option
+                                v-for="person in personnel"
+                                :key="person.ID"
+                                :value="person.ID"
+                            >
+                                {{ person.name }}{{ person.office_name ? ` — ${person.office_name}` : '' }}
+                            </option>
+                        </select>
+
+                        <p
+                            v-if="forwardForm.errors.IDpersonnel"
+                            class="mt-2 text-sm font-bold text-red-700"
+                        >
+                            {{ forwardForm.errors.IDpersonnel }}
+                        </p>
+                    </div>
+
+                    <div class="mt-4">
+                        <label class="text-sm font-black uppercase tracking-wide text-indigo-700">
+                            Transfer Remarks
+                        </label>
+
+                        <textarea
+                            v-model="forwardForm.remarks"
+                            rows="4"
+                            class="mt-2 w-full rounded-xl border border-indigo-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                            placeholder="Optional transfer remarks..."
+                        ></textarea>
+
+                        <p
+                            v-if="forwardForm.errors.remarks"
+                            class="mt-2 text-sm font-bold text-red-700"
+                        >
+                            {{ forwardForm.errors.remarks }}
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    v-else-if="isReturnDocumentActionSelected"
+                    class="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4"
+                >
+                    <p class="text-xs font-black uppercase tracking-[0.18em] text-rose-700">
+                        Return Details
+                    </p>
+
+                    <div class="mt-4">
+                        <label class="text-sm font-black uppercase tracking-wide text-rose-700">
+                            Return Remarks <span class="text-red-600">*</span>
+                        </label>
+
+                        <textarea
+                            v-model="returnForm.remarks"
+                            rows="5"
+                            class="mt-2 w-full rounded-xl border border-rose-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-100"
+                            placeholder="Type reason for returning this document..."
+                        ></textarea>
+
+                        <p
+                            v-if="returnForm.errors.remarks"
+                            class="mt-2 text-sm font-bold text-red-700"
+                        >
+                            {{ returnForm.errors.remarks }}
+                        </p>
+                    </div>
+                </div>
+
+                <div
+                    v-else
+                    class="mt-5"
+                >
                     <label class="text-sm font-black uppercase tracking-wide text-cyan-700">
                         Remarks
                     </label>
@@ -1927,46 +2140,11 @@ const formatFileSize = (bytes) => {
                     </p>
                 </div>
 
-                <div
-                    v-if="canTransferCurrentDocument || canReturnCurrentDocument"
-                    class="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4"
-                >
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
-                        Other Document Actions
-                    </p>
-
-                    <p class="mt-1 text-sm font-semibold text-slate-600">
-                        Transfer and Return are under Select Action. They are available only after the tagged document has been received and before the document reaches an end process.
-                    </p>
-
-                    <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <button
-                            v-if="canTransferCurrentDocument"
-                            type="button"
-                            class="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-black text-white hover:bg-indigo-700 disabled:opacity-60"
-                            :disabled="forwardForm.processing || actionTakenForm.processing"
-                            @click="openForwardFromActionModal"
-                        >
-                            Transfer Document
-                        </button>
-
-                        <button
-                            v-if="canReturnCurrentDocument"
-                            type="button"
-                            class="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-black text-white hover:bg-rose-700 disabled:opacity-60"
-                            :disabled="returnForm.processing || actionTakenForm.processing"
-                            @click="openReturnFromActionModal"
-                        >
-                            Return Document
-                        </button>
-                    </div>
-                </div>
-
                 <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
                     <button
                         type="button"
                         class="rounded-xl border border-slate-200 bg-white px-5 py-3 text-base font-black text-slate-700 hover:bg-slate-50"
-                        :disabled="actionTakenForm.processing"
+                        :disabled="isSelectedActionProcessing"
                         @click="closeActionTakenModal"
                     >
                         Cancel
@@ -1975,10 +2153,10 @@ const formatFileSize = (bytes) => {
                     <button
                         type="button"
                         class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
-                        :disabled="actionTakenForm.processing || !actionTakenForm.IDactionType"
+                        :disabled="isConfirmActionDisabled"
                         @click="actionTakenDocument"
                     >
-                        {{ actionTakenForm.processing ? 'Saving...' : 'Confirm' }}
+                        {{ confirmActionTakenLabel }}
                     </button>
                 </div>
             </div>
