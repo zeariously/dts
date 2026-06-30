@@ -33,6 +33,10 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    canTransferDts: {
+        type: Boolean,
+        default: false,
+    },
     canReattachDts: {
         type: Boolean,
         default: false,
@@ -61,9 +65,21 @@ const canManageDts = computed(() => {
     return !isSuperAdminViewOnly.value && ['1', '3'].includes(userRights.value)
 })
 
+const isRoleThree = computed(() => {
+    return userRights.value === '3'
+})
+
 const canReceiveDts = computed(() => {
     
     return !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
+})
+
+const canTransferDts = computed(() => {
+    /*
+     * Transfer has its own backend permission.
+     * Role 3 can transfer documents even when they are not the tagged receiver.
+     */
+    return !isSuperAdminViewOnly.value && Boolean(props.canTransferDts)
 })
 
 const canReattachDts = computed(() => {
@@ -237,7 +253,7 @@ const openReceiveModal = () => {
 }
 
 const openForwardModal = () => {
-    if (!canReceiveDts.value) return
+    if (!canQuickTransferCurrentDocument.value && !canTransferCurrentDocument.value) return
 
     showForwardModal.value = true
 }
@@ -245,7 +261,7 @@ const openForwardModal = () => {
 const showActionTakenReceiveWarning = ref(false)
 
 const openActionTakenModal = () => {
-    if (!canActionTakenDts.value) return
+    if (!canOpenActionMenu.value) return
 
     showActionTakenReceiveWarning.value = false
     actionTakenForm.reset()
@@ -344,7 +360,7 @@ const receiveDocument = () => {
 }
 
 const forwardDocument = () => {
-    if (!canReceiveDts.value || !documentId.value) return
+    if ((!canQuickTransferCurrentDocument.value && !canTransferCurrentDocument.value) || !documentId.value) return
 
     forwardForm.post(`/dts/${documentId.value}/forward`, {
         preserveScroll: true,
@@ -356,7 +372,7 @@ const forwardDocument = () => {
 }
 
 const actionTakenDocument = () => {
-    if (!canActionTakenDts.value || !documentId.value) return
+    if (!canOpenActionMenu.value || !documentId.value) return
 
     if (isTransferDocumentActionSelected.value) {
         if (!canTransferCurrentDocument.value) return
@@ -783,10 +799,20 @@ const canTransferCurrentDocument = computed(() => {
      * Before receive: only Receive Document + View Action History are shown.
      * After receive: Select Action appears, and Transfer/Return are inside it.
      */
-    return canReceiveDts.value
+    return canTransferDts.value
         && !isDocumentClosedOrEnded.value
         && isDocumentReceivedForAction.value
         && !status.includes('pulled')
+})
+
+const canQuickTransferCurrentDocument = computed(() => {
+    /*
+     * Role 3 special rule:
+     * show Transfer Document immediately as a quick button,
+     * regardless if the document is already received or not.
+     */
+    return isRoleThree.value
+        && canTransferDts.value
 })
 
 const canReturnCurrentDocument = computed(() => {
@@ -805,14 +831,22 @@ const canReturnCurrentDocument = computed(() => {
         && !status.includes('pulled')
 })
 
-const actionDropdownOptions = computed(() => {
-    const options = (props.actionTypes || []).map((actionType) => ({
-        value: actionType.id ?? actionType.ID,
-        label: actionType.name ?? actionType.label ?? actionType.description ?? 'Unnamed Action',
-        isSystemAction: false,
-    }))
+const canOpenActionMenu = computed(() => {
+    return canActionTakenDts.value
+        || canTransferCurrentDocument.value
+        || canReturnCurrentDocument.value
+})
 
-    if (canTransferCurrentDocument.value) {
+const actionDropdownOptions = computed(() => {
+    const options = canActionTakenDts.value
+        ? (props.actionTypes || []).map((actionType) => ({
+            value: actionType.id ?? actionType.ID,
+            label: actionType.name ?? actionType.label ?? actionType.description ?? 'Unnamed Action',
+            isSystemAction: false,
+        }))
+        : []
+
+    if (!isRoleThree.value && canTransferCurrentDocument.value) {
         options.push({
             value: TRANSFER_DOCUMENT_ACTION,
             label: 'Transfer Document',
@@ -1477,10 +1511,20 @@ const formatFileSize = (bytes) => {
                             </button>
 
                             <button
-                                v-if="canActionTakenDts"
+                                v-if="canQuickTransferCurrentDocument"
+                                type="button"
+                                class="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-indigo-600 disabled:opacity-60"
+                                :disabled="forwardForm.processing"
+                                @click="openForwardModal"
+                            >
+                                {{ forwardForm.processing ? 'Transferring...' : 'Transfer Document' }}
+                            </button>
+
+                            <button
+                                v-if="canOpenActionMenu"
                                 type="button"
                                 class="rounded-xl bg-cyan-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-cyan-600 disabled:opacity-60"
-                                :disabled="actionTakenForm.processing"
+                                :disabled="isSelectedActionProcessing"
                                 @click="openActionTakenModal"
                             >
                                 Select Action

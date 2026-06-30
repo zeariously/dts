@@ -1666,6 +1666,7 @@ public function index(Request $request)
         ...$this->dtsNotificationProps(),
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
         'canReceiveDts' => $this->canReceiveDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
+        'canTransferDts' => $this->viewerCanTransferDocument((int) $document->IDdoc),
         'canReattachDts' => $this->viewerCanReattachDocument((int) $document->IDdoc),
         'canRemarkDts' => $this->canRemarkDts() && $this->viewerCanRemarkDocument((int) $document->IDdoc),
         'canActionTakenDts' => $this->canRemarkDts() && $this->viewerCanActOnDocument((int) $document->IDdoc),
@@ -1859,7 +1860,7 @@ public function pullout($id)
 public function forward(Request $request, $id)
 {
     $this->ensureCanReceiveDts();
-    $this->ensureViewerCanActOnDocument((int) $id);
+    $this->ensureViewerCanTransferDocument((int) $id);
 
     $validated = $request->validate([
         'IDpersonnel' => ['required', 'integer', 'exists:lu_personnel,ID'],
@@ -3967,6 +3968,29 @@ private function documentIsTaggedToViewer(int $documentId): bool
             }
         })
         ->exists();
+}
+
+private function viewerCanTransferDocument(int $documentId): bool
+{
+    /*
+     * Role 3 special rule:
+     * Can transfer any document they can access/view, regardless of
+     * receive status and regardless of the currently tagged personnel.
+     */
+    if ($this->currentUserRights() === '3') {
+        return $this->viewerCanAccessDocument($documentId);
+    }
+
+    if (! $this->canReceiveDts()) {
+        return false;
+    }
+
+    return $this->viewerCanActOnDocument($documentId);
+}
+
+private function ensureViewerCanTransferDocument(int $documentId): void
+{
+    abort_unless($this->viewerCanTransferDocument($documentId), 403);
 }
 
 private function viewerCanActOnDocument(int $documentId): bool
