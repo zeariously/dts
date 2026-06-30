@@ -69,6 +69,10 @@ const isRoleThree = computed(() => {
     return userRights.value === '3'
 })
 
+const isRoleTwo = computed(() => {
+    return userRights.value === '2'
+})
+
 const canReceiveDts = computed(() => {
     
     return !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
@@ -261,7 +265,7 @@ const openForwardModal = () => {
 const showActionTakenReceiveWarning = ref(false)
 
 const openActionTakenModal = () => {
-    if (!canOpenActionMenu.value) return
+    if (!canShowSelectActionButton.value) return
 
     showActionTakenReceiveWarning.value = false
     actionTakenForm.reset()
@@ -372,7 +376,7 @@ const forwardDocument = () => {
 }
 
 const actionTakenDocument = () => {
-    if (!canOpenActionMenu.value || !documentId.value) return
+    if (!canShowSelectActionButton.value || !documentId.value) return
 
     if (isTransferDocumentActionSelected.value) {
         if (!canTransferCurrentDocument.value) return
@@ -835,6 +839,24 @@ const canOpenActionMenu = computed(() => {
     return canActionTakenDts.value
         || canTransferCurrentDocument.value
         || canReturnCurrentDocument.value
+})
+
+const hasExistingActionTaken = computed(() => {
+    return (props.document.remarks_history || []).some((item) => {
+        return normalizeText(item?.action_type) === 'action_taken'
+    })
+})
+
+const canShowSelectActionButton = computed(() => {
+    /*
+     * Role 2 should select an action only once.
+     * Once an action_taken record exists, hide Select Action from Quick Actions.
+     */
+    if (isRoleTwo.value && hasExistingActionTaken.value) {
+        return false
+    }
+
+    return canOpenActionMenu.value
 })
 
 const actionDropdownOptions = computed(() => {
@@ -1521,7 +1543,7 @@ const formatFileSize = (bytes) => {
                             </button>
 
                             <button
-                                v-if="canOpenActionMenu"
+                                v-if="canShowSelectActionButton"
                                 type="button"
                                 class="rounded-xl bg-cyan-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-cyan-600 disabled:opacity-60"
                                 :disabled="isSelectedActionProcessing"
