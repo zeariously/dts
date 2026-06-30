@@ -2020,9 +2020,7 @@ const formatFileSize = (bytes) => {
             <div class="border-b border-blue-100 bg-blue-600 px-6 py-5 text-white">
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
-                            Audit Trail
-                        </p>
+                        
 
                         <h2 class="mt-2 text-2xl font-black">
                             Document Action History
@@ -2065,10 +2063,10 @@ const formatFileSize = (bytes) => {
                                     <p class="text-base font-black text-slate-900">
                                         {{ item.title }}
                                     </p>
-
+<!-- 
                                     <span class="rounded-full bg-white/80 px-3 py-1 text-xs font-black uppercase tracking-wide">
                                         {{ item.type }}
-                                    </span>
+                                    </span> -->
                                 </div>
 
                                 <!-- <p class="mt-2 text-sm font-semibold leading-6 text-slate-800">
