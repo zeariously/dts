@@ -849,6 +849,14 @@ const hasExistingActionTaken = computed(() => {
 
 const canShowSelectActionButton = computed(() => {
     /*
+     * Role 3 should only use the separate Transfer Document quick button.
+     * Even if the document is already received, Select Action must stay hidden.
+     */
+    if (isRoleThree.value) {
+        return false
+    }
+
+    /*
      * Role 2 should select an action only once.
      * Once an action_taken record exists, hide Select Action from Quick Actions.
      */
