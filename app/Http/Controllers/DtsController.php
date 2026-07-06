@@ -4188,6 +4188,12 @@ public function monitoringDashboard(Request $request)
 
     $search = trim((string) $request->input('search', ''));
     $status = trim((string) $request->input('status', ''));
+
+    $allowedMonitoringStatuses = ['', 'for-receiving', 'received', 'addressed', 'returned'];
+
+    if (! in_array($status, $allowedMonitoringStatuses, true)) {
+        $status = '';
+    }
     $perPage = (int) $request->input('per_page', 15);
 
     if ($perPage < 1) {
@@ -4353,7 +4359,7 @@ public function monitoringDashboard(Request $request)
                 $query->orWhereNotNull('dist.confirmdate');
             }
 
-            if (str_contains($statusSearch, 'pending') || str_contains($statusSearch, 'no action')) {
+            if (str_contains($statusSearch, 'for receiving') || str_contains($statusSearch, 'receiving')) {
                 $query->orWhere(function ($statusQuery) use ($trueValues) {
                     $statusQuery->whereNotNull('dist.distdate')
                         ->whereNull('dist.confirmdate')
@@ -4381,7 +4387,7 @@ public function monitoringDashboard(Request $request)
         });
     }
 
-    if ($status === 'no-action') {
+    if ($status === 'for-receiving') {
         $transactionsQuery
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
@@ -4399,7 +4405,28 @@ public function monitoringDashboard(Request $request)
     if ($status === 'received') {
         $transactionsQuery
             ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.confirmdate');
+            ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->when($hasAddressedActionTables, function ($query) {
+                /*
+                 * First Action (action_saved) remains Received.
+                 * Only Final Action (action_taken) removes the document from
+                 * the Received list and places it under Addressed.
+                 */
+                $query->whereNotExists(function ($subQuery) {
+                    $subQuery->select(DB::raw(1))
+                        ->from('dts_document_remarks as receivedFinalAction')
+                        ->whereColumn('receivedFinalAction.IDdoc', 'd.IDdoc')
+                        ->where('receivedFinalAction.action_type', 'action_taken');
+                });
+            });
     }
 
     if ($status === 'addressed') {
@@ -4425,9 +4452,20 @@ public function monitoringDashboard(Request $request)
     if ($status === 'returned') {
         $transactionsQuery
             ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereIn('dist.YNreturn', $trueValues)
-                    ->orWhereNotNull('dist.returndate');
+            ->whereExists(function ($query) use ($trueValues) {
+                /*
+                 * A Return creates a child distribution back to the encoder.
+                 * The latest distribution may therefore no longer carry the
+                 * YNreturn flag, so check the document's complete distribution
+                 * history instead of only the latest row.
+                 */
+                $query->select(DB::raw(1))
+                    ->from('distribution as returnedMonitoringDist')
+                    ->whereColumn('returnedMonitoringDist.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('returnedMonitoringDist.YNreturn', $trueValues)
+                            ->orWhereNotNull('returnedMonitoringDist.returndate');
+                    });
             });
     }
 
@@ -4455,8 +4493,11 @@ public function monitoringDashboard(Request $request)
         })
         ->count('d.IDdoc');
 
-    $statsBase = DB::table('distribution as dist')
-        ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
+    $statsBase = DB::table('document as d')
+        ->leftJoinSub($latestDistributionForMonitoring, 'latestStatsDist', function ($join) {
+            $join->on('latestStatsDist.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestStatsDist.latest_IDdist')
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
         });
@@ -4479,7 +4520,7 @@ public function monitoringDashboard(Request $request)
         'total_transactions' => $totalDocuments,
         'completed' => $completedDocuments,
 
-        'no_action' => (clone $statsBase)
+        'for_receiving' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
@@ -4492,29 +4533,53 @@ public function monitoringDashboard(Request $request)
                     ->orWhereNotIn('dist.YNpulled', $trueValues);
             })
             ->distinct()
-            ->count('dist.IDdoc'),
+            ->count('d.IDdoc'),
 
         'received' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->when($hasAddressedActionTables, function ($query) {
+                $query->whereNotExists(function ($subQuery) {
+                    $subQuery->select(DB::raw(1))
+                        ->from('dts_document_remarks as receivedStatsFinalAction')
+                        ->whereColumn('receivedStatsFinalAction.IDdoc', 'd.IDdoc')
+                        ->where('receivedStatsFinalAction.action_type', 'action_taken');
+                });
+            })
             ->distinct()
-            ->count('dist.IDdoc'),
+            ->count('d.IDdoc'),
 
         'returned' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereIn('dist.YNreturn', $trueValues)
-                    ->orWhereNotNull('dist.returndate');
+            ->whereExists(function ($query) use ($trueValues) {
+                $query->select(DB::raw(1))
+                    ->from('distribution as returnedStatsHistory')
+                    ->whereColumn('returnedStatsHistory.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('returnedStatsHistory.YNreturn', $trueValues)
+                            ->orWhereNotNull('returnedStatsHistory.returndate');
+                    });
             })
             ->distinct()
-            ->count('dist.IDdoc'),
+            ->count('d.IDdoc'),
 
         'pulled_out' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereIn('dist.YNpulled', $trueValues)
             ->distinct()
-            ->count('dist.IDdoc'),
+            ->count('d.IDdoc'),
     ];
+
+    // Backward compatibility for older cached frontend assets.
+    $stats['no_action'] = $stats['for_receiving'];
 
     /*
      * Table: Sino ang hindi uma-action?
@@ -4618,6 +4683,7 @@ public function monitoringDashboard(Request $request)
             'd.IDkeeper',
             'assignedPersonnel.name as assigned_personnel',
             'remarksTable.remarks',
+            'remarksTable.action_type',
             'remarksTable.created_at',
             DB::raw("COALESCE(NULLIF(TRIM(remarkUser.name), ''), NULLIF(TRIM(remarkUser.loginname), ''), CONCAT('Account #', remarkUser.ID)) as actor_name"),
             DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Addressed') as action_label"),
@@ -4628,7 +4694,17 @@ public function monitoringDashboard(Request $request)
             ->leftJoin('dts_action_types as actionType', 'actionType.id', '=', 'remarksTable.action_type_id')
             ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'remarksTable.created_by')
             ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
-            ->where('remarksTable.action_type', 'action_taken')
+            /*
+             * Return both First Action and Final Action for the Addressed modal,
+             * but only for documents that already have a Final Action.
+             */
+            ->whereIn('remarksTable.action_type', ['action_saved', 'action_taken'])
+            ->whereExists(function ($query) {
+                $query->select(DB::raw(1))
+                    ->from('dts_document_remarks as finalAddressedAction')
+                    ->whereColumn('finalAddressedAction.IDdoc', 'd.IDdoc')
+                    ->where('finalAddressedAction.action_type', 'action_taken');
+            })
             ->whereRaw($documentIsNotCompletedSql)
             ->when($selectedYear !== '', function ($query) use ($selectedYear) {
                 $query->whereYear('d.entrydate', (int) $selectedYear);
@@ -4654,6 +4730,9 @@ public function monitoringDashboard(Request $request)
             ->get();
 
         $actionTakenCount = $actionTakenItems
+            ->filter(function ($item) {
+                return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_taken';
+            })
             ->pluck('IDdoc')
             ->filter()
             ->unique()

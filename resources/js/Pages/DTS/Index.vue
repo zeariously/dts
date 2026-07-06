@@ -1334,17 +1334,9 @@ const submitEntryDateUpdate = () => {
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div>
                                 <p class="text-xs font-black uppercase tracking-[0.22em] text-red-100">
-                                    Automatic Action Reminder
+                                    NOTIFICATION REMINDER
                                 </p>
 
-                                <h2 class="mt-2 text-2xl font-black">
-                                    For Receiving and Received Documents Pending After 3 Days
-                                </h2>
-
-                                <p class="mt-1 max-w-3xl text-sm font-semibold text-red-100">
-                                    For Receiving documents are counted from the transfer date, while Received documents are counted from the received date.
-                                    Saved actions do not dismiss this reminder; it stops only after Close Action.
-                                </p>
                             </div>
 
                             <button

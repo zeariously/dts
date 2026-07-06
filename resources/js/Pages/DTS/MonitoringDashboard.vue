@@ -94,7 +94,7 @@ const closeActionTakenModal = () => {
 }
 
 const search = ref(props.filters.search || '')
-const status = ref(props.filters.status || '')
+const status = ref(props.filters.status ?? '')
 const perPage = ref(props.filters.per_page || 15)
 const selectedYear = ref(props.filters.year || '')
 const expandedPeople = ref({})
@@ -136,6 +136,16 @@ const documentRows = computed(() => {
     return Array.from(uniqueDocuments.values())
 })
 
+const normalizeActionType = (value) => {
+    return String(value || '').trim().toLowerCase()
+}
+
+const actionStageLabel = (actionType) => {
+    return normalizeActionType(actionType) === 'action_taken'
+        ? 'Final Action'
+        : 'First Action'
+}
+
 const actionTakenRows = computed(() => {
     const groupedDocuments = new Map()
 
@@ -150,10 +160,14 @@ const actionTakenRows = computed(() => {
         }
 
         const key = String(documentId)
+        const actionType = normalizeActionType(item?.action_type)
+        const isFinalAction = actionType === 'action_taken'
         const existing = groupedDocuments.get(key)
 
         const actionItem = {
             id: item.id,
+            action_type: actionType,
+            stage_label: actionStageLabel(actionType),
             action_label: item.action_label || 'Addressed',
             remarks: item.remarks || '',
             actor_name: item.actor_name || '-',
@@ -166,9 +180,11 @@ const actionTakenRows = computed(() => {
                 IDdoc: item.IDdoc ?? item.document_no,
                 document_no: item.document_no ?? item.IDdoc,
                 latest_action_label: actionItem.action_label,
+                latest_stage_label: actionItem.stage_label,
                 latest_remarks: actionItem.remarks,
                 latest_actor_name: actionItem.actor_name,
                 latest_action_at: actionItem.created_at,
+                has_final_action: isFinalAction,
                 actions: [actionItem],
             })
 
@@ -176,28 +192,48 @@ const actionTakenRows = computed(() => {
         }
 
         existing.actions.push(actionItem)
+        existing.has_final_action = existing.has_final_action || isFinalAction
 
         const existingTime = new Date(existing.latest_action_at || 0).getTime()
         const currentTime = new Date(actionItem.created_at || 0).getTime()
 
         if (!Number.isNaN(currentTime) && currentTime >= existingTime) {
             existing.latest_action_label = actionItem.action_label
+            existing.latest_stage_label = actionItem.stage_label
             existing.latest_remarks = actionItem.remarks
             existing.latest_actor_name = actionItem.actor_name
             existing.latest_action_at = actionItem.created_at
         }
     })
 
-    return Array.from(groupedDocuments.values()).sort((a, b) => {
-        const firstDate = new Date(a.latest_action_at || a.created_at || 0).getTime()
-        const secondDate = new Date(b.latest_action_at || b.created_at || 0).getTime()
+    return Array.from(groupedDocuments.values())
+        /*
+         * First Action alone remains Received. A document appears under
+         * Addressed only when it already has a Final Action.
+         */
+        .filter((item) => item.has_final_action)
+        .map((item) => ({
+            ...item,
+            actions: [...item.actions].sort((a, b) => {
+                return new Date(a.created_at || 0).getTime()
+                    - new Date(b.created_at || 0).getTime()
+            }),
+        }))
+        .sort((a, b) => {
+            const firstDate = new Date(a.latest_action_at || a.created_at || 0).getTime()
+            const secondDate = new Date(b.latest_action_at || b.created_at || 0).getTime()
 
-        return secondDate - firstDate
-    })
+            return secondDate - firstDate
+        })
 })
 
 const actionTakenCount = computed(() => {
-    return Number(props.stats?.action_taken_documents ?? actionTakenRows.value.length ?? 0)
+    return Number(
+        props.stats?.addressed
+        ?? props.stats?.action_taken_documents
+        ?? actionTakenRows.value.length
+        ?? 0
+    )
 })
 
 const totalPendingDocuments = computed(() => {
@@ -235,14 +271,14 @@ const pendingCount = (person) => {
 
 const statusOptions = [
     {
-        label: 'Overview',
+        label: 'Total Documents',
         value: '',
         shortLabel: 'All',
     },
     {
-        label: 'No Action Yet',
-        value: 'no-action',
-        shortLabel: 'No Action',
+        label: 'For Receiving',
+        value: 'for-receiving',
+        shortLabel: 'For Receiving',
     },
     {
         label: 'Received',
@@ -255,37 +291,27 @@ const statusOptions = [
         shortLabel: 'Addressed',
     },
     {
-        label: 'Completed',
-        value: 'completed',
-        shortLabel: 'Completed',
-    },
-    {
-        label: 'Returned',
+        label: 'Return',
         value: 'returned',
-        shortLabel: 'Returned',
-    },
-    {
-        label: 'Pulled Out',
-        value: 'pulled-out',
-        shortLabel: 'Pulled Out',
+        shortLabel: 'Return',
     },
 ]
 
 const activeStatusLabel = computed(() => {
-    return statusOptions.find((item) => item.value === status.value)?.label || 'Overview'
+    return statusOptions.find((item) => item.value === status.value)?.label || 'Total Documents'
 })
 
 const isAddressedView = computed(() => {
     return status.value === 'addressed'
 })
 
-const isCompletedView = computed(() => {
-    return status.value === 'completed'
-})
-
 const documentSectionTitle = computed(() => {
     if (status.value === '') {
         return 'All Documents'
+    }
+
+    if (status.value === 'returned') {
+        return 'Returned Documents'
     }
 
     return `${activeStatusLabel.value} Documents`
@@ -578,11 +604,12 @@ const daysPendingClass = (days) => {
         <main class="mx-auto max-w-[1700px] px-4 py-6 sm:px-6 lg:px-8">
             <!-- Main Workspace -->
             <section class="space-y-5">
-                <!-- Stats Cards -->
-                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
+                <!-- Monitoring Status Cards -->
+                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
                     <button
                         type="button"
                         class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
+                        :class="status === '' ? 'ring-2 ring-blue-400' : ''"
                         @click="setStatus('')"
                     >
                         <div class="flex items-center justify-between">
@@ -606,12 +633,13 @@ const daysPendingClass = (days) => {
 
                     <button
                         type="button"
-                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
-                        @click="setStatus('no-action')"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-amber-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-amber-100"
+                        :class="status === 'for-receiving' ? 'ring-2 ring-amber-400' : ''"
+                        @click="setStatus('for-receiving')"
                     >
                         <div class="flex items-center justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-2xl">
-                                ⏳
+                                📬
                             </div>
 
                             <span class="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">
@@ -620,42 +648,18 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.no_action ?? 0 }}
+                            {{ stats.for_receiving ?? 0 }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
-                            No Action Yet
+                            For Receiving
                         </p>
                     </button>
 
                     <button
                         type="button"
-                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
-                        @click="setStatus('addressed')"
-                    >
-                        <div class="flex items-center justify-between">
-                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-2xl">
-                                📌
-                            </div>
-
-                            <span class="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
-                                Addressed
-                            </span>
-                        </div>
-
-                        <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ actionTakenCount }}
-                        </p>
-
-                        <p class="mt-1 text-sm font-bold text-slate-500">
-                            Addressed
-                        </p>
-
-                    </button>
-
-                    <button
-                        type="button"
-                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-emerald-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-100"
+                        :class="status === 'received' ? 'ring-2 ring-emerald-400' : ''"
                         @click="setStatus('received')"
                     >
                         <div class="flex items-center justify-between">
@@ -679,39 +683,41 @@ const daysPendingClass = (days) => {
 
                     <button
                         type="button"
-                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-emerald-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-100"
-                        @click="setStatus('completed')"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-indigo-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-indigo-100"
+                        :class="status === 'addressed' ? 'ring-2 ring-indigo-400' : ''"
+                        @click="setStatus('addressed')"
                     >
                         <div class="flex items-center justify-between">
-                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-600 text-2xl text-white">
-                                ✅
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-2xl">
+                                📌
                             </div>
 
-                            <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
-                                Completed
+                            <span class="rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700">
+                                Addressed
                             </span>
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.completed ?? 0 }}
+                            {{ actionTakenCount }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
-                            Completed
+                            Addressed
                         </p>
                     </button>
 
                     <button
                         type="button"
-                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-rose-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-rose-100"
+                        :class="status === 'returned' ? 'ring-2 ring-rose-400' : ''"
                         @click="setStatus('returned')"
                     >
                         <div class="flex items-center justify-between">
-                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-purple-50 text-2xl">
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-2xl">
                                 ↩️
                             </div>
 
-                            <span class="rounded-full bg-purple-50 px-3 py-1 text-xs font-black text-purple-700">
+                            <span class="rounded-full bg-rose-50 px-3 py-1 text-xs font-black text-rose-700">
                                 Return
                             </span>
                         </div>
@@ -721,7 +727,7 @@ const daysPendingClass = (days) => {
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
-                            Returned
+                            Return
                         </p>
                     </button>
                 </section>
@@ -841,12 +847,21 @@ const daysPendingClass = (days) => {
 
                         <div class="flex flex-wrap gap-2">
                             <button
-                                v-if="status === 'no-action'"
+                                v-if="status === 'for-receiving'"
                                 type="button"
                                 class="rounded-full bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
                                 @click="openPendingModal"
                             >
                                 View by Personnel
+                            </button>
+
+                            <button
+                                v-if="status === 'addressed'"
+                                type="button"
+                                class="rounded-full bg-indigo-600 px-4 py-2 text-sm font-black text-white shadow-sm transition hover:bg-indigo-700"
+                                @click="openActionTakenModal"
+                            >
+                                View Action Stages
                             </button>
 
                             <span class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700 ring-1 ring-blue-100">
@@ -876,7 +891,7 @@ const daysPendingClass = (days) => {
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-center">
-                                        {{ isAddressedView ? 'Selected Action' : (isCompletedView ? 'Completed At' : 'Days Pending') }}
+                                        {{ isAddressedView ? 'Final Action' : 'Days Pending' }}
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-right">
@@ -913,24 +928,18 @@ const daysPendingClass = (days) => {
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
                                         <template v-if="isAddressedView">
                                             <span class="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700">
-                                                {{ document.latest_action_label || document.selected_action || 'Addressed' }}
+                                                Final Action
                                             </span>
+
+                                            <p class="mt-2 text-[11px] font-bold text-slate-600">
+                                                {{ document.latest_action_label || document.selected_action || 'Addressed' }}
+                                            </p>
 
                                             <p
                                                 v-if="document.latest_action_at"
                                                 class="mt-2 text-[11px] font-bold text-slate-500"
                                             >
                                                 {{ formatDate(document.latest_action_at) }}
-                                            </p>
-                                        </template>
-
-                                        <template v-else-if="isCompletedView">
-                                            <span class="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">
-                                                Completed
-                                            </span>
-
-                                            <p class="mt-2 text-[11px] font-bold text-slate-500">
-                                                {{ formatDate(document.completed_at) }}
                                             </p>
                                         </template>
 
@@ -1034,7 +1043,7 @@ const daysPendingClass = (days) => {
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-indigo-100">
-                                Review addressed documents by document for monitoring.
+                                Review First Action and Final Action records. Only documents with a Final Action are counted as Addressed.
                             </p>
                         </div>
 
@@ -1079,7 +1088,7 @@ const daysPendingClass = (days) => {
                                         </span>
 
                                         <span class="rounded-full bg-indigo-600 px-3 py-1 text-xs font-black text-white">
-                                            {{ item.actions?.length || 0 }} addressed action(s)
+                                            {{ item.actions?.length || 0 }} action stage(s)
                                         </span>
 
                                         <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
@@ -1091,7 +1100,12 @@ const daysPendingClass = (days) => {
                                         {{ item.subject || 'No subject' }}
                                     </p>
 
-                                    <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-600 md:grid-cols-3">
+                                    <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-600 md:grid-cols-4">
+                                        <p>
+                                            <span class="text-slate-900">Latest Stage:</span>
+                                            {{ item.latest_stage_label || 'Final Action' }}
+                                        </p>
+
                                         <p>
                                             <span class="text-slate-900">Selected Action:</span>
                                             {{ item.latest_action_label || 'Addressed' }}
@@ -1123,9 +1137,20 @@ const daysPendingClass = (days) => {
                                             class="rounded-xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200"
                                         >
                                             <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                                                <p class="text-sm font-black text-indigo-700">
-                                                    {{ action.action_label || 'Addressed' }}
-                                                </p>
+                                                <div>
+                                                    <span
+                                                        class="inline-flex rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wide"
+                                                        :class="action.action_type === 'action_taken'
+                                                            ? 'bg-indigo-600 text-white'
+                                                            : 'bg-cyan-100 text-cyan-800'"
+                                                    >
+                                                        {{ action.stage_label }}
+                                                    </span>
+
+                                                    <p class="mt-2 text-sm font-black text-indigo-700">
+                                                        {{ action.action_label || 'Addressed' }}
+                                                    </p>
+                                                </div>
 
                                                 <p class="text-xs font-bold text-slate-500">
                                                     {{ action.actor_name || '-' }} • {{ formatDate(action.created_at) }}
@@ -1175,7 +1200,7 @@ const daysPendingClass = (days) => {
             </div>
         </div>
 
-        <!-- Pending Monitoring Modal -->
+        <!-- For Receiving Monitoring Modal -->
         <div
             v-if="showPendingModal"
             class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
@@ -1186,15 +1211,15 @@ const daysPendingClass = (days) => {
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                             <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
-                                Pending Monitoring
+                                For Receiving Monitoring
                             </p>
 
                             <h2 class="mt-2 text-2xl font-black">
-                                Personnel with Pending Receive / Action
+                                Personnel with For Receiving Documents
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-blue-100">
-                                Review pending documents by personnel.
+                                Review documents waiting to be received by personnel.
                             </p>
                         </div>
 
@@ -1212,7 +1237,7 @@ const daysPendingClass = (days) => {
                     <div class="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3">
                         <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-blue-100">
                             <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-600">
-                                Pending Personnel
+                                Receiving Personnel
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-blue-800">
@@ -1222,7 +1247,7 @@ const daysPendingClass = (days) => {
 
                         <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-sky-100">
                             <p class="text-xs font-black uppercase tracking-[0.18em] text-sky-600">
-                                Pending Documents
+                                For Receiving Documents
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-sky-800">
@@ -1253,7 +1278,7 @@ const daysPendingClass = (days) => {
                                         </p>
 
                                         <p class="mt-1 text-xs font-semibold text-slate-500">
-                                            Click to view assigned pending documents.
+                                            Click to view documents waiting to be received.
                                         </p>
                                     </div>
                                 </div>
@@ -1286,7 +1311,7 @@ const daysPendingClass = (days) => {
                                 class="border-t border-slate-100 bg-blue-50/50 p-4">
                                 <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
-                                        Pending Documents of {{ person.personnel_name || 'Unassigned' }}
+                                        For Receiving Documents of {{ person.personnel_name || 'Unassigned' }}
                                     </p>
 
                                     <p class="w-fit rounded-full bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm">
@@ -1345,7 +1370,7 @@ const daysPendingClass = (days) => {
                                         </p>
 
                                         <p class="mt-3 text-base font-black text-slate-800">
-                                            No pending documents found.
+                                            No documents waiting to be received.
                                         </p>
                                     </div>
                                 </div>
@@ -1361,7 +1386,7 @@ const daysPendingClass = (days) => {
                             </p>
 
                             <h3 class="mt-4 text-lg font-black text-emerald-800">
-                                No personnel with pending action.
+                                No personnel with documents waiting to be received.
                             </h3>
 
                             <p class="mt-2 text-sm font-semibold text-emerald-700">
