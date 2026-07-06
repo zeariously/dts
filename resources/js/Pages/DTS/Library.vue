@@ -29,15 +29,6 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
-    actionTypes: {
-        type: Array,
-        default: () => [],
-    },
-    // Backward support: some controller versions send this as addresses.
-    addresses: {
-        type: Array,
-        default: () => [],
-    },
 })
 
 const page = usePage()
@@ -50,13 +41,6 @@ const canManageDts = computed(() => {
     return ['1', '3'].includes(userRights.value)
 })
 
-const canManageActionTakenLibrary = computed(() => {
-    /*
-     * Role 2 can manage ONLY the Action Taken library.
-     * Other Library tabs stay viewer-only for Role 2.
-     */
-    return userRights.value === '2' && activeLibrary.value === 'action-types'
-})
 
 const currentParams = computed(() => {
     const queryString = page.url.includes('?') ? page.url.split('?')[1] : ''
@@ -65,7 +49,10 @@ const currentParams = computed(() => {
 })
 
 const activeLibrary = computed(() => {
-    return currentParams.value.get('tab') || 'personnel'
+    const requestedTab = currentParams.value.get('tab') || 'personnel'
+    const allowedTabs = ['personnel', 'office', 'doctype']
+
+    return allowedTabs.includes(requestedTab) ? requestedTab : 'personnel'
 })
 
 const selectedRows = ref([])
@@ -101,11 +88,6 @@ const attachmentForm = useForm({
     description: '',
 })
 
-const actionTypeForm = useForm({
-    name: '',
-    description: '',
-})
-
 const deleteForm = useForm({
     ids: [],
 })
@@ -114,7 +96,6 @@ const libraryMenus = [
     { key: 'personnel', label: 'Personnel' },
     { key: 'office', label: 'Office' },
     { key: 'doctype', label: 'Doc Type' },
-    { key: 'action-types', label: 'Action Taken' },
 ]
 
 const activeTitle = computed(() => {
@@ -126,11 +107,7 @@ const libraryTabHref = (tab) => {
 }
 
 const canManageActiveLibrary = computed(() => {
-    if (activeLibrary.value === 'action-types') {
-        return canManageDts.value || canManageActionTakenLibrary.value
-    }
-
-    return canManageDts.value && ['personnel', 'office', 'doctype', 'attachment'].includes(activeLibrary.value)
+    return canManageDts.value && ['personnel', 'office', 'doctype'].includes(activeLibrary.value)
 })
 
 const getValue = (row, keys) => {
@@ -219,25 +196,12 @@ const normalizedAttachments = computed(() => {
     }))
 })
 
-const normalizedActionTypes = computed(() => {
-    const records = props.actionTypes && props.actionTypes.length
-        ? props.actionTypes
-        : (props.addresses || [])
-
-    return records.map((item, index) => ({
-        ID: item.ID ?? item.id ?? `action-type-${index}`,
-        name: item.name ?? item.action_name ?? item.label ?? item.description ?? '-',
-        displayName: item.name ?? item.action_name ?? item.label ?? item.description ?? '-',
-        description: item.description ?? item.details ?? item.remarks ?? '',
-    }))
-})
 
 const sourceRows = computed(() => {
     if (activeLibrary.value === 'personnel') return normalizedPersonnel.value
     if (activeLibrary.value === 'office') return normalizedOffices.value
     if (activeLibrary.value === 'doctype') return normalizedDocTypes.value
     if (activeLibrary.value === 'attachment') return normalizedAttachments.value
-    if (activeLibrary.value === 'action-types') return normalizedActionTypes.value
 
     return []
 })
@@ -303,7 +267,6 @@ const activeFormProcessing = computed(() => {
         || officeForm.processing
         || docTypeForm.processing
         || attachmentForm.processing
-        || actionTypeForm.processing
 })
 
 const genericColumns = computed(() => {
@@ -322,12 +285,6 @@ const genericColumns = computed(() => {
         ]
     }
 
-    if (activeLibrary.value === 'action-types') {
-        return [
-            { key: 'displayName', label: 'Action Taken' },
-            { key: 'description', label: 'Description' },
-        ]
-    }
 
     return []
 })
@@ -383,9 +340,6 @@ const resetLibraryForms = () => {
 
     attachmentForm.reset()
     attachmentForm.clearErrors()
-
-    actionTypeForm.reset()
-    actionTypeForm.clearErrors()
 }
 
 const closeRecordModal = () => {
@@ -435,10 +389,6 @@ const openEditModal = (row) => {
         attachmentForm.description = row.description || ''
     }
 
-    if (activeLibrary.value === 'action-types') {
-        actionTypeForm.name = row.displayName || row.name || ''
-        actionTypeForm.description = row.description || ''
-    }
 
     showAddModal.value = false
     showEditModal.value = true
@@ -457,7 +407,6 @@ const formForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return officeForm
     if (activeLibrary.value === 'doctype') return docTypeForm
     if (activeLibrary.value === 'attachment') return attachmentForm
-    if (activeLibrary.value === 'action-types') return actionTypeForm
 
     return null
 }
@@ -467,7 +416,6 @@ const storeUrlForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return '/dts/library/office/store'
     if (activeLibrary.value === 'doctype') return '/dts/library/doctype/store'
     if (activeLibrary.value === 'attachment') return '/dts/library/attachment/store'
-    if (activeLibrary.value === 'action-types') return '/dts/library/action-types'
 
     return ''
 }
@@ -477,7 +425,6 @@ const updateUrlForActiveLibrary = (id) => {
     if (activeLibrary.value === 'office') return `/dts/library/office/${id}/update`
     if (activeLibrary.value === 'doctype') return `/dts/library/doctype/${id}/update`
     if (activeLibrary.value === 'attachment') return `/dts/library/attachment/${id}/update`
-    if (activeLibrary.value === 'action-types') return `/dts/library/action-types/${id}`
 
     return ''
 }
@@ -487,7 +434,6 @@ const deleteUrlForActiveLibrary = () => {
     if (activeLibrary.value === 'office') return '/dts/library/office/delete'
     if (activeLibrary.value === 'doctype') return '/dts/library/doctype/delete'
     if (activeLibrary.value === 'attachment') return '/dts/library/attachment/delete'
-    if (activeLibrary.value === 'action-types') return '/dts/library/action-types'
 
     return ''
 }
@@ -513,10 +459,6 @@ const saveRecord = () => {
         },
     }
 
-    if (isEditing && activeLibrary.value === 'action-types') {
-        form.patch(url, options)
-        return
-    }
 
     form.post(url, options)
 }
@@ -554,9 +496,6 @@ const deleteModalTitle = computed(() => {
         return 'Delete Attachment Record'
     }
 
-    if (activeLibrary.value === 'action-types') {
-        return 'Delete Action Taken Record'
-    }
 
     return 'Delete Record'
 })
@@ -582,9 +521,6 @@ const deleteModalMessage = computed(() => {
         return `Are you sure you want to delete "${recordToDelete.value.displayName}"?`
     }
 
-    if (activeLibrary.value === 'action-types') {
-        return `Are you sure you want to delete "${recordToDelete.value.displayName}"?`
-    }
 
     return 'Are you sure you want to delete this record?'
 })
@@ -607,10 +543,6 @@ const confirmDeleteRecord = () => {
         },
     }
 
-    if (activeLibrary.value === 'action-types') {
-        deleteForm.delete(url, options)
-        return
-    }
 
     deleteForm.post(url, options)
 }
@@ -1318,49 +1250,6 @@ const confirmDeleteRecord = () => {
                             class="mt-1 text-xs text-red-600"
                         >
                             {{ attachmentForm.errors.description }}
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Action Taken Form -->
-                <div v-if="activeLibrary === 'action-types'" class="space-y-4">
-                    <div>
-                        <label class="mb-1 block text-sm font-semibold text-slate-700">
-                            Action Taken
-                        </label>
-
-                        <input
-                            v-model="actionTypeForm.name"
-                            type="text"
-                            class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                            placeholder="Example: Emailed, Filed, Called, Delivered"
-                        />
-
-                        <p
-                            v-if="actionTypeForm.errors.name"
-                            class="mt-1 text-xs text-red-600"
-                        >
-                            {{ actionTypeForm.errors.name }}
-                        </p>
-                    </div>
-
-                    <div>
-                        <label class="mb-1 block text-sm font-semibold text-slate-700">
-                            Description
-                        </label>
-
-                        <textarea
-                            v-model="actionTypeForm.description"
-                            rows="3"
-                            class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                            placeholder="Optional description"
-                        ></textarea>
-
-                        <p
-                            v-if="actionTypeForm.errors.description"
-                            class="mt-1 text-xs text-red-600"
-                        >
-                            {{ actionTypeForm.errors.description }}
                         </p>
                     </div>
                 </div>
