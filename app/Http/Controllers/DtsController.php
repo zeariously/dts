@@ -3791,15 +3791,11 @@ public function storeRemark(Request $request, $id)
 public function actionTakenDocument(Request $request, $id)
 {
     /*
-     * Two-action Address workflow:
-     * - Save creates a non-final action record (action_saved).
-     * - A maximum of two Address actions may be stored.
-     * - Close Action creates the final record (action_taken), or converts the
-     *   second saved action into the final record when two actions already exist.
-     * - Only action_taken makes the document Addressed. action_saved keeps it
-     *   under Received so Select Action remains available.
-     *
-     * Transfer and Return continue to use their existing endpoints.
+     * Addressed workflow:
+     * - First Action creates action_saved and keeps the document Received.
+     * - Final Action creates action_taken and makes the document Addressed.
+     * - First Action is optional; Final Action may be saved immediately.
+     * - Transfer and Return continue to use their own routing endpoints.
      */
     $this->ensureCanRemarkDts();
     $this->ensureViewerCanActOnDocument((int) $id);
@@ -3820,7 +3816,31 @@ public function actionTakenDocument(Request $request, $id)
     }
 
     $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
-    $closeAction = $request->boolean('close_action');
+
+    /*
+     * Backward-compatible fallback:
+     * Older Show.vue versions sent close_action only. The updated page sends
+     * action_stage explicitly as first or final.
+     */
+    $actionStage = strtolower(trim((string) $request->input('action_stage', '')));
+
+    if (! in_array($actionStage, ['first', 'final'], true)) {
+        $actionStage = $request->boolean('close_action') ? 'final' : 'first';
+    }
+
+    $closeAction = $actionStage === 'final';
+
+    $request->merge([
+        'action_stage' => $actionStage,
+        'close_action' => $closeAction,
+    ]);
+
+    $validated = $request->validate([
+        'IDactionType' => ['required', 'string', 'in:__address_document__'],
+        'action_stage' => ['required', 'string', 'in:first,final'],
+        'remarks' => ['required', 'string'],
+        'close_action' => ['nullable', 'boolean'],
+    ]);
 
     $existingAddressActions = DB::table('dts_document_remarks')
         ->where('IDdoc', $document->IDdoc)
@@ -3834,34 +3854,25 @@ public function actionTakenDocument(Request $request, $id)
 
     if ($alreadyClosed) {
         return back()->withErrors([
-            'action' => 'This document action is already closed and addressed.',
+            'action' => 'The Final Action has already been saved. This document is already Addressed.',
         ]);
     }
 
     $existingActionCount = $existingAddressActions->count();
 
-    if (! $closeAction && $existingActionCount >= 2) {
+    if ($actionStage === 'first' && $existingActionCount >= 1) {
         return back()->withErrors([
-            'action' => 'Two actions have already been saved. Click Close Action to finalize the document.',
+            'action_stage' => 'First Action is already saved. Select Final Action.',
         ]);
     }
 
     /*
-     * When two actions have already been saved, Close Action finalizes the
-     * latest saved action without creating a third record.
+     * Compatibility for documents that already have two action_saved rows from
+     * the previous interface: Final Action converts the latest saved row instead
+     * of creating a third record.
      */
-    $closeExistingSecondAction = $closeAction && $existingActionCount >= 2;
-
-    $rules = [
-        'close_action' => ['nullable', 'boolean'],
-    ];
-
-    if (! $closeExistingSecondAction) {
-        $rules['IDactionType'] = ['required', 'string', 'in:__address_document__'];
-        $rules['remarks'] = ['required', 'string'];
-    }
-
-    $validated = $request->validate($rules);
+    $finalizeExistingLatestAction = $actionStage === 'final'
+        && $existingActionCount >= 2;
 
     $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
         ->orderByDesc('IDdist')
@@ -3869,13 +3880,11 @@ public function actionTakenDocument(Request $request, $id)
 
     if (! $latestDistribution || empty($latestDistribution->confirmdate)) {
         return back()->withErrors([
-            'action' => 'Address is available only after the document is received.',
+            'action' => 'Addressed is available only after the document is received.',
         ]);
     }
 
-    $remarks = $closeExistingSecondAction
-        ? trim((string) ($existingAddressActions->last()->remarks ?? ''))
-        : trim((string) ($validated['remarks'] ?? ''));
+    $remarks = trim((string) $validated['remarks']);
 
     $addressActionTypeId = Schema::hasTable('dts_action_types')
         ? DB::table('dts_action_types')
@@ -3888,13 +3897,14 @@ public function actionTakenDocument(Request $request, $id)
         $document,
         $addressActionTypeId,
         $remarks,
-        $closeAction,
-        $closeExistingSecondAction,
+        $actionStage,
+        $finalizeExistingLatestAction,
         $existingAddressActions
     ) {
         $now = now();
+        $isFinalAction = $actionStage === 'final';
 
-        if ($closeExistingSecondAction) {
+        if ($finalizeExistingLatestAction) {
             $latestSavedAction = $existingAddressActions
                 ->reverse()
                 ->first(function ($item) {
@@ -3902,10 +3912,11 @@ public function actionTakenDocument(Request $request, $id)
                 });
 
             if (! $latestSavedAction) {
-                throw new \RuntimeException('No saved action was found to close.');
+                throw new \RuntimeException('No saved First Action was found to finalize.');
             }
 
             $updateData = [
+                'remarks' => $remarks,
                 'action_type' => 'action_taken',
                 'updated_at' => $now,
             ];
@@ -3933,7 +3944,7 @@ public function actionTakenDocument(Request $request, $id)
             $insertData = [
                 'IDdoc' => $document->IDdoc,
                 'remarks' => $remarks,
-                'action_type' => $closeAction ? 'action_taken' : 'action_saved',
+                'action_type' => $isFinalAction ? 'action_taken' : 'action_saved',
                 'action_type_id' => $addressActionTypeId,
                 'created_by' => Auth::id(),
                 'created_at' => $now,
@@ -3945,56 +3956,52 @@ public function actionTakenDocument(Request $request, $id)
             }
 
             if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
-                $insertData['action_status'] = $closeAction ? 'closed' : 'open';
+                $insertData['action_status'] = $isFinalAction ? 'closed' : 'open';
             }
 
-            if ($closeAction && Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
+            if ($isFinalAction && Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
                 $insertData['action_completed_at'] = $now;
             }
 
-            if ($closeAction && Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
+            if ($isFinalAction && Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
                 $insertData['action_completed_by'] = Auth::id();
             }
 
             DB::table('dts_document_remarks')->insert($insertData);
         }
 
-        if ($remarks !== '') {
-            $document->update([
-                'remarks' => $remarks,
-            ]);
-        }
+        $document->update([
+            'remarks' => $remarks,
+        ]);
     });
 
-    $newActionCount = min(2, $existingActionCount + ($closeExistingSecondAction ? 0 : 1));
-
-    if ($closeAction) {
+    if ($actionStage === 'final') {
         $this->recordDtsActivity(
-            'closed document action',
-            'Closed the action for document #' . $document->IDdoc . '.',
+            'saved final document action',
+            'Saved the Final Action for document #' . $document->IDdoc . '.',
             (int) $document->IDdoc,
             [
                 'action_name' => 'Address',
+                'action_stage' => 'final',
                 'remarks' => $remarks,
-                'saved_action_count' => $newActionCount,
             ]
         );
 
-        return back()->with('success', 'Action closed successfully. The document is now Addressed.');
+        return back()->with('success', 'Final Action saved. The document is now Addressed.');
     }
 
     $this->recordDtsActivity(
-        'saved document action',
-        'Saved action ' . $newActionCount . ' of 2 for document #' . $document->IDdoc . '.',
+        'saved first document action',
+        'Saved the First Action for document #' . $document->IDdoc . '.',
         (int) $document->IDdoc,
         [
             'action_name' => 'Address',
+            'action_stage' => 'first',
             'remarks' => $remarks,
-            'saved_action_count' => $newActionCount,
         ]
     );
 
-    return back()->with('success', 'Action saved successfully (' . $newActionCount . ' of 2).');
+    return back()->with('success', 'First Action saved successfully.');
 }
 
 public function completeDocument(Request $request, $id)

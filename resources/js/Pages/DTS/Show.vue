@@ -152,6 +152,7 @@ const forwardForm = useForm({
 
 const actionTakenForm = useForm({
     IDactionType: '',
+    action_stage: '',
     remarks: '',
     close_action: false,
 })
@@ -163,6 +164,9 @@ const returnForm = useForm({
 const ADDRESS_DOCUMENT_ACTION = '__address_document__'
 const TRANSFER_DOCUMENT_ACTION = '__transfer_document__'
 const RETURN_DOCUMENT_ACTION = '__return_document__'
+
+const FIRST_ADDRESS_ACTION = 'first'
+const FINAL_ADDRESS_ACTION = 'final'
 
 const remarkForm = useForm({
     remarks: '',
@@ -378,10 +382,17 @@ const forwardDocument = () => {
     })
 }
 
-const postAddressAction = (closeAction = false) => {
+const postAddressAction = () => {
     if (!canShowSelectActionButton.value || !documentId.value) return
+    if (!isAddressDocumentActionSelected.value) return
 
-    actionTakenForm.close_action = Boolean(closeAction)
+    const actionStage = String(actionTakenForm.action_stage || '').trim().toLowerCase()
+
+    if (![FIRST_ADDRESS_ACTION, FINAL_ADDRESS_ACTION].includes(actionStage)) {
+        return
+    }
+
+    actionTakenForm.close_action = actionStage === FINAL_ADDRESS_ACTION
 
     actionTakenForm.post(`/dts/${documentId.value}/action-taken`, {
         preserveScroll: true,
@@ -393,28 +404,13 @@ const postAddressAction = (closeAction = false) => {
     })
 }
 
-const saveSelectedAction = () => {
-    /*
-     * Save is strictly for the Address workflow. Transfer and Return must use
-     * their own direct routing button and must never create action_saved rows.
-     */
+const submitSelectedAction = () => {
     if (!canShowSelectActionButton.value || !documentId.value) return
-    if (!isAddressDocumentActionSelected.value) return
-    if (!canSaveAnotherAddressAction.value) return
 
-    postAddressAction(false)
-}
-
-const closeSelectedAction = () => {
-    /* Close Action is also strictly for Address. */
-    if (!canShowSelectActionButton.value || !documentId.value) return
-    if (!isAddressDocumentActionSelected.value && !hasReachedAddressActionLimit.value) return
-
-    postAddressAction(true)
-}
-
-const submitRoutingAction = () => {
-    if (!canShowSelectActionButton.value || !documentId.value) return
+    if (isAddressDocumentActionSelected.value) {
+        postAddressAction()
+        return
+    }
 
     if (isTransferDocumentActionSelected.value) {
         if (!canTransferCurrentDocument.value) return
@@ -890,20 +886,20 @@ const hasExistingActionTaken = computed(() => {
     })
 })
 
-const hasReachedAddressActionLimit = computed(() => {
-    return savedAddressActionCount.value >= 2 && !hasExistingActionTaken.value
+const canChooseFirstAddressAction = computed(() => {
+    return !hasExistingActionTaken.value && savedAddressActionCount.value === 0
 })
 
-const canSaveAnotherAddressAction = computed(() => {
-    return !hasExistingActionTaken.value && savedAddressActionCount.value < 2
+const canChooseFinalAddressAction = computed(() => {
+    // Final Action may be selected immediately, even without a saved First Action.
+    return !hasExistingActionTaken.value
 })
 
 const canShowSelectActionButton = computed(() => {
     /*
-     * Keep Select Action available after the first Save. It disappears only
-     * after Close Action creates the final action_taken record.
-     * Role 3 may also open the menu so it can use Return and populate its
-     * Returned card.
+     * After First Action is saved, Select Action remains available.
+     * It disappears only after Final Action creates action_taken and the
+     * document becomes Addressed.
      */
     if (hasExistingActionTaken.value) {
         return false
@@ -954,24 +950,16 @@ const isReturnDocumentActionSelected = computed(() => {
     return String(actionTakenForm.IDactionType || '') === RETURN_DOCUMENT_ACTION
 })
 
+const isFirstAddressActionSelected = computed(() => {
+    return String(actionTakenForm.action_stage || '') === FIRST_ADDRESS_ACTION
+})
+
+const isFinalAddressActionSelected = computed(() => {
+    return String(actionTakenForm.action_stage || '') === FINAL_ADDRESS_ACTION
+})
+
 const saveActionLabel = computed(() => {
-    return actionTakenForm.processing ? 'Saving...' : 'Save'
-})
-
-const closeActionLabel = computed(() => {
-    return actionTakenForm.processing ? 'Closing...' : 'Close Action'
-})
-
-const routingActionLabel = computed(() => {
-    if (isTransferDocumentActionSelected.value) {
-        return forwardForm.processing ? 'Transferring...' : 'Transfer'
-    }
-
-    if (isReturnDocumentActionSelected.value) {
-        return returnForm.processing ? 'Returning...' : 'Return'
-    }
-
-    return 'Continue'
+    return isSelectedActionProcessing.value ? 'Saving...' : 'Save'
 })
 
 const isSelectedActionProcessing = computed(() => {
@@ -993,53 +981,38 @@ const selectedActionFieldsAreValid = computed(() => {
     }
 
     if (isAddressDocumentActionSelected.value) {
-        return Boolean(String(actionTakenForm.remarks || '').trim())
+        const hasRemarks = Boolean(String(actionTakenForm.remarks || '').trim())
+
+        if (!hasRemarks) {
+            return false
+        }
+
+        if (isFirstAddressActionSelected.value) {
+            return canChooseFirstAddressAction.value
+        }
+
+        if (isFinalAddressActionSelected.value) {
+            return canChooseFinalAddressAction.value
+        }
+
+        return false
     }
 
     return false
 })
 
 const isSaveActionDisabled = computed(() => {
-    if (isSelectedActionProcessing.value) {
-        return true
-    }
-
-    if (isAddressDocumentActionSelected.value && !canSaveAnotherAddressAction.value) {
-        return true
-    }
-
-    return !selectedActionFieldsAreValid.value
-})
-
-const isCloseActionDisabled = computed(() => {
-    if (isSelectedActionProcessing.value) {
-        return true
-    }
-
-    /* Two saved Address actions can be closed without creating a third row. */
-    if (hasReachedAddressActionLimit.value) {
-        return false
-    }
-
-    return !selectedActionFieldsAreValid.value
-})
-
-const isRoutingActionDisabled = computed(() => {
-    if (isSelectedActionProcessing.value) {
-        return true
-    }
-
-    if (!isTransferDocumentActionSelected.value && !isReturnDocumentActionSelected.value) {
-        return true
-    }
-
-    return !selectedActionFieldsAreValid.value
+    return isSelectedActionProcessing.value || !selectedActionFieldsAreValid.value
 })
 
 const handleActionDropdownChange = () => {
     actionTakenForm.clearErrors()
     forwardForm.clearErrors()
     returnForm.clearErrors()
+
+    actionTakenForm.action_stage = ''
+    actionTakenForm.close_action = false
+    actionTakenForm.remarks = ''
 
     if (!isTransferDocumentActionSelected.value) {
         forwardForm.reset()
@@ -1048,6 +1021,11 @@ const handleActionDropdownChange = () => {
     if (!isReturnDocumentActionSelected.value) {
         returnForm.reset()
     }
+}
+
+const handleAddressStageChange = () => {
+    actionTakenForm.clearErrors()
+    actionTakenForm.close_action = isFinalAddressActionSelected.value
 }
 
 const normalizeId = (value) => {
@@ -2177,7 +2155,6 @@ const formatFileSize = (bytes) => {
                     <select
                         v-model="actionTakenForm.IDactionType"
                         class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
-                        :disabled="hasReachedAddressActionLimit"
                         @change="handleActionDropdownChange"
                     >
                         <option value="">
@@ -2207,23 +2184,7 @@ const formatFileSize = (bytes) => {
                         {{ actionTakenForm.errors.action }}
                     </p>
 
-                    <div
-                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
-                        class="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3"
-                    >
-                        <p class="text-sm font-black text-cyan-900">
-                            Addressed actions: {{ savedAddressActionCount }} / 2
-                        </p>
-
-                      
-
-                        <p
-                            v-if="hasReachedAddressActionLimit"
-                            class="mt-2 text-sm font-black text-amber-800"
-                        >
-                            Two actions are already saved. Click Close Action to finalize without adding a third action.
-                        </p>
-                    </div>
+                    
                 </div>
 
                 <div
@@ -2315,27 +2276,67 @@ const formatFileSize = (bytes) => {
                 </div>
 
                 <div
-                    v-else-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
-                    class="mt-5"
+                    v-else-if="isAddressDocumentActionSelected"
+                    class="mt-5 space-y-5"
                 >
-                    <label class="text-sm font-black uppercase tracking-wide text-cyan-700">
-                        Remarks <span class="text-red-600">*</span>
-                    </label>
+                    <div>
+                        <label class="text-sm font-black uppercase tracking-wide text-cyan-700">
+                            Action Stage <span class="text-red-600">*</span>
+                        </label>
 
-                    <textarea
-                        v-model="actionTakenForm.remarks"
-                        rows="4"
-                        class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
-                        :disabled="hasReachedAddressActionLimit"
-                        placeholder="Type address remarks..."
-                    ></textarea>
+                        <select
+                            v-model="actionTakenForm.action_stage"
+                            class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                            @change="handleAddressStageChange"
+                        >
+                            <option value="">
+                                Select action stage
+                            </option>
 
-                    <p
-                        v-if="actionTakenForm.errors.remarks"
-                        class="mt-2 text-sm font-bold text-red-700"
-                    >
-                        {{ actionTakenForm.errors.remarks }}
-                    </p>
+                            <option
+                                :value="FIRST_ADDRESS_ACTION"
+                                :disabled="!canChooseFirstAddressAction"
+                            >
+                                First Action
+                            </option>
+
+                            <option
+                                :value="FINAL_ADDRESS_ACTION"
+                                :disabled="!canChooseFinalAddressAction"
+                            >
+                                Final Action
+                            </option>
+                        </select>
+
+                        <p
+                            v-if="actionTakenForm.errors.action_stage"
+                            class="mt-2 text-sm font-bold text-red-700"
+                        >
+                            {{ actionTakenForm.errors.action_stage }}
+                        </p>
+
+                        
+                    </div>
+
+                    <div>
+                        <label class="text-sm font-black uppercase tracking-wide text-cyan-700">
+                            Remarks <span class="text-red-600">*</span>
+                        </label>
+
+                        <textarea
+                            v-model="actionTakenForm.remarks"
+                            rows="4"
+                            class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                            placeholder="Type address remarks..."
+                        ></textarea>
+
+                        <p
+                            v-if="actionTakenForm.errors.remarks"
+                            class="mt-2 text-sm font-bold text-red-700"
+                        >
+                            {{ actionTakenForm.errors.remarks }}
+                        </p>
+                    </div>
                 </div>
 
                 <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
@@ -2349,33 +2350,12 @@ const formatFileSize = (bytes) => {
                     </button>
 
                     <button
-                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
                         type="button"
-                        class="rounded-xl border border-cyan-600 bg-white px-5 py-3 text-base font-black text-cyan-700 hover:bg-cyan-50 disabled:opacity-60"
+                        class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
                         :disabled="isSaveActionDisabled"
-                        @click="saveSelectedAction"
+                        @click="submitSelectedAction"
                     >
                         {{ saveActionLabel }}
-                    </button>
-
-                    <button
-                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
-                        type="button"
-                        class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
-                        :disabled="isCloseActionDisabled"
-                        @click="closeSelectedAction"
-                    >
-                        {{ closeActionLabel }}
-                    </button>
-
-                    <button
-                        v-else-if="isTransferDocumentActionSelected || isReturnDocumentActionSelected"
-                        type="button"
-                        class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
-                        :disabled="isRoutingActionDisabled"
-                        @click="submitRoutingAction"
-                    >
-                        {{ routingActionLabel }}
                     </button>
                 </div>
             </div>
