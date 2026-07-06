@@ -265,9 +265,6 @@ const validateRequiredFields = () => {
     if (!String(form.subject || '').trim()) {
         errors.subject = 'Subject is required.'
     }
-    if (!String(form.regarding || '').trim()) {
-        errors.regarding = 'Regarding is required.'
-    }
 
     if (!String(form.staff_concern_id || '').trim()) {
         errors.staff_concern_id = 'Staff Concern is required.'
@@ -556,23 +553,15 @@ const submitForm = () => {
 
                 <div>
                     <label class="mb-1 block text-sm font-bold text-slate-700">
-                        Regarding<span class="text-red-600">*</span>
+                        Regarding
                     </label>
 
                     <textarea
                         v-model="form.regarding"
-                        rows="4"
-                        required
+                        rows="3"
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                        placeholder="Enter regarding"
+                        placeholder="Enter regarding details"
                     ></textarea>
-
-                    <p
-                        v-if="form.errors.regarding"
-                        class="mt-2 text-xs font-bold text-red-700"
-                    >
-                        {{ form.errors.regarding }}
-                    </p>
                 </div>
 
                 <div>

@@ -23,6 +23,9 @@ class DtsController extends Controller
 
 public function index(Request $request)
 {
+    // Always define this so accounts without mapped personnel do not trigger a 500.
+    $automaticStatusReminders = collect();
+
     $perPage = (int) $request->input('per_page', 10);
     $search = trim((string) $request->input('search', ''));
     $section = $request->input('section', 'documents');
@@ -774,58 +777,77 @@ public function index(Request $request)
         }
     }
 
-    if (in_array($filter, ['in-progress', 'addressed'], true) || $section === 'addressed-docs') {
+    if (
+        in_array($filter, ['in-progress', 'addressed', 'completed'], true)
+        || in_array($section, ['addressed-docs', 'completed-docs'], true)
+    ) {
         /*
-         * In Progress = received, has one or more saved Select Actions, and is
-         * not yet manually marked as Completed. The old addressed filter is
-         * still accepted for backward-compatible links.
+         * Addressed is the final handled state.
+         *
+         * A document is Addressed when it has a saved Address action. Old
+         * manually completed records are also shown here for backward
+         * compatibility, but the Completed card/status is no longer used.
          */
-        if (Schema::hasTable('dts_document_remarks')) {
-            $documentsQuery
-                ->whereNotNull('dist.IDdist')
-                ->whereNotNull('dist.confirmdate')
-                ->whereRaw($documentIsNotCompletedSql)
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNreturn')
-                        ->orWhereNotIn('dist.YNreturn', $trueValues);
-                })
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNpulled')
-                        ->orWhereNotIn('dist.YNpulled', $trueValues);
-                })
-                ->whereExists(function ($query) {
-                    $query->select(DB::raw(1))
-                        ->from('dts_document_remarks as inProgressRemarks')
-                        ->whereColumn('inProgressRemarks.IDdoc', 'd.IDdoc')
-                        ->where('inProgressRemarks.action_type', 'action_taken');
-                });
-        } else {
-            $documentsQuery->whereRaw('1 = 0');
-        }
-    }
+        $documentsQuery
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->where(function ($query) use ($documentIsCompletedSql) {
+                if (Schema::hasTable('dts_document_remarks')) {
+                    $query->whereExists(function ($actionQuery) {
+                        $actionQuery->select(DB::raw(1))
+                            ->from('dts_document_remarks as addressedRemarks')
+                            ->whereColumn('addressedRemarks.IDdoc', 'd.IDdoc')
+                            ->where('addressedRemarks.action_type', 'action_taken');
+                    });
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
 
-    if ($filter === 'completed' || $section === 'completed-docs') {
-        $documentsQuery->whereRaw($documentIsCompletedSql);
+                $query->orWhereRaw($documentIsCompletedSql);
+            });
     }
 
     if ($filter === 'returned') {
         /*
-         * Returned tab:
-         * Do not rely on the latest distribution row only.
-         * When a document is returned, the old distribution is marked returned,
-         * then a new distribution may be created. In that case, the latest row
-         * is no longer the returned row, so the document disappeared from Returned.
+         * Returned is exclusive to Role 3.
+         * Show only documents whose actual return action was performed by
+         * an account with username.rights = 3. The returned parent
+         * distribution normally stores the actor in confirmuser; the child
+         * return distribution IDuser is used as a safe fallback.
          */
-        $documentsQuery
-            ->whereExists(function ($query) use ($trueValues) {
+        if ($currentRights !== '3') {
+            $documentsQuery->whereRaw('1 = 0');
+        } else {
+            $documentsQuery->whereExists(function ($query) use ($trueValues) {
                 $query->select(DB::raw(1))
                     ->from('distribution as returnedFilterDist')
+                    ->leftJoin('distribution as returnedFilterChild', function ($join) {
+                        $join->on('returnedFilterChild.IDparentdist', '=', 'returnedFilterDist.IDdist')
+                            ->on('returnedFilterChild.IDdoc', '=', 'returnedFilterDist.IDdoc');
+                    })
+                    ->leftJoin('username as returnedFilterUser', function ($join) {
+                        $join->on(
+                            'returnedFilterUser.ID',
+                            '=',
+                            DB::raw('COALESCE(returnedFilterDist.confirmuser, returnedFilterChild.IDuser)')
+                        );
+                    })
                     ->whereColumn('returnedFilterDist.IDdoc', 'd.IDdoc')
+                    ->where('returnedFilterUser.rights', 3)
                     ->where(function ($returnedQuery) use ($trueValues) {
                         $returnedQuery->whereIn('returnedFilterDist.YNreturn', $trueValues)
                             ->orWhereNotNull('returnedFilterDist.returndate');
                     });
             });
+        }
     }
 
     if ($filter === '15days') {
@@ -878,14 +900,12 @@ public function index(Request $request)
             $isCompleted = ! empty($doc->is_completed)
                 || ! empty($doc->completed_at);
 
-            if ($isCompleted) {
-                $doc->workflow_status = 'Completed';
-            } elseif ($isReturned) {
+            if ($isReturned) {
                 $doc->workflow_status = 'Returned';
             } elseif ($isPulled) {
                 $doc->workflow_status = 'Pulled Out';
-            } elseif ($hasSelectedAction && ! empty($doc->confirmdate)) {
-                $doc->workflow_status = 'In Progress';
+            } elseif ($isCompleted || ($hasSelectedAction && ! empty($doc->confirmdate))) {
+                $doc->workflow_status = 'Addressed';
             } elseif (! empty($doc->confirmdate)) {
                 $doc->workflow_status = 'Received';
             } elseif (! empty($doc->distdate)) {
@@ -1044,71 +1064,101 @@ public function index(Request $request)
             ->count('d.IDdoc'),
 
         /*
-         * In Progress = has one or more Select Actions, but not completed.
+         * Addressed = received and handled using the Address action.
+         * Legacy manually completed records are included as Addressed.
          */
-        'in_progress' => Schema::hasTable('dts_document_remarks')
-            ? (clone $makeStatsBaseQuery())
-                ->whereNotNull('dist.IDdist')
-                ->whereNotNull('dist.confirmdate')
-                ->whereRaw($documentIsNotCompletedSql)
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNreturn')
-                        ->orWhereNotIn('dist.YNreturn', $trueValues);
-                })
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNpulled')
-                        ->orWhereNotIn('dist.YNpulled', $trueValues);
-                })
-                ->whereExists(function ($query) {
-                    $query->select(DB::raw(1))
-                        ->from('dts_document_remarks as inProgressStatsRemarks')
-                        ->whereColumn('inProgressStatsRemarks.IDdoc', 'd.IDdoc')
-                        ->where('inProgressStatsRemarks.action_type', 'action_taken');
-                })
-                ->distinct()
-                ->count('d.IDdoc')
-            : 0,
-
-        /* Backward compatibility for older Vue code/links. */
-        'addressed' => Schema::hasTable('dts_document_remarks')
-            ? (clone $makeStatsBaseQuery())
-                ->whereNotNull('dist.IDdist')
-                ->whereNotNull('dist.confirmdate')
-                ->whereRaw($documentIsNotCompletedSql)
-                ->whereExists(function ($query) {
-                    $query->select(DB::raw(1))
-                        ->from('dts_document_remarks as addressedCompatRemarks')
-                        ->whereColumn('addressedCompatRemarks.IDdoc', 'd.IDdoc')
-                        ->where('addressedCompatRemarks.action_type', 'action_taken');
-                })
-                ->distinct()
-                ->count('d.IDdoc')
-            : 0,
-
-        /*
-         * Completed is global for Role 3, but current-tag-only for Role 2.
-         */
-        'completed' => (clone $makeCompletedStatsBaseQuery())
-            ->whereRaw($documentIsCompletedSql)
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'returned' => (clone $makeReturnedStatsBaseQuery())
-            /*
-             * Count any document with at least one returned distribution,
-             * not only documents whose latest distribution is returned.
-             */
-            ->whereExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as returnedStatsDist')
-                    ->whereColumn('returnedStatsDist.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('returnedStatsDist.YNreturn', $trueValues)
-                            ->orWhereNotNull('returnedStatsDist.returndate');
+        'addressed' => (clone $makeStatsBaseQuery())
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->where(function ($query) use ($documentIsCompletedSql) {
+                if (Schema::hasTable('dts_document_remarks')) {
+                    $query->whereExists(function ($actionQuery) {
+                        $actionQuery->select(DB::raw(1))
+                            ->from('dts_document_remarks as addressedStatsRemarks')
+                            ->whereColumn('addressedStatsRemarks.IDdoc', 'd.IDdoc')
+                            ->where('addressedStatsRemarks.action_type', 'action_taken');
                     });
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
+
+                $query->orWhereRaw($documentIsCompletedSql);
             })
             ->distinct()
             ->count('d.IDdoc'),
+
+        /* Backward-compatible key for old frontend builds. */
+        'in_progress' => (clone $makeStatsBaseQuery())
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->where(function ($query) use ($documentIsCompletedSql) {
+                if (Schema::hasTable('dts_document_remarks')) {
+                    $query->whereExists(function ($actionQuery) {
+                        $actionQuery->select(DB::raw(1))
+                            ->from('dts_document_remarks as addressedCompatRemarks')
+                            ->whereColumn('addressedCompatRemarks.IDdoc', 'd.IDdoc')
+                            ->where('addressedCompatRemarks.action_type', 'action_taken');
+                    });
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
+
+                $query->orWhereRaw($documentIsCompletedSql);
+            })
+            ->distinct()
+            ->count('d.IDdoc'),
+
+        /* Deprecated in the revised workflow. */
+        'completed' => 0,
+
+        'returned' => $currentRights === '3'
+            ? (clone $makeReturnedStatsBaseQuery())
+                /*
+                 * Role 3 Returned count:
+                 * Count only documents actually returned by Role 3 accounts.
+                 * The parent confirmuser identifies the receiver/return actor;
+                 * child IDuser is retained as a fallback.
+                 */
+                ->whereExists(function ($query) use ($trueValues) {
+                    $query->select(DB::raw(1))
+                        ->from('distribution as returnedStatsDist')
+                        ->leftJoin('distribution as returnedStatsChild', function ($join) {
+                            $join->on('returnedStatsChild.IDparentdist', '=', 'returnedStatsDist.IDdist')
+                                ->on('returnedStatsChild.IDdoc', '=', 'returnedStatsDist.IDdoc');
+                        })
+                        ->leftJoin('username as returnedStatsUser', function ($join) {
+                            $join->on(
+                                'returnedStatsUser.ID',
+                                '=',
+                                DB::raw('COALESCE(returnedStatsDist.confirmuser, returnedStatsChild.IDuser)')
+                            );
+                        })
+                        ->whereColumn('returnedStatsDist.IDdoc', 'd.IDdoc')
+                        ->where('returnedStatsUser.rights', 3)
+                        ->where(function ($returnedQuery) use ($trueValues) {
+                            $returnedQuery->whereIn('returnedStatsDist.YNreturn', $trueValues)
+                                ->orWhereNotNull('returnedStatsDist.returndate');
+                        });
+                })
+                ->distinct()
+                ->count('d.IDdoc')
+            : 0,
 
         'pending_docs' => (clone $makeStatsBaseQuery())
             ->whereNotNull('dist.IDdist')
@@ -1227,16 +1277,18 @@ public function index(Request $request)
     $currentUserId = $this->currentUserId();
 
     /*
-     * AUTOMATIC 3-DAY STATUS REMINDERS
+     * AUTOMATIC 3-DAY FOR RECEIVING / RECEIVED REMINDER
      *
-     * This list is separate from the notification bell. Index.vue opens a
-     * dedicated modal automatically once per day while a currently tagged
-     * document has stayed in one of these unresolved states for at least
-     * three days:
+     * This list is separate from the notification bell. The red modal appears
+     * for a currently tagged document that remains unresolved for at least
+     * three full days.
      *
-     * - For Receiving: counted from distribution.distdate
-     * - Received: counted from distribution.confirmdate when no Select Action exists
-     * - In Progress: counted from the latest Select Action date
+     * Rules:
+     * - For Receiving starts counting from distribution.distdate.
+     * - Received starts counting from distribution.confirmdate.
+     * - action_saved does not resolve the reminder.
+     * - Only the final action_taken / Close Action resolves it as Addressed.
+     * - Addressed, Returned, Pulled Out, and completed legacy records are excluded.
      */
     if (! empty($viewerPersonnelIds)) {
         $latestActionForReminder = Schema::hasTable('dts_document_remarks')
@@ -1299,41 +1351,33 @@ public function index(Request $request)
             });
         }
 
-        $reminderQuery->where(function ($statusQuery) use ($latestActionForReminder) {
-            /* For Receiving for 3+ days. */
-            $statusQuery->where(function ($query) {
-                $query->whereNull('dist.confirmdate')
-                    ->whereNotNull('dist.distdate')
-                    ->where('dist.distdate', '<=', now()->subDays(3));
-            });
-
-            /* Received for 3+ days without a Select Action. */
-            $statusQuery->orWhere(function ($query) use ($latestActionForReminder) {
-                $query->whereNotNull('dist.confirmdate')
-                    ->where('dist.confirmdate', '<=', now()->subDays(3));
-
-                if ($latestActionForReminder) {
-                    $query->whereNull('reminderActionLatest.latest_action_at');
-                }
-            });
-
-            /* In Progress for 3+ days since the latest Select Action. */
-            if ($latestActionForReminder) {
-                $statusQuery->orWhere(function ($query) {
-                    $query->whereNotNull('dist.confirmdate')
-                        ->whereNotNull('reminderActionLatest.latest_action_at')
-                        ->where('reminderActionLatest.latest_action_at', '<=', now()->subDays(3));
+        /*
+         * Red prompt rule:
+         * - For Receiving: three full days from distdate without confirmdate.
+         * - Received: three full days from confirmdate without Close Action.
+         * A saved/open action does not stop the prompt; only action_taken does.
+         */
+        $reminderQuery->where(function ($statusQuery) {
+            $statusQuery
+                ->where(function ($forReceivingQuery) {
+                    $forReceivingQuery
+                        ->whereNotNull('dist.distdate')
+                        ->whereNull('dist.confirmdate')
+                        ->where('dist.distdate', '<=', now()->subDays(3));
+                })
+                ->orWhere(function ($receivedQuery) {
+                    $receivedQuery
+                        ->whereNotNull('dist.confirmdate')
+                        ->where('dist.confirmdate', '<=', now()->subDays(3));
                 });
-            }
         });
 
-        $statusExpression = $latestActionForReminder
-            ? "CASE WHEN dist.confirmdate IS NULL THEN 'For Receiving' WHEN reminderActionLatest.latest_action_at IS NULL THEN 'Received' ELSE 'In Progress' END"
-            : "CASE WHEN dist.confirmdate IS NULL THEN 'For Receiving' ELSE 'Received' END";
+        if ($latestActionForReminder) {
+            $reminderQuery->whereNull('reminderActionLatest.latest_action_at');
+        }
 
-        $statusStartedAtExpression = $latestActionForReminder
-            ? 'CASE WHEN dist.confirmdate IS NULL THEN dist.distdate WHEN reminderActionLatest.latest_action_at IS NULL THEN dist.confirmdate ELSE reminderActionLatest.latest_action_at END'
-            : 'CASE WHEN dist.confirmdate IS NULL THEN dist.distdate ELSE dist.confirmdate END';
+        $statusExpression = "CASE WHEN dist.confirmdate IS NULL THEN 'For Receiving' ELSE 'Received' END";
+        $statusStartedAtExpression = 'CASE WHEN dist.confirmdate IS NULL THEN dist.distdate ELSE dist.confirmdate END';
 
         $automaticStatusReminders = $reminderQuery
             ->select([
@@ -1371,7 +1415,7 @@ public function index(Request $request)
                     'current_status' => $doc->current_status,
                     'status_started_at' => $doc->status_started_at,
                     'days_pending' => $statusStartedAt
-                        ? $statusStartedAt->diffInDays(now())
+                        ? (int) floor($statusStartedAt->diffInDays(now()))
                         : 0,
                 ];
             })
@@ -2025,14 +2069,15 @@ public function index(Request $request)
 
     $currentWorkflowStatus = 'Pending';
 
-    if ($isDocumentCompletedForSummary) {
-        $currentWorkflowStatus = 'Completed';
-    } elseif ($isLatestReturned) {
+    if ($isLatestReturned) {
         $currentWorkflowStatus = 'Returned';
     } elseif ($isLatestPulled) {
         $currentWorkflowStatus = 'Pulled Out';
-    } elseif ($hasSelectedActionForSummary && ! empty($latestDistributionForSummary?->confirmdate)) {
-        $currentWorkflowStatus = 'In Progress';
+    } elseif (
+        $isDocumentCompletedForSummary
+        || ($hasSelectedActionForSummary && ! empty($latestDistributionForSummary?->confirmdate))
+    ) {
+        $currentWorkflowStatus = 'Addressed';
     } elseif (! empty($latestDistributionForSummary?->confirmdate)) {
         $currentWorkflowStatus = 'Received';
     } elseif (! empty($latestDistributionForSummary?->distdate)) {
@@ -2047,7 +2092,7 @@ public function index(Request $request)
          * Legacy fallback only for databases without the manual completion
          * columns. New databases must use Mark as Completed.
          */
-        $currentWorkflowStatus = 'Completed';
+        $currentWorkflowStatus = 'Addressed';
     }
 
     $latestTransferDate = ! empty($latestDistributionForSummary?->distdate)
@@ -2217,17 +2262,18 @@ public function index(Request $request)
         $remarkActionType = strtolower(trim((string) ($remarkItem->action_type ?? 'remark')));
         $remarkActor = $remarkItem->created_by_name ?? ($remarkItem->created_by ? 'Account #' . $remarkItem->created_by : null);
 
-        if ($remarkActionType === 'action_taken') {
+        if (in_array($remarkActionType, ['action_saved', 'action_taken'], true)) {
             $actionLabel = trim((string) ($remarkItem->action_label ?? ''));
             $actionName = trim((string) ($remarkItem->action_name ?? ''));
             $actionTarget = $actionLabel !== ''
                 ? $actionLabel
                 : ($actionName !== '' ? $actionName : 'selected action');
+            $isClosedAction = $remarkActionType === 'action_taken';
 
             $addHistory(
                 'action',
-                'Action Taken',
-                'Selected action: ' . $actionTarget . '.',
+                $isClosedAction ? 'Action Closed' : 'Action Saved',
+                ($isClosedAction ? 'Closed action: ' : 'Saved action: ') . $actionTarget . '.',
                 $remarkItem->created_at,
                 $remarkActor,
                 null,
@@ -2303,6 +2349,7 @@ public function index(Request $request)
 
     $actionTypesForDropdown = Schema::hasTable('dts_action_types')
         ? DB::table('dts_action_types')
+            ->whereRaw("LOWER(TRIM(name)) IN ('address', 'addressed')")
             ->orderBy('name')
             ->get()
         : collect();
@@ -2352,8 +2399,9 @@ public function index(Request $request)
         && ! empty($latestDistributionForSummary?->confirmdate)
         && $hasSelectedActionForSummary;
 
-    /* Completed documents are history-only. */
-    $canUseDocumentActions = ! $isDocumentCompletedForSummary;
+    /* Addressed documents are history-only. */
+    $canUseDocumentActions = ! $isDocumentCompletedForSummary
+        && ! $hasSelectedActionForSummary;
 
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
@@ -2571,7 +2619,7 @@ public function forward(Request $request, $id)
 
     $validated = $request->validate([
         'IDpersonnel' => ['required', 'integer', 'exists:lu_personnel,ID'],
-        'remarks' => ['nullable', 'string'],
+        'remarks' => ['required', 'string'],
     ]);
 
     $personnel = DB::table('lu_personnel as p')
@@ -3743,18 +3791,18 @@ public function storeRemark(Request $request, $id)
 public function actionTakenDocument(Request $request, $id)
 {
     /*
-     * Action Taken:
-     * The dropdown comes from dts_action_types, and each record is a one-word action choice.
-     * Roles 1, 2, and 3 can save action taken on a tagged/assigned document.
-     * Role 4 remains view-only.
+     * Two-action Address workflow:
+     * - Save creates a non-final action record (action_saved).
+     * - A maximum of two Address actions may be stored.
+     * - Close Action creates the final record (action_taken), or converts the
+     *   second saved action into the final record when two actions already exist.
+     * - Only action_taken makes the document Addressed. action_saved keeps it
+     *   under Received so Select Action remains available.
+     *
+     * Transfer and Return continue to use their existing endpoints.
      */
     $this->ensureCanRemarkDts();
     $this->ensureViewerCanActOnDocument((int) $id);
-
-    $validated = $request->validate([
-        'IDactionType' => ['required', 'integer', 'exists:dts_action_types,id'],
-        'remarks' => ['nullable', 'string'],
-    ]);
 
     if (! Schema::hasTable('dts_document_remarks')) {
         return back()->withErrors([
@@ -3762,113 +3810,191 @@ public function actionTakenDocument(Request $request, $id)
         ]);
     }
 
-    if (! Schema::hasTable('dts_action_types')) {
+    if (
+        ! Schema::hasColumn('dts_document_remarks', 'action_type')
+        || ! Schema::hasColumn('dts_document_remarks', 'action_type_id')
+    ) {
         return back()->withErrors([
-            'action' => 'Action type list table not found. Expected table name: dts_action_types.',
-        ]);
-    }
-
-    if (! Schema::hasColumn('dts_document_remarks', 'action_type') || ! Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
-        return back()->withErrors([
-            'action' => 'Please update dts_document_remarks table first. Missing action_type or action_type_id column.',
+            'action' => 'Missing action_type or action_type_id in dts_document_remarks.',
         ]);
     }
 
     $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
+    $closeAction = $request->boolean('close_action');
 
-    $hasManualCompletionColumnsForAction = Schema::hasColumn('document', 'is_completed')
-        && Schema::hasColumn('document', 'completed_at');
+    $existingAddressActions = DB::table('dts_document_remarks')
+        ->where('IDdoc', $document->IDdoc)
+        ->whereIn('action_type', ['action_saved', 'action_taken'])
+        ->orderBy('id')
+        ->get();
 
-    $isCompleted = $hasManualCompletionColumnsForAction
-        ? (
-            ! empty($document->is_completed)
-            || ! empty($document->completed_at)
-        )
-        : (int) ($document->IDdocstatus ?? 0) === 6;
+    $alreadyClosed = $existingAddressActions->contains(function ($item) {
+        return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_taken';
+    });
 
-    if ($isCompleted) {
+    if ($alreadyClosed) {
         return back()->withErrors([
-            'action' => 'This document is already completed. Additional actions are no longer allowed.',
+            'action' => 'This document action is already closed and addressed.',
         ]);
     }
 
-    $latestDistributionForAction = DtsDistribution::where('IDdoc', $document->IDdoc)
+    $existingActionCount = $existingAddressActions->count();
+
+    if (! $closeAction && $existingActionCount >= 2) {
+        return back()->withErrors([
+            'action' => 'Two actions have already been saved. Click Close Action to finalize the document.',
+        ]);
+    }
+
+    /*
+     * When two actions have already been saved, Close Action finalizes the
+     * latest saved action without creating a third record.
+     */
+    $closeExistingSecondAction = $closeAction && $existingActionCount >= 2;
+
+    $rules = [
+        'close_action' => ['nullable', 'boolean'],
+    ];
+
+    if (! $closeExistingSecondAction) {
+        $rules['IDactionType'] = ['required', 'string', 'in:__address_document__'];
+        $rules['remarks'] = ['required', 'string'];
+    }
+
+    $validated = $request->validate($rules);
+
+    $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
         ->orderByDesc('IDdist')
         ->first();
 
-    if (! $latestDistributionForAction || empty($latestDistributionForAction->confirmdate)) {
+    if (! $latestDistribution || empty($latestDistribution->confirmdate)) {
         return back()->withErrors([
-            'action' => 'Action Taken is available only after the document is received.',
+            'action' => 'Address is available only after the document is received.',
         ]);
     }
 
-    $actionType = DB::table('dts_action_types')
-        ->where('id', $validated['IDactionType'])
-        ->first();
+    $remarks = $closeExistingSecondAction
+        ? trim((string) ($existingAddressActions->last()->remarks ?? ''))
+        : trim((string) ($validated['remarks'] ?? ''));
 
-    if (! $actionType) {
-        return back()->withErrors([
-            'IDactionType' => 'Selected action was not found.',
-        ]);
-    }
+    $addressActionTypeId = Schema::hasTable('dts_action_types')
+        ? DB::table('dts_action_types')
+            ->whereRaw("LOWER(TRIM(name)) IN ('address', 'addressed')")
+            ->orderBy('id')
+            ->value('id')
+        : null;
 
-    $remarks = trim((string) ($validated['remarks'] ?? ''));
-    $actionDescription = 'Action taken: ' . ($actionType->name ?? 'Action #' . $actionType->id);
-
-    if ($remarks === '') {
-        $remarks = $actionDescription;
-    }
-
-    DB::transaction(function () use ($document, $actionType, $remarks) {
+    DB::transaction(function () use (
+        $document,
+        $addressActionTypeId,
+        $remarks,
+        $closeAction,
+        $closeExistingSecondAction,
+        $existingAddressActions
+    ) {
         $now = now();
 
-        $insertData = [
-            'IDdoc' => $document->IDdoc,
-            'remarks' => $remarks,
-            'action_type' => 'action_taken',
-            'action_type_id' => $actionType->id,
-            'action_label' => $actionType->name ?? null,
-            'created_by' => Auth::id(),
-            'created_at' => $now,
-            'updated_at' => $now,
-        ];
+        if ($closeExistingSecondAction) {
+            $latestSavedAction = $existingAddressActions
+                ->reverse()
+                ->first(function ($item) {
+                    return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_saved';
+                });
 
-        if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
-            $insertData['action_status'] = 'open';
+            if (! $latestSavedAction) {
+                throw new \RuntimeException('No saved action was found to close.');
+            }
+
+            $updateData = [
+                'action_type' => 'action_taken',
+                'updated_at' => $now,
+            ];
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
+                $updateData['action_label'] = 'Address';
+            }
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
+                $updateData['action_status'] = 'closed';
+            }
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
+                $updateData['action_completed_at'] = $now;
+            }
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
+                $updateData['action_completed_by'] = Auth::id();
+            }
+
+            DB::table('dts_document_remarks')
+                ->where('id', $latestSavedAction->id)
+                ->update($updateData);
+        } else {
+            $insertData = [
+                'IDdoc' => $document->IDdoc,
+                'remarks' => $remarks,
+                'action_type' => $closeAction ? 'action_taken' : 'action_saved',
+                'action_type_id' => $addressActionTypeId,
+                'created_by' => Auth::id(),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
+                $insertData['action_label'] = 'Address';
+            }
+
+            if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
+                $insertData['action_status'] = $closeAction ? 'closed' : 'open';
+            }
+
+            if ($closeAction && Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
+                $insertData['action_completed_at'] = $now;
+            }
+
+            if ($closeAction && Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
+                $insertData['action_completed_by'] = Auth::id();
+            }
+
+            DB::table('dts_document_remarks')->insert($insertData);
         }
 
-        if (Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
-            $insertData['action_completed_at'] = null;
+        if ($remarks !== '') {
+            $document->update([
+                'remarks' => $remarks,
+            ]);
         }
-
-        if (Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
-            $insertData['action_completed_by'] = null;
-        }
-
-        DB::table('dts_document_remarks')->insert($insertData);
-
-        /*
-         * Action type is only an action/history item.
-         * It does NOT transfer or re-tag the document to personnel.
-         */
-        $document->update([
-            'remarks' => $remarks,
-        ]);
     });
 
+    $newActionCount = min(2, $existingActionCount + ($closeExistingSecondAction ? 0 : 1));
+
+    if ($closeAction) {
+        $this->recordDtsActivity(
+            'closed document action',
+            'Closed the action for document #' . $document->IDdoc . '.',
+            (int) $document->IDdoc,
+            [
+                'action_name' => 'Address',
+                'remarks' => $remarks,
+                'saved_action_count' => $newActionCount,
+            ]
+        );
+
+        return back()->with('success', 'Action closed successfully. The document is now Addressed.');
+    }
+
     $this->recordDtsActivity(
-        'document action',
-        'Saved action for document #' . $document->IDdoc . ': ' . ($actionType->name ?? 'Action #' . $actionType->id) . '.',
+        'saved document action',
+        'Saved action ' . $newActionCount . ' of 2 for document #' . $document->IDdoc . '.',
         (int) $document->IDdoc,
         [
-            'action_type_id' => $actionType->id,
-            'action_name' => $actionType->name ?? null,
-            'action_description' => $actionType->description ?? null,
+            'action_name' => 'Address',
             'remarks' => $remarks,
+            'saved_action_count' => $newActionCount,
         ]
     );
 
-    return back()->with('success', 'Action taken saved successfully.');
+    return back()->with('success', 'Action saved successfully (' . $newActionCount . ' of 2).');
 }
 
 public function completeDocument(Request $request, $id)
@@ -4034,6 +4160,25 @@ public function monitoringDashboard(Request $request)
     }
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
 
+    /*
+     * Monitoring completion source of truth.
+     * Prefer the manual completion columns introduced by the completed workflow.
+     * datecleared is retained only as a safe fallback for older databases.
+     */
+    $hasManualCompletionColumns = Schema::hasColumn('document', 'is_completed')
+        && Schema::hasColumn('document', 'completed_at');
+
+    $documentIsCompletedSql = $hasManualCompletionColumns
+        ? '(COALESCE(d.is_completed, 0) = 1 OR d.completed_at IS NOT NULL)'
+        : '(d.datecleared IS NOT NULL)';
+
+    $documentIsNotCompletedSql = 'NOT ' . $documentIsCompletedSql;
+
+    $completedFlagExpression = 'CASE WHEN ' . $documentIsCompletedSql . ' THEN 1 ELSE 0 END';
+    $completedAtExpression = Schema::hasColumn('document', 'completed_at')
+        ? 'd.completed_at'
+        : 'd.datecleared';
+
     $search = trim((string) $request->input('search', ''));
     $status = trim((string) $request->input('status', ''));
     $perPage = (int) $request->input('per_page', 15);
@@ -4145,6 +4290,8 @@ public function monitoringDashboard(Request $request)
             'd.subject',
             'd.entrydate',
             'd.IDkeeper',
+            DB::raw($completedFlagExpression . ' as is_completed'),
+            DB::raw($completedAtExpression . ' as completed_at'),
             'dt.description as document_type',
             'assignedPersonnel.name as assigned_personnel',
             ...$addressedSelectFields,
@@ -4155,7 +4302,15 @@ public function monitoringDashboard(Request $request)
         $searchLike = "%{$search}%";
         $statusSearch = strtolower($search);
 
-        $transactionsQuery->where(function ($query) use ($searchLike, $statusSearch, $trueValues, $hasAddressedActionTables, $addressedActionLabelExpression) {
+        $transactionsQuery->where(function ($query) use (
+            $searchLike,
+            $statusSearch,
+            $trueValues,
+            $hasAddressedActionTables,
+            $addressedActionLabelExpression,
+            $documentIsCompletedSql,
+            $completedAtExpression
+        ) {
             $query->where('d.IDdoc', 'like', $searchLike)
                 ->orWhere('d.subject', 'like', $searchLike)
                 ->orWhere('dt.description', 'like', $searchLike)
@@ -4178,7 +4333,14 @@ public function monitoringDashboard(Request $request)
                 ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%b %e, %Y') LIKE ?", [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(dist.returndate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
                 ->orWhereRaw("DATE_FORMAT(dist.returndate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%b %e, %Y') LIKE ?", [$searchLike]);
+                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%b %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%M %e, %Y') LIKE ?", [$searchLike])
+                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%b %e, %Y') LIKE ?", [$searchLike]);
+
+            if (str_contains($statusSearch, 'complete')) {
+                $query->orWhereRaw($documentIsCompletedSql);
+            }
 
             if (str_contains($statusSearch, 'received')) {
                 $query->orWhereNotNull('dist.confirmdate');
@@ -4214,6 +4376,7 @@ public function monitoringDashboard(Request $request)
 
     if ($status === 'no-action') {
         $transactionsQuery
+            ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
             ->where(function ($query) use ($trueValues) {
@@ -4227,12 +4390,15 @@ public function monitoringDashboard(Request $request)
     }
 
     if ($status === 'received') {
-        $transactionsQuery->whereNotNull('dist.confirmdate');
+        $transactionsQuery
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereNotNull('dist.confirmdate');
     }
 
     if ($status === 'addressed') {
         if ($hasAddressedActionTables) {
             $transactionsQuery
+                ->whereRaw($documentIsNotCompletedSql)
                 ->whereNotNull('dist.confirmdate')
                 ->whereExists(function ($query) {
                     $query->select(DB::raw(1))
@@ -4245,19 +4411,32 @@ public function monitoringDashboard(Request $request)
         }
     }
 
+    if ($status === 'completed') {
+        $transactionsQuery->whereRaw($documentIsCompletedSql);
+    }
+
     if ($status === 'returned') {
-        $transactionsQuery->where(function ($query) use ($trueValues) {
-            $query->whereIn('dist.YNreturn', $trueValues)
-                ->orWhereNotNull('dist.returndate');
-        });
+        $transactionsQuery
+            ->whereRaw($documentIsNotCompletedSql)
+            ->where(function ($query) use ($trueValues) {
+                $query->whereIn('dist.YNreturn', $trueValues)
+                    ->orWhereNotNull('dist.returndate');
+            });
     }
 
     if ($status === 'pulled-out') {
-        $transactionsQuery->whereIn('dist.YNpulled', $trueValues);
+        $transactionsQuery
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereIn('dist.YNpulled', $trueValues);
+    }
+
+    if ($status === 'completed') {
+        $transactionsQuery->orderByDesc(DB::raw($completedAtExpression));
+    } else {
+        $transactionsQuery->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'));
     }
 
     $transactions = $transactionsQuery
-        ->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'))
         ->orderByDesc('d.IDdoc')
         ->paginate($perPage)
         ->appends($request->query());
@@ -4275,6 +4454,14 @@ public function monitoringDashboard(Request $request)
             $query->whereYear('d.entrydate', (int) $selectedYear);
         });
 
+    $completedDocuments = DB::table('document as d')
+        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
+            $query->whereYear('d.entrydate', (int) $selectedYear);
+        })
+        ->whereRaw($documentIsCompletedSql)
+        ->distinct()
+        ->count('d.IDdoc');
+
     $stats = [
         /*
          * Correct value for the first card.
@@ -4283,8 +4470,10 @@ public function monitoringDashboard(Request $request)
          */
         'total_documents' => $totalDocuments,
         'total_transactions' => $totalDocuments,
+        'completed' => $completedDocuments,
 
         'no_action' => (clone $statsBase)
+            ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
             ->where(function ($query) use ($trueValues) {
@@ -4299,11 +4488,13 @@ public function monitoringDashboard(Request $request)
             ->count('dist.IDdoc'),
 
         'received' => (clone $statsBase)
+            ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.confirmdate')
             ->distinct()
             ->count('dist.IDdoc'),
 
         'returned' => (clone $statsBase)
+            ->whereRaw($documentIsNotCompletedSql)
             ->where(function ($query) use ($trueValues) {
                 $query->whereIn('dist.YNreturn', $trueValues)
                     ->orWhereNotNull('dist.returndate');
@@ -4312,6 +4503,7 @@ public function monitoringDashboard(Request $request)
             ->count('dist.IDdoc'),
 
         'pulled_out' => (clone $statsBase)
+            ->whereRaw($documentIsNotCompletedSql)
             ->whereIn('dist.YNpulled', $trueValues)
             ->distinct()
             ->count('dist.IDdoc'),
@@ -4328,6 +4520,7 @@ public function monitoringDashboard(Request $request)
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
         })
+        ->whereRaw($documentIsNotCompletedSql)
         ->whereNotNull('dist.distdate')
         ->whereNull('dist.confirmdate')
         ->where(function ($query) use ($trueValues) {
@@ -4359,6 +4552,7 @@ public function monitoringDashboard(Request $request)
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
         })
+        ->whereRaw($documentIsNotCompletedSql)
         ->whereNotNull('dist.distdate')
         ->whereNull('dist.confirmdate')
         ->where(function ($query) use ($trueValues) {
@@ -4428,6 +4622,7 @@ public function monitoringDashboard(Request $request)
             ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'remarksTable.created_by')
             ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
             ->where('remarksTable.action_type', 'action_taken')
+            ->whereRaw($documentIsNotCompletedSql)
             ->when($selectedYear !== '', function ($query) use ($selectedYear) {
                 $query->whereYear('d.entrydate', (int) $selectedYear);
             });

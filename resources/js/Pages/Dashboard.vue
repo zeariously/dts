@@ -977,7 +977,7 @@ const submitEntryDateUpdate = () => {
                         </h1>
 
                         <p class="mt-2 text-sm text-slate-500">
-                            Document Tracking System workspaces
+                            Document Tracking System workspacesssssss
                         </p>
                     </div>
 
@@ -1510,7 +1510,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <h2 class="mt-2 text-3xl font-bold text-slate-900">
-                                     DTS Reportsss
+                                     DTS Reports
                                 </h2>
                             </div>
                         </div>

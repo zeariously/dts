@@ -124,9 +124,9 @@ Route::middleware(['auth', 'verified'])
             ->name('library.personnel.update');
 
         /*
-        
-         Library - Office
-        
+        |--------------------------------------------------------------------------
+        | Library - Office
+        |--------------------------------------------------------------------------
         */
 
         Route::post('/library/office/store', [DtsController::class, 'storeOffice'])
@@ -231,8 +231,6 @@ Route::middleware(['auth', 'verified'])
 
         Route::patch('/{id}/entry-date', [DtsController::class, 'updateEntryDate'])
             ->name('entry-date.update');
-            Route::post('/{id}/complete', [DtsController::class, 'completeDocument'])
-            ->name('complete');
 
         /*
         |--------------------------------------------------------------------------

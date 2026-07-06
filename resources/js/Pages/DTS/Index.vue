@@ -88,14 +88,14 @@ const userRights = computed(() => {
 
 const canShowReturnedCard = computed(() => {
     /*
-     * Per latest rule:
-     * Hide Returned card/tab for Role 2 and Role 4.
+     * Returned card is exclusive to Role 3.
+     * It contains documents returned by Role 3 accounts.
      */
-    return !['2', '4'].includes(userRights.value)
+    return userRights.value === '3'
 })
 
 const canShowCompletedCard = computed(() => {
-    return ['2', '3'].includes(userRights.value)
+    return false
 })
 
 const currentUserId = computed(() => {
@@ -556,8 +556,7 @@ const pageTitle = computed(() => {
     if (activeFilter.value === 'for-receiving') return 'For Receiving'
     if (['collab-received', 'received'].includes(activeFilter.value)) return 'Received'
     if (activeFilter.value === 'for-action') return 'Received'
-    if (['in-progress', 'addressed'].includes(activeFilter.value)) return 'In Progress'
-    if (activeFilter.value === 'completed') return 'Completed'
+    if (['in-progress', 'addressed', 'completed'].includes(activeFilter.value)) return 'Addressed'
     if (activeFilter.value === 'returned') return 'Returned'
 
     return 'Documents'
@@ -569,7 +568,7 @@ const isPendingDocs07 = computed(() => {
 
 const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07']
 const outgoingSections = ['outgoing', 'sent-docs', 'pulled-out-docs']
-const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'in-progress', 'addressed', 'completed', 'returned']
+const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'in-progress', 'addressed', 'returned']
 
 const isIncomingGroup = computed(() => {
     return incomingSections.includes(activeSection.value)
@@ -643,17 +642,11 @@ const incomingTabs = computed(() => {
             count: props.stats.received ?? 0,
         },
         {
-            label: 'In Progress',
-            href: buildDtsUrl({ section: 'incoming', filter: 'in-progress' }),
-            active: ['in-progress', 'addressed'].includes(activeFilter.value),
-            count: props.stats.in_progress ?? props.stats.addressed ?? 0,
+            label: 'Addressed',
+            href: buildDtsUrl({ section: 'incoming', filter: 'addressed' }),
+            active: ['in-progress', 'addressed', 'completed'].includes(activeFilter.value),
+            count: props.stats.addressed ?? props.stats.in_progress ?? 0,
         },
-        ...(canShowCompletedCard.value ? [{
-            label: 'Completed',
-            href: buildDtsUrl({ section: 'incoming', filter: 'completed' }),
-            active: activeFilter.value === 'completed',
-            count: props.stats.completed ?? 0,
-        }] : []),
         ...(canShowReturnedCard.value ? [{
             label: 'Returned',
             href: buildDtsUrl({ section: 'incoming', filter: 'returned' }),
@@ -695,17 +688,11 @@ const collaborationTabs = computed(() => {
             count: props.stats.received,
         },
         {
-            label: 'In Progress',
-            href: buildDtsUrl({ section: 'incoming', filter: 'in-progress' }),
-            active: ['in-progress', 'addressed'].includes(activeFilter.value),
-            count: props.stats.in_progress ?? props.stats.addressed ?? 0,
+            label: 'Addressed',
+            href: buildDtsUrl({ section: 'incoming', filter: 'addressed' }),
+            active: ['in-progress', 'addressed', 'completed'].includes(activeFilter.value),
+            count: props.stats.addressed ?? props.stats.in_progress ?? 0,
         },
-        ...(canShowCompletedCard.value ? [{
-            label: 'Completed',
-            href: buildDtsUrl({ section: 'incoming', filter: 'completed' }),
-            active: activeFilter.value === 'completed',
-            count: props.stats.completed ?? 0,
-        }] : []),
         ...(canShowReturnedCard.value ? [{
             label: 'Returned',
             href: buildDtsUrl({ section: 'incoming', filter: 'returned' }),
@@ -1031,13 +1018,11 @@ const documentHasSelectedAction = (doc) => {
 }
 
 const documentStatusLabel = (doc) => {
-    if (activeFilter.value === 'completed') {
-        return 'Completed'
-    }
-
-    /* In Progress means at least one action exists, but completion is pending. */
-    if (['in-progress', 'addressed'].includes(activeFilter.value) || activeSection.value === 'addressed-docs') {
-        return 'In Progress'
+    if (
+        ['in-progress', 'addressed', 'completed'].includes(activeFilter.value)
+        || ['addressed-docs', 'completed-docs'].includes(activeSection.value)
+    ) {
+        return 'Addressed'
     }
 
     const status = doc.workflow_status
@@ -1047,22 +1032,18 @@ const documentStatusLabel = (doc) => {
 
     const statusText = String(status || '').trim().toLowerCase()
 
-    const isCompleted = doc?.is_completed === true
+    const isLegacyCompleted = doc?.is_completed === true
         || doc?.is_completed === 1
         || doc?.is_completed === '1'
         || Boolean(doc?.completed_at)
         || statusText.includes('completed')
         || statusText.includes('complete')
 
-    if (isCompleted) {
-        return 'Completed'
+    if (isLegacyCompleted || documentHasSelectedAction(doc)) {
+        return 'Addressed'
     }
 
-    if (documentHasSelectedAction(doc) && statusText.includes('done')) {
-        return 'In Progress'
-    }
-
-    /* No real Select Action yet: do not display In Progress accidentally. */
+    /* No real Address action yet: do not display Addressed accidentally. */
     if (!documentHasSelectedAction(doc)) {
         if (
             statusText.includes('done')
@@ -1085,20 +1066,13 @@ const documentStatusLabel = (doc) => {
 const documentStatusClass = (doc) => {
     const status = String(documentStatusLabel(doc)).toLowerCase()
 
-    if (status.includes('in progress')) {
-        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
-    }
-
     if (
-        status.includes('completed')
+        status.includes('addressed')
+        || status.includes('in progress')
+        || status.includes('completed')
         || status.includes('complete')
         || status.includes('cleared')
-    ) {
-        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
-    }
-
-    if (
-        status === 'done'
+        || status === 'done'
         || status.includes('done')
         || status.includes('approved')
     ) {
@@ -1364,10 +1338,13 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <h2 class="mt-2 text-2xl font-black">
-                                    Documents Pending 
+                                    For Receiving and Received Documents Pending After 3 Days
                                 </h2>
 
-                               
+                                <p class="mt-1 max-w-3xl text-sm font-semibold text-red-100">
+                                    For Receiving documents are counted from the transfer date, while Received documents are counted from the received date.
+                                    Saved actions do not dismiss this reminder; it stops only after Close Action.
+                                </p>
                             </div>
 
                             <button
@@ -1381,7 +1358,7 @@ const submitEntryDateUpdate = () => {
                     </div>
 
                     <div class="p-6">
-                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
                             <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
                                 <p class="text-xs font-black uppercase tracking-wide text-red-700">Total</p>
                                 <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderCount }}</p>
@@ -1397,10 +1374,6 @@ const submitEntryDateUpdate = () => {
                                 <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('Received') }}</p>
                             </div>
 
-                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
-                                <p class="text-xs font-black uppercase tracking-wide text-red-700">In Progress</p>
-                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('In Progress') }}</p>
-                            </div>
                         </div>
 
                         <div class="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-1">
@@ -1466,7 +1439,6 @@ const submitEntryDateUpdate = () => {
                             </article>
                         </div>
 
-                       
                     </div>
                 </div>
             </div>
@@ -1937,7 +1909,15 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                  
+                        <div class="rounded-2xl bg-blue-50 px-5 py-4 text-right">
+                            <p class="text-xs font-bold uppercase tracking-wide text-blue-700">
+                                Module
+                            </p>
+
+                            <p class="mt-1 text-lg font-bold text-black">
+                                Reports
+                            </p>
+                        </div>
                     </div>
                 </div>
 
@@ -3469,18 +3449,16 @@ const submitEntryDateUpdate = () => {
                     <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                         <div>
                             <h2 class="text-2xl font-bold tracking-wide text-cyan-700">
-                                {{ activeFilter === 'completed'
-                                    ? 'Completed'
-                                    : (['in-progress', 'addressed'].includes(activeFilter) ? 'In Progress' : 'Returned')
+                                {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter)
+                                    ? 'Addressed'
+                                    : 'Returned'
                                 }}
                             </h2>
 
                             <p class="mt-2 text-sm font-medium text-black">
-                                {{ activeFilter === 'completed'
-                                    ? 'Documents officially marked as completed.'
-                                    : ['in-progress', 'addressed'].includes(activeFilter)
-                                        ? 'Documents with one or more saved actions that are not yet completed.'
-                                        : 'List of returned documents.'
+                                {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter)
+                                    ? 'Documents handled using the Address action.'
+                                    : 'List of returned documents.'
                                 }}
                             </p>
                         </div>
@@ -3614,11 +3592,9 @@ const submitEntryDateUpdate = () => {
                                 <tr v-if="rows.length === 0">
                                     <td colspan="6" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
-                                            {{ activeFilter === 'completed'
-                                                ? 'No completed documents found'
-                                                : ['in-progress', 'addressed'].includes(activeFilter)
-                                                    ? 'No in progress documents found'
-                                                    : 'No returned documents found'
+                                            {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter)
+                                                ? 'No addressed documents found'
+                                                : 'No returned documents found'
                                             }}
                                         </div>
 
@@ -3668,7 +3644,7 @@ const submitEntryDateUpdate = () => {
                 <div
                     v-if="activeSection === 'documents'"
                     class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2"
-                    :class="canShowReturnedCard && canShowCompletedCard ? '2xl:grid-cols-6' : (canShowCompletedCard ? '2xl:grid-cols-5' : '2xl:grid-cols-4')"
+                    :class="canShowReturnedCard ? '2xl:grid-cols-5' : '2xl:grid-cols-4'"
                 >
                     <Link
                         :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
@@ -3756,47 +3732,23 @@ const submitEntryDateUpdate = () => {
                     </Link>
 
                     <Link
-                        :href="buildDtsUrl({ section: 'incoming', filter: 'in-progress' })"
+                        :href="buildDtsUrl({ section: 'incoming', filter: 'addressed' })"
                         class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-6 text-white shadow-xl shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
                             <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
-                                📝
+                                📌
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <p class="text-base font-black text-white/90">In Progress</p>
+                                <p class="text-base font-black text-white/90">Addressed</p>
                                 <p class="mt-3 text-5xl font-black leading-none tracking-tight">
-                                    {{ props.stats.in_progress ?? props.stats.addressed ?? 0 }}
+                                    {{ props.stats.addressed ?? props.stats.in_progress ?? 0 }}
                                 </p>
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Has actions, not completed
-                                </p>
-                            </div>
-                        </div>
-                    </Link>
-
-                    <Link
-                        v-if="canShowCompletedCard"
-                        :href="buildDtsUrl({ section: 'incoming', filter: 'completed' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-teal-600 to-emerald-500 p-6 text-white shadow-xl shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl"
-                    >
-                        <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
-
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
-                                🏁
-                            </div>
-
-                            <div class="min-w-0 flex-1">
-                                <p class="text-base font-black text-white/90">Completed</p>
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
-                                    {{ props.stats.completed ?? 0 }}
-                                </p>
-                                <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Officially marked as completed
+                                    Documents handled through Address
                                 </p>
                             </div>
                         </div>
@@ -3805,7 +3757,7 @@ const submitEntryDateUpdate = () => {
                     <Link
                         v-if="canShowReturnedCard"
                         :href="buildDtsUrl({ section: 'incoming', filter: 'returned' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-pink-500 p-6 text-white shadow-xl shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-red-500 p-6 text-white shadow-xl shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
@@ -3815,18 +3767,12 @@ const submitEntryDateUpdate = () => {
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <div class="flex items-start justify-between gap-3">
-                                    <p class="text-base font-black text-white/90">
-                                        Returned
-                                    </p>
-                                </div>
-
+                                <p class="text-base font-black text-white/90">Returned</p>
                                 <p class="mt-3 text-5xl font-black leading-none tracking-tight">
-                                    {{ props.stats.returned }}
+                                    {{ props.stats.returned ?? 0 }}
                                 </p>
-
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Click to view returned records
+                                    Documents returned by Role 3
                                 </p>
                             </div>
                         </div>

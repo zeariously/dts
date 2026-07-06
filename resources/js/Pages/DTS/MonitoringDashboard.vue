@@ -255,6 +255,11 @@ const statusOptions = [
         shortLabel: 'Addressed',
     },
     {
+        label: 'Completed',
+        value: 'completed',
+        shortLabel: 'Completed',
+    },
+    {
         label: 'Returned',
         value: 'returned',
         shortLabel: 'Returned',
@@ -272,6 +277,10 @@ const activeStatusLabel = computed(() => {
 
 const isAddressedView = computed(() => {
     return status.value === 'addressed'
+})
+
+const isCompletedView = computed(() => {
+    return status.value === 'completed'
 })
 
 const documentSectionTitle = computed(() => {
@@ -570,7 +579,7 @@ const daysPendingClass = (days) => {
             <!-- Main Workspace -->
             <section class="space-y-5">
                 <!-- Stats Cards -->
-                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
                     <button
                         type="button"
                         class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
@@ -651,11 +660,11 @@ const daysPendingClass = (days) => {
                     >
                         <div class="flex items-center justify-between">
                             <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-2xl">
-                                ✅
+                                📥
                             </div>
 
                             <span class="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">
-                                Done
+                                Received
                             </span>
                         </div>
 
@@ -665,6 +674,30 @@ const daysPendingClass = (days) => {
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
                             Received
+                        </p>
+                    </button>
+
+                    <button
+                        type="button"
+                        class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-emerald-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-emerald-100"
+                        @click="setStatus('completed')"
+                    >
+                        <div class="flex items-center justify-between">
+                            <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-600 text-2xl text-white">
+                                ✅
+                            </div>
+
+                            <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
+                                Completed
+                            </span>
+                        </div>
+
+                        <p class="mt-5 text-3xl font-black text-slate-900">
+                            {{ stats.completed ?? 0 }}
+                        </p>
+
+                        <p class="mt-1 text-sm font-bold text-slate-500">
+                            Completed
                         </p>
                     </button>
 
@@ -843,7 +876,7 @@ const daysPendingClass = (days) => {
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-center">
-                                        {{ isAddressedView ? 'Selected Action' : 'Days Pending' }}
+                                        {{ isAddressedView ? 'Selected Action' : (isCompletedView ? 'Completed At' : 'Days Pending') }}
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-right">
@@ -888,6 +921,16 @@ const daysPendingClass = (days) => {
                                                 class="mt-2 text-[11px] font-bold text-slate-500"
                                             >
                                                 {{ formatDate(document.latest_action_at) }}
+                                            </p>
+                                        </template>
+
+                                        <template v-else-if="isCompletedView">
+                                            <span class="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">
+                                                Completed
+                                            </span>
+
+                                            <p class="mt-2 text-[11px] font-bold text-slate-500">
+                                                {{ formatDate(document.completed_at) }}
                                             </p>
                                         </template>
 

@@ -49,10 +49,6 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
-    canCompleteDts: {
-        type: Boolean,
-        default: false,
-    },
 })
 
 const page = usePage()
@@ -91,40 +87,30 @@ const canTransferDts = computed(() => {
 })
 
 const canReattachDts = computed(() => {
+    /*
+     * Attach File is allowed from the document details page.
+     * The backend route still validates the actual upload request.
+     */
     return !isSuperAdminViewOnly.value
-        && !isDocumentCompleted.value
-        && Boolean(props.canReattachDts)
 })
 
 const canRemarkDts = computed(() => {
-    return !isDocumentCompleted.value
-        && Boolean(props.canRemarkDts)
-})
-
-const isDocumentCompleted = computed(() => {
-    /*
-     * Completed must come only from the manual completion flag sent by the
-     * backend. A saved Select Action / In Progress status must never hide the
-     * Select Action button.
-     */
-    return props.document?.is_completed === true
-        || props.document?.is_completed === 1
-        || props.document?.is_completed === '1'
-        || props.document?.status_summary?.is_completed === true
-        || props.document?.status_summary?.is_completed === 1
-        || props.document?.status_summary?.is_completed === '1'
-        || Boolean(props.document?.completed_at)
-        || Boolean(props.document?.status_summary?.completed_at)
+    
+    return Boolean(props.canRemarkDts)
 })
 
 const isDocumentClosedOrEnded = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
 
-    return isDocumentCompleted.value
+   
+    return status.includes('completed')
+        || status.includes('complete')
         || status.includes('cleared')
         || status.includes('closed')
         || status.includes('filed')
         || status.includes('final')
+        || status.includes('done')
+        || status.includes('addressed')
         || status.includes('pulled')
         || status.includes('returned')
 })
@@ -139,41 +125,13 @@ const isDocumentReceivedForAction = computed(() => {
     return status.includes('received')
         || status.includes('for action')
         || status.includes('action taken')
-        || status.includes('in progress')
-})
-
-const hasDocumentBeenReceived = computed(() => {
-    const receivedAt = props.document?.status_summary?.received_at
-
-    if (receivedAt) {
-        return true
-    }
-
-    const distributions = props.document?.distributions || []
-
-    if (Array.isArray(distributions) && distributions.some((item) => Boolean(item?.confirmdate))) {
-        return true
-    }
-
-    const status = String(currentWorkflowStatus.value || '').toLowerCase()
-
-    return status.includes('received')
-        || status.includes('for action')
-        || status.includes('action taken')
-        || status.includes('in progress')
 })
 
 const canActionTakenDts = computed(() => {
-    /*
-     * Unlimited Select Action:
-     * Saving one action does not change this permission. The button remains
-     * available while the document is currently tagged, received, and not
-     * manually completed.
-     */
     return !isSuperAdminViewOnly.value
-        && !isDocumentCompleted.value
+        && !isDocumentClosedOrEnded.value
         && Boolean(props.canActionTakenDts)
-        && hasDocumentBeenReceived.value
+        && isDocumentReceivedForAction.value
 })
 
 const activeTab = ref('details')
@@ -184,10 +142,8 @@ const showReturnModal = ref(false)
 const showActionTakenModal = ref(false)
 const showActionHistoryModal = ref(false)
 const showReattachPanel = ref(false)
-const showCompleteModal = ref(false)
 
 const receiveForm = useForm({})
-const completeForm = useForm({})
 
 const forwardForm = useForm({
     IDpersonnel: '',
@@ -197,12 +153,14 @@ const forwardForm = useForm({
 const actionTakenForm = useForm({
     IDactionType: '',
     remarks: '',
+    close_action: false,
 })
 
 const returnForm = useForm({
     remarks: '',
 })
 
+const ADDRESS_DOCUMENT_ACTION = '__address_document__'
 const TRANSFER_DOCUMENT_ACTION = '__transfer_document__'
 const RETURN_DOCUMENT_ACTION = '__return_document__'
 
@@ -420,7 +378,42 @@ const forwardDocument = () => {
     })
 }
 
-const actionTakenDocument = () => {
+const postAddressAction = (closeAction = false) => {
+    if (!canShowSelectActionButton.value || !documentId.value) return
+
+    actionTakenForm.close_action = Boolean(closeAction)
+
+    actionTakenForm.post(`/dts/${documentId.value}/action-taken`, {
+        preserveScroll: true,
+        onSuccess: () => {
+            showActionTakenModal.value = false
+            actionTakenForm.reset()
+            actionTakenForm.clearErrors()
+        },
+    })
+}
+
+const saveSelectedAction = () => {
+    /*
+     * Save is strictly for the Address workflow. Transfer and Return must use
+     * their own direct routing button and must never create action_saved rows.
+     */
+    if (!canShowSelectActionButton.value || !documentId.value) return
+    if (!isAddressDocumentActionSelected.value) return
+    if (!canSaveAnotherAddressAction.value) return
+
+    postAddressAction(false)
+}
+
+const closeSelectedAction = () => {
+    /* Close Action is also strictly for Address. */
+    if (!canShowSelectActionButton.value || !documentId.value) return
+    if (!isAddressDocumentActionSelected.value && !hasReachedAddressActionLimit.value) return
+
+    postAddressAction(true)
+}
+
+const submitRoutingAction = () => {
     if (!canShowSelectActionButton.value || !documentId.value) return
 
     if (isTransferDocumentActionSelected.value) {
@@ -449,48 +442,7 @@ const actionTakenDocument = () => {
                 returnForm.reset()
             },
         })
-
-        return
     }
-
-    actionTakenForm.post(`/dts/${documentId.value}/action-taken`, {
-        preserveScroll: true,
-        onSuccess: () => {
-            showActionTakenModal.value = false
-            actionTakenForm.reset()
-            router.reload({ preserveScroll: true })
-        },
-    })
-}
-
-const openCompleteModal = () => {
-    if (!canCompleteCurrentDocument.value) return
-
-    completeForm.clearErrors()
-    showCompleteModal.value = true
-}
-
-const closeCompleteModal = () => {
-    if (completeForm.processing) return
-
-    showCompleteModal.value = false
-    completeForm.clearErrors()
-}
-
-const completeDocument = () => {
-    if (!canCompleteCurrentDocument.value || !documentId.value) return
-
-    completeForm.post(`/dts/${documentId.value}/complete`, {
-        preserveScroll: true,
-        onSuccess: () => {
-            showCompleteModal.value = false
-
-            router.visit(`/dts/${documentId.value}`, {
-                replace: true,
-                preserveScroll: true,
-            })
-        },
-    })
 }
 
 const returnDocument = () => {
@@ -625,34 +577,15 @@ const reattachFiles = () => {
 const statusClass = (status) => {
     const value = String(status || '').toLowerCase()
 
-    /*
-     * Match status badge colors with the Index/dashboard cards.
-     */
     if (value.includes('pulled')) {
         return 'bg-slate-100 text-slate-800 border border-slate-300'
     }
 
     if (value.includes('return')) {
-        return 'bg-rose-100 text-rose-800 border border-rose-300'
+        return 'bg-red-100 text-red-800 border border-red-300'
     }
 
-    if (value.includes('in progress')) {
-        return 'bg-cyan-100 text-cyan-800 border border-cyan-300'
-    }
-
-    if (
-        value.includes('completed')
-        || value.includes('complete')
-        || value.includes('cleared')
-    ) {
-        return 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-    }
-
-    if (
-        value.includes('done')
-        || value.includes('addressed')
-        || value.includes('approved')
-    ) {
+    if (value.includes('addressed') || value.includes('done')) {
         return 'bg-cyan-100 text-cyan-800 border border-cyan-300'
     }
 
@@ -661,7 +594,7 @@ const statusClass = (status) => {
     }
 
     if (value.includes('for receiving')) {
-        return 'bg-violet-100 text-violet-800 border border-violet-300'
+        return 'bg-amber-100 text-amber-900 border border-amber-300'
     }
 
     if (value.includes('pending 07')) {
@@ -669,11 +602,15 @@ const statusClass = (status) => {
     }
 
     if (value.includes('pending')) {
-        return 'bg-amber-100 text-amber-900 border border-amber-300'
+        return 'bg-yellow-100 text-yellow-900 border border-yellow-300'
     }
 
     if (value.includes('review') || value.includes('process')) {
         return 'bg-purple-100 text-purple-800 border border-purple-300'
+    }
+
+    if (value.includes('approved') || value.includes('completed') || value.includes('cleared')) {
+        return 'bg-green-100 text-green-800 border border-green-300'
     }
 
     return 'bg-blue-100 text-blue-800 border border-blue-300'
@@ -936,58 +873,60 @@ const canOpenActionMenu = computed(() => {
         || canReturnCurrentDocument.value
 })
 
+const addressActionHistoryItems = computed(() => {
+    return (props.document.remarks_history || []).filter((item) => {
+        const type = normalizeText(item?.action_type)
+        return ['action_saved', 'action_taken'].includes(type)
+    })
+})
+
+const savedAddressActionCount = computed(() => {
+    return addressActionHistoryItems.value.length
+})
+
 const hasExistingActionTaken = computed(() => {
-    return (props.document.remarks_history || []).some((item) => {
+    return addressActionHistoryItems.value.some((item) => {
         return normalizeText(item?.action_type) === 'action_taken'
     })
 })
 
+const hasReachedAddressActionLimit = computed(() => {
+    return savedAddressActionCount.value >= 2 && !hasExistingActionTaken.value
+})
+
+const canSaveAnotherAddressAction = computed(() => {
+    return !hasExistingActionTaken.value && savedAddressActionCount.value < 2
+})
+
 const canShowSelectActionButton = computed(() => {
     /*
-     * Unlimited Select Action:
-     * - First saved action changes the status to In Progress.
-     * - The button remains visible for the second and succeeding actions.
-     * - It disappears only after Mark as Completed is confirmed.
+     * Keep Select Action available after the first Save. It disappears only
+     * after Close Action creates the final action_taken record.
+     * Role 3 may also open the menu so it can use Return and populate its
+     * Returned card.
      */
-    if (isDocumentCompleted.value) {
+    if (hasExistingActionTaken.value) {
         return false
-    }
-
-    /*
-     * Role 3 must not depend on whether an earlier action already exists.
-     * Use the backend permission plus received state directly.
-     */
-    if (isRoleThree.value) {
-        return !isSuperAdminViewOnly.value
-            && Boolean(props.canActionTakenDts)
-            && hasDocumentBeenReceived.value
     }
 
     return canOpenActionMenu.value
 })
 
-const canCompleteCurrentDocument = computed(() => {
-    return isRoleTwo.value
-        && !isSuperAdminViewOnly.value
-        && Boolean(props.canCompleteDts)
-        && !isDocumentCompleted.value
-        && hasDocumentBeenReceived.value
-        && hasExistingActionTaken.value
-})
-
 const actionDropdownOptions = computed(() => {
-    const options = canActionTakenDts.value
-        ? (props.actionTypes || []).map((actionType) => ({
-            value: actionType.id ?? actionType.ID,
-            label: actionType.name ?? actionType.label ?? actionType.description ?? 'Unnamed Action',
-            isSystemAction: false,
-        }))
-        : []
+    const options = []
 
-    if (!isRoleThree.value && canTransferCurrentDocument.value) {
+    if (canActionTakenDts.value) {
+        options.push({
+            value: ADDRESS_DOCUMENT_ACTION,
+            label: 'Addressed',
+            isSystemAction: true,
+        })
+    }
+
+    if (canTransferCurrentDocument.value) {
         options.push({
             value: TRANSFER_DOCUMENT_ACTION,
-            label: 'Transfer Document',
+            label: 'Transfer',
             isSystemAction: true,
         })
     }
@@ -995,12 +934,16 @@ const actionDropdownOptions = computed(() => {
     if (canReturnCurrentDocument.value) {
         options.push({
             value: RETURN_DOCUMENT_ACTION,
-            label: 'Return Document',
+            label: 'Return',
             isSystemAction: true,
         })
     }
 
     return options
+})
+
+const isAddressDocumentActionSelected = computed(() => {
+    return String(actionTakenForm.IDactionType || '') === ADDRESS_DOCUMENT_ACTION
 })
 
 const isTransferDocumentActionSelected = computed(() => {
@@ -1011,36 +954,86 @@ const isReturnDocumentActionSelected = computed(() => {
     return String(actionTakenForm.IDactionType || '') === RETURN_DOCUMENT_ACTION
 })
 
-const confirmActionTakenLabel = computed(() => {
+const saveActionLabel = computed(() => {
+    return actionTakenForm.processing ? 'Saving...' : 'Save'
+})
+
+const closeActionLabel = computed(() => {
+    return actionTakenForm.processing ? 'Closing...' : 'Close Action'
+})
+
+const routingActionLabel = computed(() => {
     if (isTransferDocumentActionSelected.value) {
-        return forwardForm.processing ? 'Transferring...' : 'Confirm Transfer'
+        return forwardForm.processing ? 'Transferring...' : 'Transfer'
     }
 
     if (isReturnDocumentActionSelected.value) {
-        return returnForm.processing ? 'Returning...' : 'Confirm Return'
+        return returnForm.processing ? 'Returning...' : 'Return'
     }
 
-    return actionTakenForm.processing ? 'Saving...' : 'Confirm'
+    return 'Continue'
 })
 
 const isSelectedActionProcessing = computed(() => {
     return actionTakenForm.processing || forwardForm.processing || returnForm.processing
 })
 
-const isConfirmActionDisabled = computed(() => {
-    if (isSelectedActionProcessing.value || !actionTakenForm.IDactionType) {
-        return true
+const selectedActionFieldsAreValid = computed(() => {
+    if (!actionTakenForm.IDactionType) {
+        return false
     }
 
     if (isTransferDocumentActionSelected.value) {
-        return !forwardForm.IDpersonnel
+        return Boolean(forwardForm.IDpersonnel)
+            && Boolean(String(forwardForm.remarks || '').trim())
     }
 
     if (isReturnDocumentActionSelected.value) {
-        return !String(returnForm.remarks || '').trim()
+        return Boolean(String(returnForm.remarks || '').trim())
+    }
+
+    if (isAddressDocumentActionSelected.value) {
+        return Boolean(String(actionTakenForm.remarks || '').trim())
     }
 
     return false
+})
+
+const isSaveActionDisabled = computed(() => {
+    if (isSelectedActionProcessing.value) {
+        return true
+    }
+
+    if (isAddressDocumentActionSelected.value && !canSaveAnotherAddressAction.value) {
+        return true
+    }
+
+    return !selectedActionFieldsAreValid.value
+})
+
+const isCloseActionDisabled = computed(() => {
+    if (isSelectedActionProcessing.value) {
+        return true
+    }
+
+    /* Two saved Address actions can be closed without creating a third row. */
+    if (hasReachedAddressActionLimit.value) {
+        return false
+    }
+
+    return !selectedActionFieldsAreValid.value
+})
+
+const isRoutingActionDisabled = computed(() => {
+    if (isSelectedActionProcessing.value) {
+        return true
+    }
+
+    if (!isTransferDocumentActionSelected.value && !isReturnDocumentActionSelected.value) {
+        return true
+    }
+
+    return !selectedActionFieldsAreValid.value
 })
 
 const handleActionDropdownChange = () => {
@@ -1176,23 +1169,27 @@ const remarksHistory = computed(() => {
 
     ;(props.document.remarks_history || []).forEach((item) => {
         const actionType = normalizeText(item.action_type || 'remark')
-        const isActionTaken = actionType === 'action_taken'
+        const isSavedAction = actionType === 'action_saved'
+        const isClosedAction = actionType === 'action_taken'
+        const isAddressAction = isSavedAction || isClosedAction
         const actionName = item.action_label || item.action_name || ''
         const actionDescription = item.action_description || ''
         const actionTarget = actionName || ''
 
         history.push({
-            id: `${isActionTaken ? 'action-taken' : 'saved-remark'}-${item.id}`,
-            type: isActionTaken ? 'Select Action' : 'Remark',
-            title: isActionTaken ? 'Select Action' : 'Added Remark',
-            description: isActionTaken
-                ? `Selected action: ${actionTarget || 'Action'}.`
-                : 'A remark was added to this document.',
+            id: `${isAddressAction ? actionType : 'saved-remark'}-${item.id}`,
+            type: isAddressAction ? 'Select Action' : 'Remark',
+            title: isClosedAction ? 'Action Closed' : (isSavedAction ? 'Action Saved' : 'Added Remark'),
+            description: isClosedAction
+                ? `Closed action: ${actionTarget || 'Action'}.`
+                : (isSavedAction
+                    ? `Saved action: ${actionTarget || 'Action'}.`
+                    : 'A remark was added to this document.'),
             actor: item.created_by_name || (item.created_by ? `Account #${item.created_by}` : 'Unknown account'),
-            office: isActionTaken
+            office: isAddressAction
                 ? '-'
                 : (item.created_by_name || (item.created_by ? `Account #${item.created_by}` : 'Unknown account')),
-            target_action: isActionTaken ? actionTarget : null,
+            target_action: isAddressAction ? actionTarget : null,
             target_personnel: null,
             action_name: actionName,
             action_description: actionDescription,
@@ -1332,13 +1329,7 @@ const actionHistory = computed(() => {
                 type: 'Transferred',
                 title: 'Transferred Document',
                 description: `Document was transferred to ${transferTarget}.`,
-                /*
-                 * Show who actually clicked Return.
-                 * Backend sends returned_by_name from the child return distribution.
-                 */
-                actor: distribution.returned_by_name
-                    || distribution.returned_by
-                    || distribution.transferred_by_name
+                actor: distribution.transferred_by_name
                     || distribution.transferred_by
                     || (distribution.IDuser ? `Account #${distribution.IDuser}` : 'System'),
                 office: distribution.office || '-',
@@ -1373,12 +1364,7 @@ const actionHistory = computed(() => {
                 type: 'Returned',
                 title: 'Returned Document',
                 description: 'Document was returned.',
-                /*
-                 * Returned history actor must be the person who clicked Return.
-                 */
-                actor: distribution.returned_by_name
-                    || distribution.returned_by
-                    || distribution.transferred_by_name
+                actor: distribution.transferred_by_name
                     || distribution.transferred_by
                     || (distribution.IDuser ? `Account #${distribution.IDuser}` : 'System'),
                 office: distribution.office || '-',
@@ -1405,24 +1391,6 @@ const actionHistory = computed(() => {
             })
         }
     })
-
-    if (isDocumentCompleted.value) {
-        history.push({
-            id: `completed-document-${currentDocumentId}`,
-            IDdoc: currentDocumentId,
-            type: 'Completed',
-            title: 'Completed Document',
-            description: 'Document was officially marked as completed.',
-            actor: props.document.completed_by_name
-                || props.document.status_summary?.completed_by
-                || (props.document.completed_by ? `Account #${props.document.completed_by}` : 'System'),
-            office: '-',
-            date: props.document.completed_at
-                || props.document.status_summary?.completed_at,
-            remarks: null,
-            files: [],
-        })
-    }
 
     const mergedHistory = [
         ...history,
@@ -1556,36 +1524,6 @@ const historyStripClass = (itemOrType) => {
 
 const historyTargetLabel = (item) => {
     return normalizeText(item?.type).includes('action') ? 'Action:' : 'Transferred To:'
-}
-
-const historyActorLabel = (item) => {
-    const value = getHistoryColorText(item)
-
-    if (value.includes('return') || value.includes('returned')) {
-        return 'Returned By:'
-    }
-
-    if (value.includes('received')) {
-        return 'Received By:'
-    }
-
-    if (value.includes('transfer') || value.includes('transferred') || value.includes('forward')) {
-        return 'Transferred By:'
-    }
-
-    if (value.includes('attached') || value.includes('file')) {
-        return 'Uploaded By:'
-    }
-
-    if (value.includes('remark')) {
-        return 'Added By:'
-    }
-
-    if (value.includes('select action') || value.includes('action taken') || value.includes('action')) {
-        return 'Action By:'
-    }
-
-    return 'Actor:'
 }
 
 const formatDateTime = (value) => {
@@ -1725,16 +1663,6 @@ const formatFileSize = (bytes) => {
                                 @click="openActionTakenModal"
                             >
                                 Select Action
-                            </button>
-
-                            <button
-                                v-if="canCompleteCurrentDocument"
-                                type="button"
-                                class="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-emerald-600 disabled:opacity-60"
-                                :disabled="completeForm.processing"
-                                @click="openCompleteModal"
-                            >
-                                {{ completeForm.processing ? 'Completing...' : 'Mark as Completed' }}
                             </button>
 
                             <button
@@ -2129,7 +2057,7 @@ const formatFileSize = (bytes) => {
                         class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
                         @click="closeForwardModal"
                     >
-                        Close
+                        ✕
                     </button>
                 </div>
             </div>
@@ -2167,14 +2095,14 @@ const formatFileSize = (bytes) => {
 
                 <div class="mt-5">
                     <label class="text-sm font-black uppercase tracking-wide text-blue-700">
-                        Remarks
+                        Remarks <span class="text-red-600">*</span>
                     </label>
 
                     <textarea
                         v-model="forwardForm.remarks"
                         rows="4"
                         class="mt-2 w-full rounded-xl border border-blue-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                        placeholder="Optional transfer remarks..."
+                        placeholder="Type transfer remarks..."
                     ></textarea>
 
                     <p
@@ -2209,59 +2137,6 @@ const formatFileSize = (bytes) => {
     </div>
 
 
-    <!-- Complete Document Modal -->
-    <div
-        v-if="showCompleteModal"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8"
-    >
-        <div class="w-full max-w-lg overflow-hidden rounded-[2rem] bg-white shadow-2xl">
-            <div class="border-b border-emerald-100 bg-emerald-600 px-6 py-5 text-white">
-                <p class="text-xs font-black uppercase tracking-[0.22em] text-emerald-100">
-                    Final Document Status
-                </p>
-                <h2 class="mt-2 text-2xl font-black">
-                    Mark as Completed?
-                </h2>
-                <p class="mt-1 text-sm font-semibold text-emerald-100">
-                    This will move the document to the Completed card and disable Select Action.
-                </p>
-            </div>
-
-            <div class="p-6">
-                <div class="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm font-bold leading-6 text-amber-900">
-                    Confirm only when all required actions for DTS - #{{ documentNumber }} are finished.
-                </div>
-
-                <p
-                    v-if="completeForm.errors.completion"
-                    class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700"
-                >
-                    {{ completeForm.errors.completion }}
-                </p>
-
-                <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
-                    <button
-                        type="button"
-                        class="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
-                        :disabled="completeForm.processing"
-                        @click="closeCompleteModal"
-                    >
-                        Cancel
-                    </button>
-
-                    <button
-                        type="button"
-                        class="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-black text-white hover:bg-emerald-700 disabled:opacity-60"
-                        :disabled="completeForm.processing"
-                        @click="completeDocument"
-                    >
-                        {{ completeForm.processing ? 'Completing...' : 'Yes, Mark Completed' }}
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Select Action Modal -->
     <div
         v-if="showActionTakenModal"
@@ -2279,17 +2154,16 @@ const formatFileSize = (bytes) => {
                             Select Action
                         </h2>
 
-                        <p class="mt-1 text-sm font-semibold text-cyan-100">
-                            Select the appropriate action for this document.
-                        </p>
+                     
                     </div>
 
                     <button
                         type="button"
+                        aria-label="Close Select Action modal"
                         class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
                         @click="closeActionTakenModal"
                     >
-                        Close
+                        ✕
                     </button>
                 </div>
             </div>
@@ -2302,7 +2176,8 @@ const formatFileSize = (bytes) => {
 
                     <select
                         v-model="actionTakenForm.IDactionType"
-                        class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                        class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-bold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
+                        :disabled="hasReachedAddressActionLimit"
                         @change="handleActionDropdownChange"
                     >
                         <option value="">
@@ -2331,6 +2206,24 @@ const formatFileSize = (bytes) => {
                     >
                         {{ actionTakenForm.errors.action }}
                     </p>
+
+                    <div
+                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
+                        class="mt-3 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3"
+                    >
+                        <p class="text-sm font-black text-cyan-900">
+                            Addressed actions: {{ savedAddressActionCount }} / 2
+                        </p>
+
+                      
+
+                        <p
+                            v-if="hasReachedAddressActionLimit"
+                            class="mt-2 text-sm font-black text-amber-800"
+                        >
+                            Two actions are already saved. Click Close Action to finalize without adding a third action.
+                        </p>
+                    </div>
                 </div>
 
                 <div
@@ -2373,14 +2266,14 @@ const formatFileSize = (bytes) => {
 
                     <div class="mt-4">
                         <label class="text-sm font-black uppercase tracking-wide text-indigo-700">
-                            Transfer Remarks
+                            Transfer Remarks <span class="text-red-600">*</span>
                         </label>
 
                         <textarea
                             v-model="forwardForm.remarks"
                             rows="4"
                             class="mt-2 w-full rounded-xl border border-indigo-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                            placeholder="Optional transfer remarks..."
+                            placeholder="Type transfer remarks..."
                         ></textarea>
 
                         <p
@@ -2422,18 +2315,19 @@ const formatFileSize = (bytes) => {
                 </div>
 
                 <div
-                    v-else
+                    v-else-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
                     class="mt-5"
                 >
                     <label class="text-sm font-black uppercase tracking-wide text-cyan-700">
-                        Remarks
+                        Remarks <span class="text-red-600">*</span>
                     </label>
 
                     <textarea
                         v-model="actionTakenForm.remarks"
                         rows="4"
-                        class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
-                        placeholder="Optional action remarks."
+                        class="mt-2 w-full rounded-xl border border-cyan-300 bg-white px-4 py-3 text-base font-semibold text-black outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:bg-slate-100 disabled:text-slate-500"
+                        :disabled="hasReachedAddressActionLimit"
+                        placeholder="Type address remarks..."
                     ></textarea>
 
                     <p
@@ -2447,7 +2341,7 @@ const formatFileSize = (bytes) => {
                 <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
                     <button
                         type="button"
-                        class="rounded-xl border border-slate-200 bg-white px-5 py-3 text-base font-black text-slate-700 hover:bg-slate-50"
+                        class="rounded-xl border border-slate-200 bg-white px-5 py-3 text-base font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60"
                         :disabled="isSelectedActionProcessing"
                         @click="closeActionTakenModal"
                     >
@@ -2455,12 +2349,33 @@ const formatFileSize = (bytes) => {
                     </button>
 
                     <button
+                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
+                        type="button"
+                        class="rounded-xl border border-cyan-600 bg-white px-5 py-3 text-base font-black text-cyan-700 hover:bg-cyan-50 disabled:opacity-60"
+                        :disabled="isSaveActionDisabled"
+                        @click="saveSelectedAction"
+                    >
+                        {{ saveActionLabel }}
+                    </button>
+
+                    <button
+                        v-if="isAddressDocumentActionSelected || hasReachedAddressActionLimit"
                         type="button"
                         class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
-                        :disabled="isConfirmActionDisabled"
-                        @click="actionTakenDocument"
+                        :disabled="isCloseActionDisabled"
+                        @click="closeSelectedAction"
                     >
-                        {{ confirmActionTakenLabel }}
+                        {{ closeActionLabel }}
+                    </button>
+
+                    <button
+                        v-else-if="isTransferDocumentActionSelected || isReturnDocumentActionSelected"
+                        type="button"
+                        class="rounded-xl bg-cyan-600 px-5 py-3 text-base font-black text-white hover:bg-cyan-700 disabled:opacity-60"
+                        :disabled="isRoutingActionDisabled"
+                        @click="submitRoutingAction"
+                    >
+                        {{ routingActionLabel }}
                     </button>
                 </div>
             </div>
@@ -2610,15 +2525,12 @@ const formatFileSize = (bytes) => {
 
                                 <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-700 md:grid-cols-2">
                                     <p class="text-sm font-black text-slate-800">
-                                        <span class="text-slate-950">{{ historyActorLabel(item) }}</span>
+                                        <span class="text-slate-950">Actor:</span>
                                         {{ item.actor || '-' }}
                                     </p>
 
-                                    <p
-                                        v-if="item.target_personnel || item.target_action"
-                                        class="text-sm font-black text-slate-800"
-                                    >
-                                        <span class="text-slate-950">{{ historyTargetLabel(item) }}</span>
+                                    <p v-if="item.target_personnel || item.target_action">
+                                        <span class="text-slate-900">{{ historyTargetLabel(item) }}</span>
                                         {{ item.target_action || item.target_personnel }}
                                     </p>
 
