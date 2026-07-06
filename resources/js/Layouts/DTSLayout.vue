@@ -350,7 +350,7 @@ const emit = defineEmits([
 
                         <Link
                             v-if="canViewAllDocuments"
-                            href="/dts?section=all-documents"
+                            href="/dts?section=all-documents&scope=all"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isAllDocumentsActive)"
                         >

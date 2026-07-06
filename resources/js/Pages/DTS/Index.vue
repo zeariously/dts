@@ -1,6 +1,6 @@
 <script setup>
 import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import DTSLayout from '@/Layouts/DTSLayout.vue'
 import AddDocumentModal from '@/Components/DTS/AddDocumentModal.vue'
 
@@ -23,7 +23,10 @@ const props = defineProps({
             total: 0,
             for_receiving: 0,
             received: 0,
+            for_action: 0,
+            in_progress: 0,
             addressed: 0,
+            completed: 0,
             returned: 0,
         }),
     },
@@ -71,12 +74,45 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    automaticStatusReminders: {
+        type: Array,
+        default: () => [],
+    },
 })
 
 const page = usePage()
 
 const userRights = computed(() => {
     return String(page.props.auth?.user?.rights ?? '').trim()
+})
+
+const canShowReturnedCard = computed(() => {
+    /*
+     * Per latest rule:
+     * Hide Returned card/tab for Role 2 and Role 4.
+     */
+    return !['2', '4'].includes(userRights.value)
+})
+
+const canShowCompletedCard = computed(() => {
+    return ['2', '3'].includes(userRights.value)
+})
+
+const currentUserId = computed(() => {
+    return String(page.props.auth?.user?.ID ?? page.props.auth?.user?.id ?? '').trim()
+})
+
+const currentPersonnelIds = computed(() => {
+    return [
+        page.props.auth?.user?.idmapagency,
+        page.props.auth?.user?.IDmapagency,
+        page.props.auth?.user?.IDmapAgency,
+        page.props.auth?.user?.IDpersonnel,
+        page.props.auth?.user?.personnel_id,
+        page.props.auth?.user?.IDkeeper,
+    ]
+        .filter((id) => id !== undefined && id !== null && String(id).trim() !== '' && Number(id) !== 0)
+        .map((id) => String(id).trim())
 })
 
 const canManageDts = computed(() => {
@@ -121,6 +157,66 @@ const firstErrorMessage = computed(() => {
     return message || ''
 })
 
+
+/*
+ * Separate automatic 3-day reminder modal.
+ * This does not change or consume the notification bell items.
+ */
+const showAutomaticReminderModal = ref(false)
+
+const automaticReminderItems = computed(() => {
+    return props.automaticStatusReminders || []
+})
+
+const hasAutomaticStatusReminders = computed(() => {
+    return automaticReminderItems.value.length > 0
+})
+
+const automaticReminderCount = computed(() => {
+    return automaticReminderItems.value.length
+})
+
+const automaticReminderStatusCount = (status) => {
+    return automaticReminderItems.value.filter((item) => {
+        return String(item?.current_status || '').trim().toLowerCase()
+            === String(status || '').trim().toLowerCase()
+    }).length
+}
+
+const formatPendingDays = (value) => {
+    const days = Number(value)
+
+    if (!Number.isFinite(days) || days < 0) {
+        return 0
+    }
+
+    return Math.floor(days)
+}
+
+const automaticReminderBadgeClass = (status) => {
+    const value = String(status || '').trim().toLowerCase()
+
+    if (['for receiving', 'received', 'in progress'].includes(value)) {
+        return 'border-red-300 bg-red-100 text-red-800'
+    }
+
+    return 'border-red-200 bg-red-50 text-red-700'
+}
+
+const openAutomaticReminderModal = () => {
+    if (!hasAutomaticStatusReminders.value) return
+
+    showAutomaticReminderModal.value = true
+}
+
+const closeAutomaticReminderModal = () => {
+    /*
+     * Disregard only closes the current modal.
+     * Nothing is saved in localStorage, so unresolved reminders will prompt
+     * again on refresh, navigation, or the next dashboard visit.
+     */
+    showAutomaticReminderModal.value = false
+}
 
 const showTransferNotificationModal = ref(false)
 const seenNotificationKeys = ref([])
@@ -168,7 +264,28 @@ const markNotificationSeen = (item) => {
 
 onMounted(() => {
     loadSeenNotificationKeys()
+
+    /*
+     * Always prompt whenever the dashboard loads and an unresolved 3-day
+     * reminder exists. Disregarding it does not mark it as seen.
+     */
+    if (hasAutomaticStatusReminders.value) {
+        openAutomaticReminderModal()
+    }
 })
+
+watch(
+    automaticReminderItems,
+    () => {
+        /* Re-open after an Inertia refresh when reminders still exist. */
+        if (hasAutomaticStatusReminders.value) {
+            openAutomaticReminderModal()
+        } else {
+            showAutomaticReminderModal.value = false
+        }
+    },
+    { deep: true }
+)
 
 const transferNotifications = computed(() => {
     const forReceiving = (props.viewerNotifications || []).map((item) => ({
@@ -194,14 +311,6 @@ const transferNotificationCount = computed(() => {
     return transferNotifications.value.length
 })
 
-const addressedCount = computed(() => {
-    return props.stats.addressed
-        ?? props.stats.address
-        ?? props.stats.action_taken
-        ?? props.stats.for_action
-        ?? 0
-})
-
 const forReceivingNotifications = computed(() => {
     return transferNotifications.value.filter((item) => item.notification_type !== 'received_by_addressee')
 })
@@ -211,13 +320,6 @@ const overdueTransferNotifications = computed(() => {
 })
 
 const openNotificationsFromBell = () => {
-    // Do not open the notification modal when there are no notifications.
-    // This prevents Role 2 from seeing the popup every time the bell is clicked.
-    if (!hasTransferNotifications.value) {
-        showTransferNotificationModal.value = false
-        return
-    }
-
     showTransferNotificationModal.value = true
 }
 
@@ -227,25 +329,20 @@ const closeTransferNotificationModal = () => {
 
 watch(
     transferNotifications,
-    (items) => {
+    () => {
         /*
-         * Notifications should no longer auto-prompt as a popup.
-         * They will stay inside the notification bell only.
+         * Do not auto-open the notification modal.
+         * Notifications should stay in the bell and open only when the user clicks it.
          */
-        if (!items.length) {
-            showTransferNotificationModal.value = false
-        }
+        showTransferNotificationModal.value = false
     },
-    { immediate: true }
+    { immediate: false }
 )
 
 
 
 const search = ref(props.filters?.search || '')
 const perPage = ref(Number(props.filters?.per_page || 10))
-
-let searchTimer = null
-let skipNextSearchWatch = false
 
 const showAddDocumentModal = ref(false)
 const showEditEntryDateModal = ref(false)
@@ -273,60 +370,8 @@ const isAllDocumentsSection = computed(() => {
     return activeSection.value === 'all-documents'
 })
 
-const isAddressedDocumentsSection = computed(() => {
-    return activeSection.value === 'addressed-docs'
-})
-
 const activeFilter = computed(() => {
     return currentParams.value.get('filter') || ''
-})
-
-const tableSearchPlaceholder = computed(() => {
-    if (activeSection.value === 'received-docs') {
-        return 'Search '
-    }
-
-    if (activeSection.value === 'pending-docs' || activeSection.value === 'pending-docs-07') {
-        return 'Search '
-    }
-
-    if (activeSection.value === 'sent-docs') {
-        return 'Search '
-    }
-
-    if (activeSection.value === 'pulled-out-docs') {
-        return 'Search '
-    }
-
-    if (activeFilter.value === 'for-receiving') {
-        return 'Search'
-    }
-
-    if (['received', 'collab-received'].includes(activeFilter.value)) {
-        return 'Search '
-    }
-
-    if (activeFilter.value === 'for-action') {
-        return 'Search '
-    }
-
-    if (activeFilter.value === 'returned') {
-        return 'Search '
-    }
-
-    return 'Search '
-})
-
-const tableSearchDescription = computed(() => {
-    if (isAllDocumentsSection.value) {
-        return 'Search the complete document registry across document number, type, offices, subject, dates, status, personnel, and remarks.'
-    }
-
-    if (isAddressedDocumentsSection.value) {
-        return 'Search addressed documents that were received and already have a selected action.'
-    }
-
-    return 'Search checks all visible table columns, including document number, type, offices, subject, dates, status, personnel, and remarks.'
 })
 
 const availableYears = computed(() => {
@@ -350,10 +395,6 @@ const selectedYear = ref(String(
     new Date().getFullYear()
 ))
 
-const showYearFilter = computed(() => {
-    return activeSection.value !== 'about'
-})
-
 const buildCurrentPayload = () => {
     const payload = {
         per_page: perPage.value,
@@ -367,6 +408,10 @@ const buildCurrentPayload = () => {
 
     if (activeSection.value !== 'documents') {
         payload.section = activeSection.value
+    }
+
+    if (activeSection.value === 'all-documents') {
+        payload.scope = 'all'
     }
 
     if (activeFilter.value) {
@@ -392,8 +437,20 @@ const buildCurrentPayload = () => {
             payload.report_classification = reportClassification.value
         }
 
-        if (reportMonth.value) {
-            payload.report_month = reportMonth.value
+        if (reportSubjectKeyword.value) {
+            payload.subject_keyword = reportSubjectKeyword.value
+        }
+
+        if (reportRegardingKeyword.value) {
+            payload.regarding_keyword = reportRegardingKeyword.value
+        }
+
+        if (reportStartDate.value) {
+            payload.start_date = reportStartDate.value
+        }
+
+        if (reportEndDate.value) {
+            payload.end_date = reportEndDate.value
         }
     }
 
@@ -410,37 +467,53 @@ const applyYearFilter = () => {
 const receivedKeeper = ref(currentParams.value.get('keeper') || '')
 const receivedDocType = ref(currentParams.value.get('doc_type') || '')
 const reportClassification = ref(currentParams.value.get('report_classification') || '')
-const reportMonth = ref(currentParams.value.get('report_month') || '')
+const reportSubjectKeyword = ref(currentParams.value.get('subject_keyword') || '')
+const reportRegardingKeyword = ref(currentParams.value.get('regarding_keyword') || '')
+const reportStartDate = ref(currentParams.value.get('start_date') || '')
+const reportEndDate = ref(currentParams.value.get('end_date') || '')
 const reportErrors = ref({})
 
-const reportMonths = [
-    { value: '', label: 'All Months' },
-    { value: '1', label: 'January' },
-    { value: '2', label: 'February' },
-    { value: '3', label: 'March' },
-    { value: '4', label: 'April' },
-    { value: '5', label: 'May' },
-    { value: '6', label: 'June' },
-    { value: '7', label: 'July' },
-    { value: '8', label: 'August' },
-    { value: '9', label: 'September' },
-    { value: '10', label: 'October' },
-    { value: '11', label: 'November' },
-    { value: '12', label: 'December' },
-]
+const validateReportFilters = () => {
+    reportErrors.value = {}
 
-const reportMonthLabel = computed(() => {
-    return reportMonths.find((month) => month.value === String(reportMonth.value))?.label || 'All Months'
-})
+    const hasAnyFilter = Boolean(
+        selectedYear.value ||
+        reportClassification.value ||
+        reportSubjectKeyword.value ||
+        reportRegardingKeyword.value ||
+        reportStartDate.value ||
+        reportEndDate.value
+    )
+
+    if (!hasAnyFilter) {
+        reportErrors.value.general = 'Please select at least one filter before previewing the report.'
+    }
+
+    if (reportStartDate.value && reportEndDate.value) {
+        const start = new Date(reportStartDate.value)
+        const end = new Date(reportEndDate.value)
+
+        if (start > end) {
+            reportErrors.value.date = 'End date must be equal to or later than start date.'
+        }
+    }
+
+    return Object.keys(reportErrors.value).length === 0
+}
 
 const previewReport = () => {
-    reportErrors.value = {}
+    if (!validateReportFilters()) {
+        return
+    }
 
     router.get('/dts', {
         section: 'reports',
         year: selectedYear.value === 'all' ? 'all' : (selectedYear.value || undefined),
         report_classification: reportClassification.value,
-        report_month: reportMonth.value,
+        subject_keyword: reportSubjectKeyword.value,
+        regarding_keyword: reportRegardingKeyword.value,
+        start_date: reportStartDate.value,
+        end_date: reportEndDate.value,
         per_page: perPage.value,
     }, {
         preserveScroll: true,
@@ -450,7 +523,10 @@ const previewReport = () => {
 
 const resetReport = () => {
     reportClassification.value = ''
-    reportMonth.value = ''
+    reportSubjectKeyword.value = ''
+    reportRegardingKeyword.value = ''
+    reportStartDate.value = ''
+    reportEndDate.value = ''
     reportErrors.value = {}
 
     router.get('/dts', {
@@ -464,11 +540,10 @@ const resetReport = () => {
 }
 
 const pageTitle = computed(() => {
+    if (activeSection.value === 'all-documents') return 'All Documents'
     if (activeSection.value === 'search') return 'Search'
     if (activeSection.value === 'reports') return 'Reports'
     if (activeSection.value === 'about') return 'About'
-    if (activeSection.value === 'all-documents') return 'All Documents'
-    if (activeSection.value === 'addressed-docs') return 'Addressed Documents'
     if (activeSection.value === 'incoming') return 'Incoming Documents'
     if (activeSection.value === 'outgoing') return 'Outgoing'
     if (activeSection.value === 'collaboration') return 'Incoming Documents'
@@ -480,8 +555,9 @@ const pageTitle = computed(() => {
 
     if (activeFilter.value === 'for-receiving') return 'For Receiving'
     if (['collab-received', 'received'].includes(activeFilter.value)) return 'Received'
-    if (activeFilter.value === 'for-action') return 'For Action'
-    if (activeFilter.value === 'addressed') return 'Addressed'
+    if (activeFilter.value === 'for-action') return 'Received'
+    if (['in-progress', 'addressed'].includes(activeFilter.value)) return 'In Progress'
+    if (activeFilter.value === 'completed') return 'Completed'
     if (activeFilter.value === 'returned') return 'Returned'
 
     return 'Documents'
@@ -491,9 +567,9 @@ const isPendingDocs07 = computed(() => {
     return activeSection.value === 'pending-docs-07'
 })
 
-const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07', 'addressed-docs']
+const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07']
 const outgoingSections = ['outgoing', 'sent-docs', 'pulled-out-docs']
-const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'addressed', 'returned']
+const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'in-progress', 'addressed', 'completed', 'returned']
 
 const isIncomingGroup = computed(() => {
     return incomingSections.includes(activeSection.value)
@@ -543,6 +619,10 @@ const buildDtsUrl = (params = {}) => {
         }
     })
 
+    if (params.section === 'all-documents') {
+        query.set('scope', 'all')
+    }
+
     const queryString = query.toString()
 
     return queryString ? `/dts?${queryString}` : '/dts'
@@ -559,27 +639,27 @@ const incomingTabs = computed(() => {
         {
             label: 'Received',
             href: buildDtsUrl({ section: 'incoming', filter: 'received' }),
-            active: ['received', 'collab-received'].includes(activeFilter.value),
+            active: ['received', 'collab-received', 'for-action'].includes(activeFilter.value),
             count: props.stats.received ?? 0,
         },
         {
-            label: 'Addressed',
-            href: buildDtsUrl({ section: 'addressed-docs' }),
-            active: activeSection.value === 'addressed-docs' || activeFilter.value === 'addressed',
-            count: addressedCount.value,
+            label: 'In Progress',
+            href: buildDtsUrl({ section: 'incoming', filter: 'in-progress' }),
+            active: ['in-progress', 'addressed'].includes(activeFilter.value),
+            count: props.stats.in_progress ?? props.stats.addressed ?? 0,
         },
-        {
-            label: 'For Action',
-            href: buildDtsUrl({ section: 'incoming', filter: 'for-action' }),
-            active: activeFilter.value === 'for-action',
-            count: null,
-        },
-        {
+        ...(canShowCompletedCard.value ? [{
+            label: 'Completed',
+            href: buildDtsUrl({ section: 'incoming', filter: 'completed' }),
+            active: activeFilter.value === 'completed',
+            count: props.stats.completed ?? 0,
+        }] : []),
+        ...(canShowReturnedCard.value ? [{
             label: 'Returned',
             href: buildDtsUrl({ section: 'incoming', filter: 'returned' }),
             active: activeFilter.value === 'returned',
             count: props.stats.returned ?? 0,
-        },
+        }] : []),
     ]
 })
 
@@ -611,27 +691,27 @@ const collaborationTabs = computed(() => {
         {
             label: 'Received',
             href: buildDtsUrl({ section: 'incoming', filter: 'received' }),
-            active: ['received', 'collab-received'].includes(activeFilter.value),
+            active: ['received', 'collab-received', 'for-action'].includes(activeFilter.value),
             count: props.stats.received,
         },
         {
-            label: 'Addressed',
-            href: buildDtsUrl({ section: 'addressed-docs' }),
-            active: activeSection.value === 'addressed-docs' || activeFilter.value === 'addressed',
-            count: addressedCount.value,
+            label: 'In Progress',
+            href: buildDtsUrl({ section: 'incoming', filter: 'in-progress' }),
+            active: ['in-progress', 'addressed'].includes(activeFilter.value),
+            count: props.stats.in_progress ?? props.stats.addressed ?? 0,
         },
-        {
-            label: 'For Action',
-            href: buildDtsUrl({ section: 'incoming', filter: 'for-action' }),
-            active: activeFilter.value === 'for-action',
-            count: null,
-        },
-        {
+        ...(canShowCompletedCard.value ? [{
+            label: 'Completed',
+            href: buildDtsUrl({ section: 'incoming', filter: 'completed' }),
+            active: activeFilter.value === 'completed',
+            count: props.stats.completed ?? 0,
+        }] : []),
+        ...(canShowReturnedCard.value ? [{
             label: 'Returned',
             href: buildDtsUrl({ section: 'incoming', filter: 'returned' }),
             active: activeFilter.value === 'returned',
             count: props.stats.returned,
-        },
+        }] : []),
     ]
 })
 
@@ -665,12 +745,68 @@ const isGroupLandingPage = computed(() => {
         )
 })
 
-const rows = computed(() => {
-    if (Array.isArray(props.documents)) {
-        return props.documents
+const isSameId = (first, second) => {
+    return String(first ?? '').trim() !== ''
+        && String(first ?? '').trim() === String(second ?? '').trim()
+}
+
+const isTaggedToCurrentPersonnel = (doc) => {
+    if (!currentPersonnelIds.value.length) {
+        return false
     }
 
-    return props.documents?.data || []
+    return [
+        doc?.IDkeeper,
+        doc?.distribution_personnel_id,
+        doc?.returned_to_personnel_id,
+    ].some((id) => currentPersonnelIds.value.includes(String(id ?? '').trim()))
+}
+
+const shouldHideReturnedAwayFromRoleTwo = (doc) => {
+    /*
+     * Frontend safety:
+     * Role 2 normal Dashboard list:
+     * hide documents already returned away to the encoder.
+     *
+     * IMPORTANT:
+     * Do NOT apply this safety filter in All Documents.
+     * Old working code displayed props.documents directly, so All Documents
+     * must not do any client-side tag filtering.
+     */
+    if (isAllDocumentsSection.value) {
+        return false
+    }
+
+    if (userRights.value !== '2') {
+        return false
+    }
+
+    if (activeFilter.value === 'returned') {
+        return false
+    }
+
+    if (!isSameId(doc?.returned_by, currentUserId.value)) {
+        return false
+    }
+
+    return !isTaggedToCurrentPersonnel(doc)
+}
+
+const rows = computed(() => {
+    const sourceRows = Array.isArray(props.documents)
+        ? props.documents
+        : (props.documents?.data || [])
+
+    /*
+     * All Documents must display the full backend result.
+     * This matches the old working code where rows returned props.documents.data
+     * directly without client-side tag filtering.
+     */
+    if (isAllDocumentsSection.value) {
+        return sourceRows
+    }
+
+    return sourceRows.filter((doc) => !shouldHideReturnedAwayFromRoleTwo(doc))
 })
 
 const links = computed(() => {
@@ -742,26 +878,7 @@ const runSearch = () => {
     applyFilters()
 }
 
-watch(search, () => {
-    if (skipNextSearchWatch) {
-        skipNextSearchWatch = false
-        clearTimeout(searchTimer)
-        return
-    }
-
-    clearTimeout(searchTimer)
-
-    searchTimer = setTimeout(() => {
-        applyFilters()
-    }, 500)
-})
-
-onBeforeUnmount(() => {
-    clearTimeout(searchTimer)
-})
-
 const resetSearch = () => {
-    skipNextSearchWatch = true
     search.value = ''
     perPage.value = 10
 
@@ -775,6 +892,10 @@ const resetSearch = () => {
 
     if (activeSection.value !== 'documents') {
         payload.section = activeSection.value
+    }
+
+    if (activeSection.value === 'all-documents') {
+        payload.scope = 'all'
     }
 
     if (activeFilter.value) {
@@ -807,7 +928,6 @@ const applyReceivedFilters = () => {
 }
 
 const resetReceivedFilters = () => {
-    skipNextSearchWatch = true
     search.value = ''
     receivedKeeper.value = ''
     receivedDocType.value = ''
@@ -901,36 +1021,96 @@ const goToPage = (url) => {
 
 
 
+const documentHasSelectedAction = (doc) => {
+    const actionType = String(doc?.action_type || '').trim().toLowerCase()
+
+    return doc?.has_selected_action === true
+        || doc?.has_selected_action === 1
+        || doc?.has_selected_action === '1'
+        || actionType === 'action_taken'
+}
+
 const documentStatusLabel = (doc) => {
-    return doc.workflow_status
+    if (activeFilter.value === 'completed') {
+        return 'Completed'
+    }
+
+    /* In Progress means at least one action exists, but completion is pending. */
+    if (['in-progress', 'addressed'].includes(activeFilter.value) || activeSection.value === 'addressed-docs') {
+        return 'In Progress'
+    }
+
+    const status = doc.workflow_status
         || doc.status_label
         || doc.status
         || '-'
-}
 
-const selectedActionLabel = (doc) => {
-    return doc.selected_action
-        || doc.action_label
-        || doc.action_name
-        || doc.selected_action_name
-        || 'No selected action'
-}
+    const statusText = String(status || '').trim().toLowerCase()
 
-const selectedActionClass = (doc) => {
-    return selectedActionLabel(doc) === 'No selected action'
-        ? 'border-slate-300 bg-slate-100 text-slate-700'
-        : 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    const isCompleted = doc?.is_completed === true
+        || doc?.is_completed === 1
+        || doc?.is_completed === '1'
+        || Boolean(doc?.completed_at)
+        || statusText.includes('completed')
+        || statusText.includes('complete')
+
+    if (isCompleted) {
+        return 'Completed'
+    }
+
+    if (documentHasSelectedAction(doc) && statusText.includes('done')) {
+        return 'In Progress'
+    }
+
+    /* No real Select Action yet: do not display In Progress accidentally. */
+    if (!documentHasSelectedAction(doc)) {
+        if (
+            statusText.includes('done')
+            || statusText.includes('addressed')
+            || statusText.includes('action taken')
+        ) {
+            if (doc?.confirmdate || doc?.date_received || doc?.received_date) {
+                return 'Received'
+            }
+
+            if (doc?.distdate || doc?.distribution_date || doc?.date_sent) {
+                return 'For Receiving'
+            }
+        }
+    }
+
+    return status
 }
 
 const documentStatusClass = (doc) => {
     const status = String(documentStatusLabel(doc)).toLowerCase()
 
+    if (status.includes('in progress')) {
+        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    }
+
+    if (
+        status.includes('completed')
+        || status.includes('complete')
+        || status.includes('cleared')
+    ) {
+        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
+    }
+
+    if (
+        status === 'done'
+        || status.includes('done')
+        || status.includes('approved')
+    ) {
+        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    }
+
     if (status === 'received' || status.includes('received')) {
-        return 'border-green-300 bg-green-100 text-green-800'
+        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
     }
 
     if (status === 'for receiving' || status.includes('for receiving')) {
-        return 'border-blue-300 bg-blue-100 text-blue-800'
+        return 'border-violet-300 bg-violet-100 text-violet-800'
     }
 
     if (status.includes('pending 07')) {
@@ -938,15 +1118,11 @@ const documentStatusClass = (doc) => {
     }
 
     if (status.includes('pending')) {
-        return 'border-yellow-300 bg-yellow-100 text-yellow-900'
-    }
-
-    if (status.includes('completed') || status.includes('complete') || status.includes('cleared') || status.includes('approved')) {
-        return 'border-green-300 bg-green-100 text-green-800'
+        return 'border-amber-300 bg-amber-100 text-amber-900'
     }
 
     if (status.includes('return')) {
-        return 'border-red-300 bg-red-100 text-red-800'
+        return 'border-rose-300 bg-rose-100 text-rose-800'
     }
 
     if (status.includes('pulled')) {
@@ -955,6 +1131,25 @@ const documentStatusClass = (doc) => {
 
     return 'border-slate-300 bg-slate-100 text-slate-700'
 }
+
+const returnedByDisplay = (doc) => {
+    return doc?.returned_by_name
+        || doc?.returned_by
+        || doc?.return_by_name
+        || doc?.return_user_name
+        || ''
+}
+
+const shouldShowReturnedBy = (doc) => {
+    /*
+     * Show Returned By only inside the Returned list/card.
+     * Do not show this in the normal document list.
+     */
+    return activeFilter.value === 'returned'
+        && Boolean(String(returnedByDisplay(doc) || '').trim())
+}
+
+
 
 const canShowReceiveButton = (doc) => {
     return canReceiveDts.value && documentStatusLabel(doc) === 'For Receiving'
@@ -987,25 +1182,6 @@ const classificationBadgeClass = (value) => {
     }
 
     return 'border border-slate-300 bg-slate-100 text-slate-800'
-}
-
-
-const formatDtsId = (value) => {
-    if (value === null || value === undefined || String(value).trim() === '') {
-        return 'DTS - #'
-    }
-
-    const rawValue = String(value).trim()
-    const cleanValue = rawValue
-        .replace(/^DTS\s*-\s*#?/i, '')
-        .replace(/^#/, '')
-        .trim()
-
-    return `DTS - #${cleanValue || rawValue}`
-}
-
-const formatDtsDocumentNo = (doc) => {
-    return formatDtsId(doc?.document_no || doc?.tracking_no || doc?.IDdoc || doc?.id)
 }
 
 const printReport = () => {
@@ -1101,14 +1277,13 @@ const submitEntryDateUpdate = () => {
                             {{ pageTitle }}
                         </h1>
 
-                       
+                        <p class="mt-2 text-sm text-slate-500">
+                            Document Tracking System workspaces
+                        </p>
                     </div>
 
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                        <div
-                            v-if="showYearFilter"
-                            class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto"
-                        >
+                        <div class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto">
                             <label class="shrink-0 text-sm font-bold text-blue-800">
                                 Year:
                             </label>
@@ -1175,6 +1350,127 @@ const submitEntryDateUpdate = () => {
                 </div>
             </div>
 
+            <!-- AUTOMATIC 3-DAY STATUS REMINDER MODAL -->
+            <div
+                v-if="showAutomaticReminderModal"
+                class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 px-4 py-8"
+            >
+                <div class="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+                    <div class="border-b border-red-100 bg-red-600 px-6 py-5 text-white">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <p class="text-xs font-black uppercase tracking-[0.22em] text-red-100">
+                                    Automatic Action Reminder
+                                </p>
+
+                                <h2 class="mt-2 text-2xl font-black">
+                                    Documents Pending 
+                                </h2>
+
+                               
+                            </div>
+
+                            <button
+                                type="button"
+                                class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
+                                @click="closeAutomaticReminderModal"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="p-6">
+                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                                <p class="text-xs font-black uppercase tracking-wide text-red-700">Total</p>
+                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderCount }}</p>
+                            </div>
+
+                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                                <p class="text-xs font-black uppercase tracking-wide text-red-700">For Receiving</p>
+                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('For Receiving') }}</p>
+                            </div>
+
+                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                                <p class="text-xs font-black uppercase tracking-wide text-red-700">Received</p>
+                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('Received') }}</p>
+                            </div>
+
+                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                                <p class="text-xs font-black uppercase tracking-wide text-red-700">In Progress</p>
+                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('In Progress') }}</p>
+                            </div>
+                        </div>
+
+                        <div class="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-1">
+                            <article
+                                v-for="doc in automaticReminderItems"
+                                :key="`automatic-reminder-${doc.IDdoc}-${doc.current_status}`"
+                                class="rounded-2xl border border-red-200 bg-red-50/70 p-4"
+                            >
+                                <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                    <div class="min-w-0">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-red-800 ring-1 ring-red-200">
+                                                DTS - #{{ doc.document_no || doc.IDdoc }}
+                                            </span>
+
+                                            <span
+                                                class="rounded-full border px-3 py-1 text-xs font-black"
+                                                :class="automaticReminderBadgeClass(doc.current_status)"
+                                            >
+                                                {{ doc.current_status }}
+                                            </span>
+
+                                            <span class="rounded-full bg-red-600 px-3 py-1 text-xs font-black text-white">
+                                                {{ formatPendingDays(doc.days_pending) }} day<span v-if="formatPendingDays(doc.days_pending) !== 1">s</span>
+                                            </span>
+                                        </div>
+
+                                        <p class="mt-3 break-words text-base font-black text-slate-950">
+                                            {{ doc.subject || 'No subject' }}
+                                        </p>
+
+                                        <div class="mt-3 grid grid-cols-1 gap-2 text-sm font-semibold text-slate-700 md:grid-cols-2">
+                                            <p>
+                                                <span class="font-black text-slate-900">Status Since:</span>
+                                                {{ formatDateTime(doc.status_started_at) }}
+                                            </p>
+
+                                            <p>
+                                                <span class="font-black text-slate-900">From:</span>
+                                                {{ doc.from_office || '-' }}
+                                            </p>
+
+                                            <p>
+                                                <span class="font-black text-slate-900">Current Office:</span>
+                                                {{ doc.current_office || '-' }}
+                                            </p>
+
+                                            <p>
+                                                <span class="font-black text-slate-900">Document Type:</span>
+                                                {{ doc.code || doc.doctype || '-' }}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <Link
+                                        :href="`/dts/${doc.IDdoc}`"
+                                        class="shrink-0 rounded-xl bg-red-600 px-5 py-2.5 text-center text-sm font-black text-white hover:bg-red-700"
+                                        @click="closeAutomaticReminderModal"
+                                    >
+                                        Review Document
+                                    </Link>
+                                </div>
+                            </article>
+                        </div>
+
+                       
+                    </div>
+                </div>
+            </div>
+
             <!-- Document Notification Popup -->
             <div
                 v-if="showTransferNotificationModal"
@@ -1229,7 +1525,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                {{ formatDtsDocumentNo(doc) }}
+                                                Doc ID: {{ doc.document_no || doc.IDdoc }}
                                             </span>
 
                                             <span
@@ -1636,16 +1932,12 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <h2 class="mt-2 text-3xl font-bold text-slate-900">
-                                    DTS Monthly Reports
+                                     DTS Reports
                                 </h2>
-
-                                <p class="mt-2 text-sm font-semibold text-slate-500">
-                                    Select classification and month. Results update automatically.
-                                </p>
                             </div>
                         </div>
 
-                        
+                  
                     </div>
                 </div>
 
@@ -1655,34 +1947,33 @@ const submitEntryDateUpdate = () => {
                             <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                     <h3 class="text-xl font-bold text-black">
-                                        Reports: By Classification and Month
+                                        Reports: By Date
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Choose Incoming or Outgoing, then select the month to display only matching records.
+                                        Filter documents by classification, keywords, and date range.
                                     </p>
                                 </div>
 
                                 <span class="inline-flex w-fit rounded-full bg-blue-700 px-4 py-1.5 text-xs font-bold text-white">
-                                    Auto Filter
+                                    Preview Report
                                 </span>
                             </div>
                         </div>
 
                         <div class="p-6">
-                            <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-                                <div>
-                                    <label class="mb-2 block text-sm font-bold text-black">
-                                        Classification
+                            <div class="grid grid-cols-1 gap-5">
+                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                                    <label class="text-sm font-bold text-black md:text-right">
+                                        Classification:
                                     </label>
 
                                     <select
                                         v-model="reportClassification"
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @change="previewReport"
                                     >
                                         <option value="">
-                                            All Classifications
+                                            All
                                         </option>
 
                                         <option value="False">
@@ -1695,34 +1986,90 @@ const submitEntryDateUpdate = () => {
                                     </select>
                                 </div>
 
-                                <div>
-                                    <label class="mb-2 block text-sm font-bold text-black">
-                                        Month
+                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                                    <label class="text-sm font-bold text-black md:text-right">
+                                        Subject keywords:
                                     </label>
 
-                                    <select
-                                        v-model="reportMonth"
+                                    <input
+                                        v-model="reportSubjectKeyword"
+                                        type="text"
+                                        placeholder="Type subject keyword..."
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @change="previewReport"
-                                    >
-                                        <option
-                                            v-for="month in reportMonths"
-                                            :key="month.value || 'all-months'"
-                                            :value="month.value"
-                                        >
-                                            {{ month.label }}
-                                        </option>
-                                    </select>
+                                        @keyup.enter="previewReport"
+                                    />
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                                    <label class="text-sm font-bold text-black md:text-right">
+                                        Re keywords:
+                                    </label>
+
+                                    <input
+                                        v-model="reportRegardingKeyword"
+                                        type="text"
+                                        placeholder="Type regarding keyword..."
+                                        class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        @keyup.enter="previewReport"
+                                    />
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
+                                    <div class="rounded-2xl border border-blue-100 bg-blue-50 p-5">
+                                        <p class="mb-4 text-sm font-bold uppercase tracking-wide text-blue-700">
+                                            Start Date
+                                        </p>
+
+                                        <input
+                                            v-model="reportStartDate"
+                                            type="date"
+                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        />
+                                    </div>
+
+                                    <div class="rounded-2xl border border-blue-100 bg-blue-50 p-5">
+                                        <p class="mb-4 text-sm font-bold uppercase tracking-wide text-blue-700">
+                                            End Date
+                                        </p>
+
+                                        <input
+                                            v-model="reportEndDate"
+                                            type="date"
+                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        />
+                                    </div>
                                 </div>
 
                                 <div
-                                    v-if="reportErrors.general"
-                                    class="rounded-xl border border-red-300 bg-red-50 px-5 py-4 text-sm font-bold text-red-800 lg:col-span-2"
+                                    v-if="reportErrors.general || reportErrors.date"
+                                    class="rounded-xl border border-red-300 bg-red-50 px-5 py-4 text-sm font-bold text-red-800"
                                 >
-                                    {{ reportErrors.general }}
+                                    <p v-if="reportErrors.general">
+                                        {{ reportErrors.general }}
+                                    </p>
+
+                                    <p v-if="reportErrors.date">
+                                        {{ reportErrors.date }}
+                                    </p>
                                 </div>
 
-                                <div class="flex flex-col justify-end gap-3 border-t border-blue-100 pt-5 sm:flex-row lg:col-span-2">
+                                <div class="flex flex-col justify-end gap-3 border-t border-blue-100 pt-5 sm:flex-row">
+                                    <button
+                                        type="button"
+                                        class="rounded-xl border border-blue-300 bg-white px-7 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
+                                        @click="resetReport"
+                                    >
+                                        Reset
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="rounded-xl bg-blue-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
+                                        @click="previewReport"
+                                    >
+                                        Preview
+                                    </button>
+
                                     <button
                                         type="button"
                                         class="rounded-xl bg-green-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-green-700"
@@ -1754,7 +2101,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-white">
-                                        Document Tracking System
+                                         Document Tracking System
                                     </p>
 
                                     <p class="mt-1 text-xs font-semibold text-blue-100">
@@ -1771,10 +2118,10 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 </p>
 
-                                <p class="mt-1">
-                                    Month:
+                                <p v-if="reportStartDate || reportEndDate" class="mt-1">
+                                    Date Range:
                                     <span class="font-bold">
-                                        {{ reportMonthLabel }}
+                                        {{ reportStartDate || 'Start' }} to {{ reportEndDate || 'End' }}
                                     </span>
                                 </p>
                             </div>
@@ -1786,7 +2133,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[9%] border border-black px-4 py-4 font-bold">
-                                        DOC ID
+                                        Doc ID
                                     </th>
 
                                     <th class="w-[11%] border border-black px-4 py-4 font-bold">
@@ -1822,7 +2169,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-4 py-4 font-bold text-blue-700">
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-4 py-4">
@@ -1862,7 +2209,7 @@ const submitEntryDateUpdate = () => {
                                         </div>
 
                                         <p class="mt-2 text-sm font-medium text-black">
-                                            Try another classification or month.
+                                            Try another date range or filter.
                                         </p>
                                     </td>
                                 </tr>
@@ -1874,7 +2221,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[10%] border border-black px-3 py-3 font-bold">
-                                        DTS #
+                                        Doc ID
                                     </th>
 
                                     <th class="w-[14%] border border-black px-3 py-3 font-bold">
@@ -1906,7 +2253,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-3 font-bold text-black">
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-3 py-3 font-semibold text-black">
@@ -1937,7 +2284,7 @@ const submitEntryDateUpdate = () => {
                                         </div>
 
                                         <p class="mt-2 text-sm font-medium text-black">
-                                            Try another classification or month.
+                                            Try another date range or filter.
                                         </p>
                                     </td>
                                 </tr>
@@ -1972,7 +2319,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, office, subject, or type..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="applyReceivedFilters"
                             />
@@ -2050,7 +2397,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    DTS<br>#
+                                    Doc<br>ID
                                 </th>
 
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
@@ -2086,7 +2433,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -2201,7 +2548,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2230,7 +2577,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[9%] border border-black px-4 py-4 text-center font-bold">
-                                    DTS<br>#
+                                    Doc<br>ID
                                 </th>
 
                                 <th class="w-[11%] border border-black px-4 py-4 text-center font-bold">
@@ -2269,7 +2616,7 @@ const submitEntryDateUpdate = () => {
                                 :href="`/dts/${doc.IDdoc}`"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                {{ formatDtsDocumentNo(doc) }}
+                                {{ doc.document_no || doc.IDdoc }}
                             </Link>
                         </td>
 
@@ -2400,7 +2747,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2429,7 +2776,7 @@ const submitEntryDateUpdate = () => {
                     <thead>
                         <tr class="bg-blue-600 text-white">
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                DTS #
+                                Doc ID
                             </th>
 
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
@@ -2465,7 +2812,7 @@ const submitEntryDateUpdate = () => {
                                     :href="`/dts/${doc.IDdoc}`"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    {{ formatDtsDocumentNo(doc) }}
+                                    {{ doc.document_no || doc.IDdoc }}
                                 </Link>
                             </td>
 
@@ -2574,7 +2921,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2603,7 +2950,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    DTS #
+                                    Doc ID
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2635,7 +2982,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -2740,7 +3087,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2769,7 +3116,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    DTS #
+                                    Doc ID
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -2812,7 +3159,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -2847,6 +3194,14 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+
+                                    <p
+                                        v-if="shouldShowReturnedBy(doc)"
+                                        class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                    >
+                                        Returned By: {{ returnedByDisplay(doc) }}
+                                    </p>
+
                                 </td>
 
                                 <td
@@ -2919,7 +3274,7 @@ const submitEntryDateUpdate = () => {
             </div>
             <!-- INCOMING RECEIVED CONTENT -->
             <div
-                v-else-if="['collab-received', 'received'].includes(activeFilter)"
+                v-else-if="['collab-received', 'received', 'for-action'].includes(activeFilter)"
                 class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
             >
                 <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -2929,7 +3284,7 @@ const submitEntryDateUpdate = () => {
                         </h2>
 
                         <p class="mt-2 text-sm font-medium text-black">
-                            List of received incoming documents.
+                            Received documents that do not have a saved action yet.
                         </p>
                     </div>
 
@@ -2948,7 +3303,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -2977,7 +3332,7 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    DTS #
+                                    Doc ID
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -3015,7 +3370,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ formatDtsDocumentNo(doc) }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3050,6 +3405,14 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+
+                                    <p
+                                        v-if="shouldShowReturnedBy(doc)"
+                                        class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                    >
+                                        Returned By: {{ returnedByDisplay(doc) }}
+                                    </p>
+
                                 </td>
 
 
@@ -3098,21 +3461,26 @@ const submitEntryDateUpdate = () => {
                 </div>
             </div>
 
-            <!-- INCOMING FOR ACTION / RETURNED CONTENT -->
+            <!-- IN PROGRESS / COMPLETED / RETURNED CONTENT -->
                 <div
-                    v-else-if="activeFilter === 'for-action' || activeFilter === 'returned'"
+                    v-else-if="['in-progress', 'addressed', 'completed', 'returned'].includes(activeFilter)"
                     class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
                 >
                     <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                         <div>
                             <h2 class="text-2xl font-bold tracking-wide text-cyan-700">
-                                {{ activeFilter === 'for-action' ? 'For Action' : 'Returned' }}
+                                {{ activeFilter === 'completed'
+                                    ? 'Completed'
+                                    : (['in-progress', 'addressed'].includes(activeFilter) ? 'In Progress' : 'Returned')
+                                }}
                             </h2>
 
                             <p class="mt-2 text-sm font-medium text-black">
-                                {{ activeFilter === 'for-action'
-                                    ? 'List of documents for action.'
-                                    : 'List of returned documents.'
+                                {{ activeFilter === 'completed'
+                                    ? 'Documents officially marked as completed.'
+                                    : ['in-progress', 'addressed'].includes(activeFilter)
+                                        ? 'Documents with one or more saved actions that are not yet completed.'
+                                        : 'List of returned documents.'
                                 }}
                             </p>
                         </div>
@@ -3132,7 +3500,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                :placeholder="tableSearchPlaceholder"
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3161,7 +3529,7 @@ const submitEntryDateUpdate = () => {
                             <thead>
                                 <tr class="bg-blue-600 text-white">
                                     <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                        DTS #
+                                        Doc ID
                                     </th>
 
                                     <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
@@ -3197,7 +3565,7 @@ const submitEntryDateUpdate = () => {
                                             :href="`/dts/${doc.IDdoc}`"
                                             class="font-bold text-blue-700 hover:underline"
                                         >
-                                            {{ formatDtsDocumentNo(doc) }}
+                                            {{ doc.document_no || doc.IDdoc }}
                                         </Link>
                                     </td>
 
@@ -3232,15 +3600,25 @@ const submitEntryDateUpdate = () => {
                                         >
                                             {{ documentStatusLabel(doc) }}
                                         </span>
+
+                                        <p
+                                            v-if="shouldShowReturnedBy(doc)"
+                                            class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                        >
+                                            Returned By: {{ returnedByDisplay(doc) }}
+                                        </p>
+
                                     </td>
                                 </tr>
 
                                 <tr v-if="rows.length === 0">
                                     <td colspan="6" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
-                                            {{ activeFilter === 'for-action'
-                                                ? 'No for action documents found'
-                                                : 'No returned documents found'
+                                            {{ activeFilter === 'completed'
+                                                ? 'No completed documents found'
+                                                : ['in-progress', 'addressed'].includes(activeFilter)
+                                                    ? 'No in progress documents found'
+                                                    : 'No returned documents found'
                                             }}
                                         </div>
 
@@ -3289,10 +3667,11 @@ const submitEntryDateUpdate = () => {
                 <!-- Stats Cards -->
                 <div
                     v-if="activeSection === 'documents'"
-                    class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5"
+                    class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2"
+                    :class="canShowReturnedCard && canShowCompletedCard ? '2xl:grid-cols-6' : (canShowCompletedCard ? '2xl:grid-cols-5' : '2xl:grid-cols-4')"
                 >
                     <Link
-                        :href="buildDtsUrl({})"
+                        :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
                         class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-6 text-white shadow-xl shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
@@ -3370,42 +3749,61 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Received, waiting for Select Action
+                                    Received with no action yet
                                 </p>
                             </div>
                         </div>
                     </Link>
 
                     <Link
-                        :href="buildDtsUrl({ section: 'addressed-docs' })"
+                        :href="buildDtsUrl({ section: 'incoming', filter: 'in-progress' })"
                         class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-6 text-white shadow-xl shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
                             <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
-                                📌
+                                📝
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <div class="flex items-start justify-between gap-3">
-                                    <p class="text-base font-black text-white/90">
-                                        Addressed
-                                    </p>
-                                </div>
-
+                                <p class="text-base font-black text-white/90">In Progress</p>
                                 <p class="mt-3 text-5xl font-black leading-none tracking-tight">
-                                    {{ addressedCount }}
+                                    {{ props.stats.in_progress ?? props.stats.addressed ?? 0 }}
                                 </p>
-
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Received documents with Selected Action
+                                    Has actions, not completed
                                 </p>
                             </div>
                         </div>
                     </Link>
 
                     <Link
+                        v-if="canShowCompletedCard"
+                        :href="buildDtsUrl({ section: 'incoming', filter: 'completed' })"
+                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-teal-600 to-emerald-500 p-6 text-white shadow-xl shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                    >
+                        <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
+
+                        <div class="relative flex h-full items-start gap-5">
+                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                                🏁
+                            </div>
+
+                            <div class="min-w-0 flex-1">
+                                <p class="text-base font-black text-white/90">Completed</p>
+                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                    {{ props.stats.completed ?? 0 }}
+                                </p>
+                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                    Officially marked as completed
+                                </p>
+                            </div>
+                        </div>
+                    </Link>
+
+                    <Link
+                        v-if="canShowReturnedCard"
                         :href="buildDtsUrl({ section: 'incoming', filter: 'returned' })"
                         class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-pink-500 p-6 text-white shadow-xl shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
@@ -3444,7 +3842,7 @@ const submitEntryDateUpdate = () => {
                             </h2>
 
                             <p class="mt-1 text-sm text-slate-500">
-                                {{ tableSearchDescription }}
+                                Search by Document ID, subject, or regarding.
                             </p>
                         </div>
 
@@ -3483,7 +3881,7 @@ const submitEntryDateUpdate = () => {
                         <input
                             v-model="search"
                             type="text"
-                            :placeholder="tableSearchPlaceholder"
+                            placeholder="Enter Document ID, subject, or regarding..."
                             class="w-full rounded-xl border border-slate-300 px-5 py-3.5 text-sm text-slate-700 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         />
 
@@ -3510,19 +3908,11 @@ const submitEntryDateUpdate = () => {
                         <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div>
                                 <h2 class="text-xl font-bold text-white">
-                                    {{ isAllDocumentsSection
-                                        ? 'All Documents List'
-                                        : (isAddressedDocumentsSection ? 'Addressed Documents List' : 'Document List')
-                                    }}
+                                    Document List
                                 </h2>
 
                                 <p class="mt-1 text-sm text-white">
-                                    {{ isAllDocumentsSection
-                                        ? 'Complete registry for Role 2. Non-tagged documents are available for viewing only.'
-                                        : (isAddressedDocumentsSection
-                                            ? 'Documents that were received and already have Select Action.'
-                                            : 'Latest document records from the DTS database.')
-                                    }}
+                                    Latest document records from the DTS database.
                                 </p>
                             </div>
 
@@ -3565,7 +3955,7 @@ const submitEntryDateUpdate = () => {
                                     </th>
 
                                     <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
-                                        {{ isAddressedDocumentsSection ? 'SELECTED ACTION' : 'STATUS' }}
+                                        STATUS
                                     </th>
 
                                     <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
@@ -3582,7 +3972,7 @@ const submitEntryDateUpdate = () => {
                                 >
                                     <td class="px-4 py-5 align-top">
                                         <span class="font-bold text-blue-700">
-                                            {{ formatDtsDocumentNo(doc) }}
+                                            {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
                                         </span>
                                     </td>
 
@@ -3607,17 +3997,18 @@ const submitEntryDateUpdate = () => {
                                     <td class="px-4 py-5 text-center align-top">
                                         <span
                                             class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
-                                            :class="isAddressedDocumentsSection ? selectedActionClass(doc) : documentStatusClass(doc)"
+                                            :class="documentStatusClass(doc)"
                                         >
-                                            {{ isAddressedDocumentsSection ? selectedActionLabel(doc) : documentStatusLabel(doc) }}
+                                            {{ documentStatusLabel(doc) }}
                                         </span>
 
                                         <p
-                                            v-if="isAddressedDocumentsSection && doc.selected_action_date"
-                                            class="mt-2 text-[11px] font-semibold text-slate-500"
+                                            v-if="shouldShowReturnedBy(doc)"
+                                            class="mt-2 text-[11px] font-black leading-4 text-rose-700"
                                         >
-                                            {{ formatDateTime(doc.selected_action_date) }}
+                                            Returned By: {{ returnedByDisplay(doc) }}
                                         </p>
+
                                     </td>
 
                                     <td class="px-4 py-5 text-center align-top">
@@ -3707,7 +4098,7 @@ const submitEntryDateUpdate = () => {
                         </p>
 
                         <p class="mt-1 text-lg font-bold text-black">
-                            {{ formatDtsDocumentNo(selectedPendingDocument || {}) }}
+                            {{ selectedPendingDocument?.document_no || selectedPendingDocument?.IDdoc }}
                         </p>
 
                         <p class="mt-4 text-sm font-bold text-blue-700">
@@ -3801,7 +4192,7 @@ const submitEntryDateUpdate = () => {
                         </h2>
 
                         <p class="mt-1 text-sm text-slate-500">
-                            DTS #: {{ formatDtsId(selectedDocument?.IDdoc) }}
+                            Doc ID: {{ selectedDocument?.IDdoc }}
                         </p>
                     </div>
 
