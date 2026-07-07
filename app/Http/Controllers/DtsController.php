@@ -422,6 +422,13 @@ public function index(Request $request)
             }
         });
     };
+    $latestAddressedAction = DB::table('dts_document_remarks as addressedRemark')
+    ->select([
+        'addressedRemark.IDdoc',
+        DB::raw('MAX(addressedRemark.created_at) as addressed_at'),
+    ])
+    ->where('addressedRemark.action_type', 'action_taken')
+    ->groupBy('addressedRemark.IDdoc');
 
     $documentsQuery = DB::table('document as d')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')

@@ -1186,6 +1186,16 @@ const formatDateTime = (value, emptyText = '-') => {
     }).format(date)
 }
 
+const addressedDateDisplay = (doc) => {
+    return doc?.selected_action_date
+        || doc?.addressed_at
+        || doc?.action_taken_at
+        || doc?.action_date
+        || doc?.action_completed_at
+        || doc?.completed_at
+        || null
+}
+
 const formatDateForInput = (value) => {
     if (!value) return ''
 
@@ -1489,7 +1499,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                Doc ID: {{ doc.document_no || doc.IDdoc }}
+                                                Doc ID: #{{ doc.document_no || doc.IDdoc }}
                                             </span>
 
                                             <span
@@ -2141,7 +2151,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-4 py-4 font-bold text-blue-700">
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-4 py-4">
@@ -2225,7 +2235,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-3 font-bold text-black">
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-3 py-3 font-semibold text-black">
@@ -2405,7 +2415,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -2588,7 +2598,7 @@ const submitEntryDateUpdate = () => {
                                 :href="`/dts/${doc.IDdoc}`"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                {{ doc.document_no || doc.IDdoc }}
+                                #{{ doc.document_no || doc.IDdoc }}
                             </Link>
                         </td>
 
@@ -2784,7 +2794,7 @@ const submitEntryDateUpdate = () => {
                                     :href="`/dts/${doc.IDdoc}`"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    {{ doc.document_no || doc.IDdoc }}
+                                    #{{ doc.document_no || doc.IDdoc }}
                                 </Link>
                             </td>
 
@@ -2954,7 +2964,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3131,7 +3141,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3342,7 +3352,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ doc.document_no || doc.IDdoc }}
+                                        #{{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3535,7 +3545,7 @@ const submitEntryDateUpdate = () => {
                                             :href="`/dts/${doc.IDdoc}`"
                                             class="font-bold text-blue-700 hover:underline"
                                         >
-                                            {{ doc.document_no || doc.IDdoc }}
+                                            #{{ doc.document_no || doc.IDdoc }}
                                         </Link>
                                     </td>
 
@@ -3570,6 +3580,13 @@ const submitEntryDateUpdate = () => {
                                         >
                                             {{ documentStatusLabel(doc) }}
                                         </span>
+
+                                        <p
+                                            v-if="['in-progress', 'addressed', 'completed'].includes(activeFilter) && addressedDateDisplay(doc)"
+                                            class="mt-2 text-[11px] font-black leading-4 text-cyan-800"
+                                        >
+                                            {{ formatDateTime(addressedDateDisplay(doc)) }}
+                                        </p>
 
                                         <p
                                             v-if="shouldShowReturnedBy(doc)"
@@ -3910,7 +3927,7 @@ const submitEntryDateUpdate = () => {
                                 >
                                     <td class="px-4 py-5 align-top">
                                         <span class="font-bold text-blue-700">
-                                            {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
+                                            #{{ doc.document_no || doc.tracking_no || doc.IDdoc }}
                                         </span>
                                     </td>
 
