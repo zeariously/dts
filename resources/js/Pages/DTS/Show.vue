@@ -590,7 +590,7 @@ const statusClass = (status) => {
     }
 
     if (value.includes('for receiving')) {
-        return 'bg-amber-100 text-amber-900 border border-amber-300'
+        return 'bg-violet-100 text-violet-800 border border-violet-300'
     }
 
     if (value.includes('pending 07')) {

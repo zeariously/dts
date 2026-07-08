@@ -1,6 +1,6 @@
 <script setup>
 import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DTSLayout from '@/Layouts/DTSLayout.vue'
 import AddDocumentModal from '@/Components/DTS/AddDocumentModal.vue'
 
@@ -164,6 +164,94 @@ const firstErrorMessage = computed(() => {
  */
 const showAutomaticReminderModal = ref(false)
 
+/*
+ * Reminder sound:
+ * - Plays a short three-tone chime whenever the automatic reminder opens.
+ * - Uses Web Audio, so no MP3/WAV file is required.
+ * - If the browser blocks autoplay, it plays after the user's first click or
+ *   keypress while the reminder modal is still open.
+ */
+let automaticReminderAudioContext = null
+let automaticReminderSoundPending = false
+let automaticReminderSoundPlayedForCurrentOpen = false
+
+const getAutomaticReminderAudioContext = () => {
+    if (typeof window === 'undefined') return null
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+
+    if (!AudioContextClass) return null
+
+    if (!automaticReminderAudioContext) {
+        automaticReminderAudioContext = new AudioContextClass()
+    }
+
+    return automaticReminderAudioContext
+}
+
+const playAutomaticReminderSound = async () => {
+    if (automaticReminderSoundPlayedForCurrentOpen) return
+
+    const audioContext = getAutomaticReminderAudioContext()
+
+    if (!audioContext) return
+
+    try {
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume()
+        }
+
+        const startAt = audioContext.currentTime + 0.03
+        const notes = [659.25, 783.99, 987.77]
+
+        notes.forEach((frequency, index) => {
+            const oscillator = audioContext.createOscillator()
+            const gain = audioContext.createGain()
+            const noteStart = startAt + (index * 0.16)
+            const noteEnd = noteStart + 0.13
+
+            oscillator.type = 'sine'
+            oscillator.frequency.setValueAtTime(frequency, noteStart)
+
+            gain.gain.setValueAtTime(0.0001, noteStart)
+            gain.gain.exponentialRampToValueAtTime(0.16, noteStart + 0.02)
+            gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd)
+
+            oscillator.connect(gain)
+            gain.connect(audioContext.destination)
+            oscillator.start(noteStart)
+            oscillator.stop(noteEnd + 0.02)
+        })
+
+        automaticReminderSoundPlayedForCurrentOpen = true
+        automaticReminderSoundPending = false
+    } catch (error) {
+        automaticReminderSoundPending = true
+    }
+}
+
+const unlockAutomaticReminderSound = async () => {
+    const audioContext = getAutomaticReminderAudioContext()
+
+    if (!audioContext) return
+
+    try {
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume()
+        }
+
+        if (
+            automaticReminderSoundPending
+            && showAutomaticReminderModal.value
+            && hasAutomaticStatusReminders.value
+        ) {
+            await playAutomaticReminderSound()
+        }
+    } catch (error) {
+        // The next user interaction can try again.
+    }
+}
+
 const automaticReminderItems = computed(() => {
     return props.automaticStatusReminders || []
 })
@@ -206,7 +294,15 @@ const automaticReminderBadgeClass = (status) => {
 const openAutomaticReminderModal = () => {
     if (!hasAutomaticStatusReminders.value) return
 
+    const wasClosed = !showAutomaticReminderModal.value
+
     showAutomaticReminderModal.value = true
+
+    if (wasClosed) {
+        automaticReminderSoundPlayedForCurrentOpen = false
+        automaticReminderSoundPending = true
+        playAutomaticReminderSound()
+    }
 }
 
 const closeAutomaticReminderModal = () => {
@@ -216,6 +312,8 @@ const closeAutomaticReminderModal = () => {
      * again on refresh, navigation, or the next dashboard visit.
      */
     showAutomaticReminderModal.value = false
+    automaticReminderSoundPending = false
+    automaticReminderSoundPlayedForCurrentOpen = false
 }
 
 const showTransferNotificationModal = ref(false)
@@ -265,12 +363,31 @@ const markNotificationSeen = (item) => {
 onMounted(() => {
     loadSeenNotificationKeys()
 
+    if (typeof window !== 'undefined') {
+        window.addEventListener('pointerdown', unlockAutomaticReminderSound)
+        window.addEventListener('keydown', unlockAutomaticReminderSound)
+    }
+
     /*
      * Always prompt whenever the dashboard loads and an unresolved 3-day
      * reminder exists. Disregarding it does not mark it as seen.
      */
     if (hasAutomaticStatusReminders.value) {
         openAutomaticReminderModal()
+    }
+})
+
+onBeforeUnmount(() => {
+    clearTimeout(automaticReportLoadTimer)
+
+    if (typeof window !== 'undefined') {
+        window.removeEventListener('pointerdown', unlockAutomaticReminderSound)
+        window.removeEventListener('keydown', unlockAutomaticReminderSound)
+    }
+
+    if (automaticReminderAudioContext) {
+        automaticReminderAudioContext.close().catch(() => {})
+        automaticReminderAudioContext = null
     }
 })
 
@@ -400,10 +517,12 @@ const buildCurrentPayload = () => {
         per_page: perPage.value,
     }
 
-    if (selectedYear.value === 'all') {
-        payload.year = 'all'
-    } else if (selectedYear.value) {
-        payload.year = selectedYear.value
+    if (activeSection.value !== 'reports') {
+        if (selectedYear.value === 'all') {
+            payload.year = 'all'
+        } else if (selectedYear.value) {
+            payload.year = selectedYear.value
+        }
     }
 
     if (activeSection.value !== 'documents') {
@@ -437,12 +556,8 @@ const buildCurrentPayload = () => {
             payload.report_classification = reportClassification.value
         }
 
-        if (reportSubjectKeyword.value) {
-            payload.subject_keyword = reportSubjectKeyword.value
-        }
-
-        if (reportRegardingKeyword.value) {
-            payload.regarding_keyword = reportRegardingKeyword.value
+        if (reportUser.value) {
+            payload.report_user = reportUser.value
         }
 
         if (reportStartDate.value) {
@@ -467,31 +582,134 @@ const applyYearFilter = () => {
 const receivedKeeper = ref(currentParams.value.get('keeper') || '')
 const receivedDocType = ref(currentParams.value.get('doc_type') || '')
 const reportClassification = ref(currentParams.value.get('report_classification') || '')
-const reportSubjectKeyword = ref(currentParams.value.get('subject_keyword') || '')
-const reportRegardingKeyword = ref(currentParams.value.get('regarding_keyword') || '')
-const reportStartDate = ref(currentParams.value.get('start_date') || '')
-const reportEndDate = ref(currentParams.value.get('end_date') || '')
+const reportUser = ref(currentParams.value.get('report_user') || '')
+
+const isoToDisplayDate = (value) => {
+    const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+
+    if (!match) return ''
+
+    return `${match[3]}/${match[2]}/${match[1]}`
+}
+
+const displayToIsoDate = (value) => {
+    const match = String(value || '').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+
+    if (!match) return ''
+
+    const day = Number(match[1])
+    const month = Number(match[2])
+    const year = Number(match[3])
+    const date = new Date(year, month - 1, day)
+
+    if (
+        date.getFullYear() !== year
+        || date.getMonth() !== month - 1
+        || date.getDate() !== day
+    ) {
+        return ''
+    }
+
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+const maskReportDateInput = (value) => {
+    const digits = String(value || '').replace(/\D/g, '').slice(0, 8)
+
+    if (digits.length <= 2) return digits
+    if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`
+
+    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`
+}
+
+const initialReportStartDate = currentParams.value.get('start_date') || ''
+const initialReportEndDate = currentParams.value.get('end_date') || ''
+
+const reportStartDate = ref(initialReportStartDate)
+const reportEndDate = ref(initialReportEndDate)
+const reportStartDateDisplay = ref(isoToDisplayDate(initialReportStartDate))
+const reportEndDateDisplay = ref(isoToDisplayDate(initialReportEndDate))
 const reportErrors = ref({})
+let automaticReportLoadTimer = null
+
+const updateReportDate = (field, value) => {
+    const maskedValue = maskReportDateInput(value)
+
+    if (field === 'start') {
+        reportStartDateDisplay.value = maskedValue
+        reportStartDate.value = displayToIsoDate(maskedValue)
+    } else {
+        reportEndDateDisplay.value = maskedValue
+        reportEndDate.value = displayToIsoDate(maskedValue)
+    }
+
+    /*
+     * Automatically reload only when the field is empty or already contains
+     * a complete valid DD/MM/YYYY date.
+     */
+    const normalizedDate = field === 'start'
+        ? reportStartDate.value
+        : reportEndDate.value
+
+    if (maskedValue === '' || normalizedDate) {
+        scheduleAutomaticReportLoad()
+    }
+}
+
+const reportUserOptions = computed(() => {
+    return [...(props.staffConcerns || [])]
+        .filter((user) => {
+            const id = user?.ID ?? user?.id
+            const name = user?.name ?? user?.full_name
+
+            return id !== undefined
+                && id !== null
+                && String(id).trim() !== ''
+                && String(name || '').trim() !== ''
+        })
+        .sort((first, second) => {
+            return String(first?.name || first?.full_name || '')
+                .localeCompare(String(second?.name || second?.full_name || ''))
+        })
+})
+
+const reportUserOptionId = (user) => {
+    return String(user?.ID ?? user?.id ?? '')
+}
+
+const reportUserOptionLabel = (user) => {
+    const name = user?.name || user?.full_name || 'Unnamed User'
+    const office = user?.office_name || user?.officename || ''
+
+    return office ? `${name} — ${office}` : name
+}
+
+const selectedReportUserLabel = computed(() => {
+    const selectedUser = reportUserOptions.value.find((user) => {
+        return reportUserOptionId(user) === String(reportUser.value || '')
+    })
+
+    return selectedUser ? reportUserOptionLabel(selectedUser) : 'All Users'
+})
 
 const validateReportFilters = () => {
     reportErrors.value = {}
 
-    const hasAnyFilter = Boolean(
-        selectedYear.value ||
-        reportClassification.value ||
-        reportSubjectKeyword.value ||
-        reportRegardingKeyword.value ||
-        reportStartDate.value ||
-        reportEndDate.value
-    )
+    /*
+     * Empty Classification and User mean "All".
+     * The report is allowed to load even without a date range.
+     */
+    if (reportStartDateDisplay.value && !reportStartDate.value) {
+        reportErrors.value.start_date = 'Start Date must use DD/MM/YYYY and contain a valid date.'
+    }
 
-    if (!hasAnyFilter) {
-        reportErrors.value.general = 'Please select at least one filter before previewing the report.'
+    if (reportEndDateDisplay.value && !reportEndDate.value) {
+        reportErrors.value.end_date = 'End Date must use DD/MM/YYYY and contain a valid date.'
     }
 
     if (reportStartDate.value && reportEndDate.value) {
-        const start = new Date(reportStartDate.value)
-        const end = new Date(reportEndDate.value)
+        const start = new Date(`${reportStartDate.value}T00:00:00`)
+        const end = new Date(`${reportEndDate.value}T00:00:00`)
 
         if (start > end) {
             reportErrors.value.date = 'End date must be equal to or later than start date.'
@@ -501,17 +719,15 @@ const validateReportFilters = () => {
     return Object.keys(reportErrors.value).length === 0
 }
 
-const previewReport = () => {
+const loadReportAutomatically = () => {
     if (!validateReportFilters()) {
         return
     }
 
     router.get('/dts', {
         section: 'reports',
-        year: selectedYear.value === 'all' ? 'all' : (selectedYear.value || undefined),
         report_classification: reportClassification.value,
-        subject_keyword: reportSubjectKeyword.value,
-        regarding_keyword: reportRegardingKeyword.value,
+        report_user: reportUser.value,
         start_date: reportStartDate.value,
         end_date: reportEndDate.value,
         per_page: perPage.value,
@@ -521,22 +737,12 @@ const previewReport = () => {
     })
 }
 
-const resetReport = () => {
-    reportClassification.value = ''
-    reportSubjectKeyword.value = ''
-    reportRegardingKeyword.value = ''
-    reportStartDate.value = ''
-    reportEndDate.value = ''
-    reportErrors.value = {}
+const scheduleAutomaticReportLoad = () => {
+    clearTimeout(automaticReportLoadTimer)
 
-    router.get('/dts', {
-        section: 'reports',
-        year: selectedYear.value === 'all' ? 'all' : (selectedYear.value || undefined),
-        per_page: perPage.value,
-    }, {
-        preserveScroll: true,
-        replace: true,
-    })
+    automaticReportLoadTimer = window.setTimeout(() => {
+        loadReportAutomatically()
+    }, 350)
 }
 
 const pageTitle = computed(() => {
@@ -1159,8 +1365,28 @@ const classificationBadgeClass = (value) => {
 }
 
 const printReport = () => {
+    const originalTitle = document.title
+
+    /*
+     * Temporarily clear the page title so the browser does not include
+     * "Document Tracking System - Laravel" in its print header.
+     */
+    document.title = ' '
+
+    const restoreTitle = () => {
+        document.title = originalTitle
+        window.removeEventListener('afterprint', restoreTitle)
+    }
+
+    window.addEventListener('afterprint', restoreTitle)
+
     window.setTimeout(() => {
         window.print()
+
+        /*
+         * Fallback for browsers that do not reliably fire afterprint.
+         */
+        window.setTimeout(restoreTitle, 1000)
     }, 100)
 }
 
@@ -1186,14 +1412,35 @@ const formatDateTime = (value, emptyText = '-') => {
     }).format(date)
 }
 
-const addressedDateDisplay = (doc) => {
-    return doc?.selected_action_date
-        || doc?.addressed_at
-        || doc?.action_taken_at
-        || doc?.action_date
-        || doc?.action_completed_at
-        || doc?.completed_at
-        || null
+const formatPrintDate = (value, emptyText = '-') => {
+    if (!value) {
+        return emptyText
+    }
+
+    const rawValue = String(value).trim()
+    const dateOnlyMatch = rawValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+
+    let date
+
+    if (dateOnlyMatch) {
+        date = new Date(
+            Number(dateOnlyMatch[1]),
+            Number(dateOnlyMatch[2]) - 1,
+            Number(dateOnlyMatch[3])
+        )
+    } else {
+        date = new Date(rawValue.replace(' ', 'T'))
+    }
+
+    if (Number.isNaN(date.getTime())) {
+        return value
+    }
+
+    return new Intl.DateTimeFormat('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+    }).format(date)
 }
 
 const formatDateForInput = (value) => {
@@ -1254,10 +1501,10 @@ const submitEntryDateUpdate = () => {
         @open-notifications="openNotificationsFromBell"
     >
         <header class="border-b border-slate-200 bg-white">
-            <div class="mx-auto max-w-screen-2xl px-6 py-5 lg:px-8">
+            <div class="mx-auto max-w-screen-2xl px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
                 <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                        <h1 class="text-3xl font-bold tracking-tight text-slate-900">
+                        <h1 class="break-words text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
                             {{ pageTitle }}
                         </h1>
 
@@ -1267,12 +1514,15 @@ const submitEntryDateUpdate = () => {
                     </div>
 
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                        <div class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto">
+                        <div
+                            v-if="activeSection !== 'reports'"
+                            class="flex w-full items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 sm:w-auto"
+                        >
                             <label class="shrink-0 text-sm font-bold text-blue-800">
                                 Year:
                             </label>
 
-                            <div class="min-w-[11rem] flex-1 sm:flex-none">
+                            <div class="min-w-0 flex-1 sm:min-w-[11rem] sm:flex-none">
                                 <select
                                     v-model="selectedYear"
                                     class="h-11 w-full rounded-xl border border-blue-300 bg-white px-4 py-2.5 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -1306,7 +1556,7 @@ const submitEntryDateUpdate = () => {
             </div>
         </header>
 
-        <main class="mx-auto max-w-screen-2xl px-6 py-8 lg:px-8">
+        <main class="mx-auto max-w-screen-2xl px-3 py-4 sm:px-6 sm:py-8 lg:px-8">
             <!-- Flash Messages -->
             <div
                 v-if="flashSuccess || flashError || firstErrorMessage"
@@ -1337,21 +1587,22 @@ const submitEntryDateUpdate = () => {
             <!-- AUTOMATIC 3-DAY STATUS REMINDER MODAL -->
             <div
                 v-if="showAutomaticReminderModal"
-                class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 px-4 py-8"
+                class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/70 px-0 py-0 backdrop-blur-sm sm:items-center sm:px-4 sm:py-8"
             >
-                <div class="max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
-                    <div class="border-b border-red-100 bg-red-600 px-6 py-5 text-white">
+                <div class="flex h-[100dvh] max-h-[100dvh] w-full max-w-4xl flex-col overflow-hidden rounded-none bg-white shadow-2xl sm:h-auto sm:max-h-[92vh] sm:rounded-[2rem]">
+                    <div class="shrink-0 border-b border-red-200 bg-red-700 px-4 py-4 text-white sm:px-6 sm:py-5">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div>
                                 <p class="text-xs font-black uppercase tracking-[0.22em] text-red-100">
                                     NOTIFICATION REMINDER
                                 </p>
 
+                                
                             </div>
 
                             <button
                                 type="button"
-                                class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
+                                class="w-full rounded-xl bg-white/15 px-4 py-3 text-sm font-black text-white hover:bg-white/25 sm:w-auto sm:py-2"
                                 @click="closeAutomaticReminderModal"
                             >
                                 Close
@@ -1359,8 +1610,8 @@ const submitEntryDateUpdate = () => {
                         </div>
                     </div>
 
-                    <div class="p-6">
-                        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+                        <div class="grid grid-cols-1 gap-3 min-[430px]:grid-cols-3">
                             <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
                                 <p class="text-xs font-black uppercase tracking-wide text-red-700">Total</p>
                                 <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderCount }}</p>
@@ -1378,7 +1629,7 @@ const submitEntryDateUpdate = () => {
 
                         </div>
 
-                        <div class="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-1">
+                        <div class="mt-5 space-y-3 sm:max-h-[55vh] sm:overflow-y-auto sm:pr-1">
                             <article
                                 v-for="doc in automaticReminderItems"
                                 :key="`automatic-reminder-${doc.IDdoc}-${doc.current_status}`"
@@ -1432,7 +1683,7 @@ const submitEntryDateUpdate = () => {
 
                                     <Link
                                         :href="`/dts/${doc.IDdoc}`"
-                                        class="shrink-0 rounded-xl bg-red-600 px-5 py-2.5 text-center text-sm font-black text-white hover:bg-red-700"
+                                        class="w-full shrink-0 rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black text-white hover:bg-red-700 lg:w-auto lg:py-2.5"
                                         @click="closeAutomaticReminderModal"
                                     >
                                         Review Document
@@ -1448,10 +1699,10 @@ const submitEntryDateUpdate = () => {
             <!-- Document Notification Popup -->
             <div
                 v-if="showTransferNotificationModal"
-                class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8"
+                class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 px-0 py-0 backdrop-blur-sm sm:items-center sm:px-4 sm:py-8"
             >
-                <div class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
-                    <div class="border-b border-blue-100 bg-blue-600 px-6 py-5 text-white">
+                <div class="flex h-[100dvh] max-h-[100dvh] w-full max-w-3xl flex-col overflow-hidden rounded-none bg-white shadow-2xl sm:h-auto sm:max-h-[90vh] sm:rounded-[2rem]">
+                    <div class="shrink-0 border-b border-blue-100 bg-blue-600 px-4 py-4 text-white sm:px-6 sm:py-5">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div>
                                 <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
@@ -1469,7 +1720,7 @@ const submitEntryDateUpdate = () => {
 
                             <button
                                 type="button"
-                                class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
+                                class="w-full rounded-xl bg-white/15 px-4 py-3 text-sm font-black text-white hover:bg-white/25 sm:w-auto sm:py-2"
                                 @click="closeTransferNotificationModal"
                             >
                                 Close
@@ -1477,7 +1728,7 @@ const submitEntryDateUpdate = () => {
                         </div>
                     </div>
 
-                    <div class="p-6">
+                    <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
                         <template v-if="hasTransferNotifications">
                         <div
                             v-if="overdueTransferNotifications.length"
@@ -1499,7 +1750,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                Doc ID: #{{ doc.document_no || doc.IDdoc }}
+                                                Doc ID: {{ doc.document_no || doc.IDdoc }}
                                             </span>
 
                                             <span
@@ -1626,12 +1877,12 @@ const submitEntryDateUpdate = () => {
                 v-if="showPageTabs"
                 class="mb-6 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm"
             >
-                <div class="flex flex-wrap gap-2">
+                <div class="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
                     <Link
                         v-for="tab in pageTabs"
                         :key="tab.label"
                         :href="tab.href"
-                        class="inline-flex min-h-[48px] items-center gap-3 rounded-2xl border px-5 py-3 text-sm font-bold transition-all"
+                        class="inline-flex min-h-[48px] shrink-0 items-center gap-3 rounded-2xl border px-5 py-3 text-sm font-bold transition-all"
                         :class="tab.active
                             ? 'border-blue-600 bg-blue-600 text-white shadow-md shadow-blue-100'
                             : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700'"
@@ -1910,16 +2161,6 @@ const submitEntryDateUpdate = () => {
                                 </h2>
                             </div>
                         </div>
-
-                        <div class="rounded-2xl bg-blue-50 px-5 py-4 text-right">
-                            <p class="text-xs font-bold uppercase tracking-wide text-blue-700">
-                                Module
-                            </p>
-
-                            <p class="mt-1 text-lg font-bold text-black">
-                                Reports
-                            </p>
-                        </div>
                     </div>
                 </div>
 
@@ -1933,7 +2174,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Filter documents by classification, keywords, and date range.
+                                        Filter documents by classification, assigned user, and date range.
                                     </p>
                                 </div>
 
@@ -1953,6 +2194,7 @@ const submitEntryDateUpdate = () => {
                                     <select
                                         v-model="reportClassification"
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        @change="loadReportAutomatically"
                                     >
                                         <option value="">
                                             All
@@ -1970,30 +2212,26 @@ const submitEntryDateUpdate = () => {
 
                                 <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
                                     <label class="text-sm font-bold text-black md:text-right">
-                                        Subject keywords:
+                                        User:
                                     </label>
 
-                                    <input
-                                        v-model="reportSubjectKeyword"
-                                        type="text"
-                                        placeholder="Type subject keyword..."
+                                    <select
+                                        v-model="reportUser"
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @keyup.enter="previewReport"
-                                    />
-                                </div>
+                                        @change="loadReportAutomatically"
+                                    >
+                                        <option value="">
+                                            All Users
+                                        </option>
 
-                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
-                                    <label class="text-sm font-bold text-black md:text-right">
-                                        Re keywords:
-                                    </label>
-
-                                    <input
-                                        v-model="reportRegardingKeyword"
-                                        type="text"
-                                        placeholder="Type regarding keyword..."
-                                        class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                        @keyup.enter="previewReport"
-                                    />
+                                        <option
+                                            v-for="user in reportUserOptions"
+                                            :key="`report-user-${reportUserOptionId(user)}`"
+                                            :value="reportUserOptionId(user)"
+                                        >
+                                            {{ reportUserOptionLabel(user) }}
+                                        </option>
+                                    </select>
                                 </div>
 
                                 <div class="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -2003,10 +2241,19 @@ const submitEntryDateUpdate = () => {
                                         </p>
 
                                         <input
-                                            v-model="reportStartDate"
-                                            type="date"
-                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                            :value="reportStartDateDisplay"
+                                            type="text"
+                                            inputmode="numeric"
+                                            autocomplete="off"
+                                            maxlength="10"
+                                            placeholder="DD/MM/YYYY"
+                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                            @input="updateReportDate('start', $event.target.value)"
                                         />
+
+                                        <p class="mt-2 text-xs font-semibold text-blue-700">
+                                            Format: DD/MM/YYYY
+                                        </p>
                                     </div>
 
                                     <div class="rounded-2xl border border-blue-100 bg-blue-50 p-5">
@@ -2015,19 +2262,32 @@ const submitEntryDateUpdate = () => {
                                         </p>
 
                                         <input
-                                            v-model="reportEndDate"
-                                            type="date"
-                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                            :value="reportEndDateDisplay"
+                                            type="text"
+                                            inputmode="numeric"
+                                            autocomplete="off"
+                                            maxlength="10"
+                                            placeholder="DD/MM/YYYY"
+                                            class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-black outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                            @input="updateReportDate('end', $event.target.value)"
                                         />
+
+                                        <p class="mt-2 text-xs font-semibold text-blue-700">
+                                            Format: DD/MM/YYYY
+                                        </p>
                                     </div>
                                 </div>
 
                                 <div
-                                    v-if="reportErrors.general || reportErrors.date"
+                                    v-if="reportErrors.start_date || reportErrors.end_date || reportErrors.date"
                                     class="rounded-xl border border-red-300 bg-red-50 px-5 py-4 text-sm font-bold text-red-800"
                                 >
-                                    <p v-if="reportErrors.general">
-                                        {{ reportErrors.general }}
+                                    <p v-if="reportErrors.start_date">
+                                        {{ reportErrors.start_date }}
+                                    </p>
+
+                                    <p v-if="reportErrors.end_date">
+                                        {{ reportErrors.end_date }}
                                     </p>
 
                                     <p v-if="reportErrors.date">
@@ -2035,26 +2295,10 @@ const submitEntryDateUpdate = () => {
                                     </p>
                                 </div>
 
-                                <div class="flex flex-col justify-end gap-3 border-t border-blue-100 pt-5 sm:flex-row">
+                                <div class="flex justify-end border-t border-blue-100 pt-5">
                                     <button
                                         type="button"
-                                        class="rounded-xl border border-blue-300 bg-white px-7 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
-                                        @click="resetReport"
-                                    >
-                                        Reset
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        class="rounded-xl bg-blue-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
-                                        @click="previewReport"
-                                    >
-                                        Preview
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        class="rounded-xl bg-green-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-green-700"
+                                        class="w-full rounded-xl bg-green-600 px-7 py-3 text-sm font-bold text-white shadow-sm hover:bg-green-700 sm:w-auto"
                                         @click="printReport"
                                     >
                                         Print
@@ -2066,7 +2310,7 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <section class="report-print-area rounded-2xl border border-blue-200 bg-white shadow-sm">
-                    <div class="border-b border-blue-100 bg-blue-600 px-6 py-5">
+                    <div class="border-b border-blue-100 bg-blue-600 px-4 py-4 sm:px-6 sm:py-5">
                         <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                             <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
                                 <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white p-2 shadow-sm">
@@ -2079,7 +2323,7 @@ const submitEntryDateUpdate = () => {
 
                                 <div>
                                     <h3 class="text-xl font-bold text-white">
-                                        Report Preview
+                                        Monitoring Report
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-white">
@@ -2100,10 +2344,23 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 </p>
 
+                                <p class="mt-1">
+                                    User:
+                                    <span class="font-bold">
+                                        {{ selectedReportUserLabel }}
+                                    </span>
+                                </p>
+
                                 <p v-if="reportStartDate || reportEndDate" class="mt-1">
                                     Date Range:
-                                    <span class="font-bold">
-                                        {{ reportStartDate || 'Start' }} to {{ reportEndDate || 'End' }}
+                                    <span class="screen-report-date-range font-bold">
+                                        {{ reportStartDateDisplay || 'Start' }} to {{ reportEndDateDisplay || 'End' }}
+                                    </span>
+
+                                    <span class="print-report-date-range hidden font-bold">
+                                        {{ reportStartDate ? formatPrintDate(reportStartDate) : 'Start' }}
+                                        to
+                                        {{ reportEndDate ? formatPrintDate(reportEndDate) : 'End' }}
                                     </span>
                                 </p>
                             </div>
@@ -2151,7 +2408,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-4 py-4 font-bold text-blue-700">
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-4 py-4">
@@ -2201,6 +2458,10 @@ const submitEntryDateUpdate = () => {
                         <!-- Print-only table: requested print columns only -->
                         <table class="print-report-table w-full table-fixed border-collapse text-center text-xs">
                             <thead>
+                                <tr class="print-page-top-spacer">
+                                    <th colspan="6"></th>
+                                </tr>
+
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[10%] border border-black px-3 py-3 font-bold">
                                         Doc ID
@@ -2235,11 +2496,11 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-3 font-bold text-black">
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
                                     <td class="border border-black px-3 py-3 font-semibold text-black">
-                                        {{ formatDateTime(doc.entrydate) }}
+                                        {{ formatPrintDate(doc.entrydate) }}
                                     </td>
 
                                     <td class="border border-black px-3 py-3 font-semibold text-black">
@@ -2271,6 +2532,12 @@ const submitEntryDateUpdate = () => {
                                     </td>
                                 </tr>
                             </tbody>
+
+                            <tfoot>
+                                <tr class="print-page-bottom-spacer">
+                                    <td colspan="6"></td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                 </section>
@@ -2415,7 +2682,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -2598,7 +2865,7 @@ const submitEntryDateUpdate = () => {
                                 :href="`/dts/${doc.IDdoc}`"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                #{{ doc.document_no || doc.IDdoc }}
+                                {{ doc.document_no || doc.IDdoc }}
                             </Link>
                         </td>
 
@@ -2794,7 +3061,7 @@ const submitEntryDateUpdate = () => {
                                     :href="`/dts/${doc.IDdoc}`"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    #{{ doc.document_no || doc.IDdoc }}
+                                    {{ doc.document_no || doc.IDdoc }}
                                 </Link>
                             </td>
 
@@ -2964,7 +3231,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3141,7 +3408,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3352,7 +3619,7 @@ const submitEntryDateUpdate = () => {
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        #{{ doc.document_no || doc.IDdoc }}
+                                        {{ doc.document_no || doc.IDdoc }}
                                     </Link>
                                 </td>
 
@@ -3545,7 +3812,7 @@ const submitEntryDateUpdate = () => {
                                             :href="`/dts/${doc.IDdoc}`"
                                             class="font-bold text-blue-700 hover:underline"
                                         >
-                                            #{{ doc.document_no || doc.IDdoc }}
+                                            {{ doc.document_no || doc.IDdoc }}
                                         </Link>
                                     </td>
 
@@ -3580,13 +3847,6 @@ const submitEntryDateUpdate = () => {
                                         >
                                             {{ documentStatusLabel(doc) }}
                                         </span>
-
-                                        <p
-                                            v-if="['in-progress', 'addressed', 'completed'].includes(activeFilter) && addressedDateDisplay(doc)"
-                                            class="mt-2 text-[11px] font-black leading-4 text-cyan-800"
-                                        >
-                                            {{ formatDateTime(addressedDateDisplay(doc)) }}
-                                        </p>
 
                                         <p
                                             v-if="shouldShowReturnedBy(doc)"
@@ -3652,17 +3912,17 @@ const submitEntryDateUpdate = () => {
                 <!-- Stats Cards -->
                 <div
                     v-if="activeSection === 'documents'"
-                    class="mb-8 grid grid-cols-1 gap-5 lg:grid-cols-2"
+                    class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:mb-8"
                     :class="canShowReturnedCard ? '2xl:grid-cols-5' : '2xl:grid-cols-4'"
                 >
                     <Link
                         :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-6 text-white shadow-xl shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-xl sm:p-6 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
                                 📄
                             </div>
 
@@ -3675,7 +3935,7 @@ const submitEntryDateUpdate = () => {
                                     
                                 </div>
 
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
                                     {{ props.stats.total }}
                                 </p>
                             </div>
@@ -3684,12 +3944,12 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'for-receiving' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-6 text-white shadow-xl shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-4 text-white shadow-xl sm:p-6 shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
                                 ⏳
                             </div>
 
@@ -3700,7 +3960,7 @@ const submitEntryDateUpdate = () => {
                                     </p>
                                 </div>
 
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
                                     {{ props.stats.for_receiving }}
                                 </p>
 
@@ -3713,12 +3973,12 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'received' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-emerald-600 to-green-500 p-6 text-white shadow-xl shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-emerald-600 to-green-500 p-4 text-white shadow-xl sm:p-6 shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
                                 ✅
                             </div>
 
@@ -3729,7 +3989,7 @@ const submitEntryDateUpdate = () => {
                                     </p>
                                 </div>
 
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
                                     {{ props.stats.received }}
                                 </p>
 
@@ -3742,18 +4002,18 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'addressed' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-6 text-white shadow-xl shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-4 text-white shadow-xl sm:p-6 shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
                                 📌
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <p class="text-base font-black text-white/90">Addressed</p>
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
                                     {{ props.stats.addressed ?? props.stats.in_progress ?? 0 }}
                                 </p>
                                 <p class="mt-3 text-sm font-semibold text-white/75">
@@ -3766,22 +4026,22 @@ const submitEntryDateUpdate = () => {
                     <Link
                         v-if="canShowReturnedCard"
                         :href="buildDtsUrl({ section: 'incoming', filter: 'returned' })"
-                        class="group relative min-h-[150px] overflow-hidden rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-red-500 p-6 text-white shadow-xl shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-red-500 p-4 text-white shadow-xl sm:p-6 shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
                         <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-2xl backdrop-blur">
+                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
                                 ↩️
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <p class="text-base font-black text-white/90">Returned</p>
-                                <p class="mt-3 text-5xl font-black leading-none tracking-tight">
+                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
                                     {{ props.stats.returned ?? 0 }}
                                 </p>
                                 <p class="mt-3 text-sm font-semibold text-white/75">
-                                    Documents returned by Role 3
+                                    Documents returned 
                                 </p>
                             </div>
                         </div>
@@ -3789,7 +4049,7 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <!-- Search -->
-                <div class="mb-8 rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
+                <div class="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:mb-8 sm:p-7">
                     <div class="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                         <div>
                             <h2 class="text-xl font-bold text-slate-800">
@@ -3859,7 +4119,7 @@ const submitEntryDateUpdate = () => {
 
                 <!-- Document List -->
                 <div class="rounded-2xl border border-blue-600 bg-white shadow-sm">
-                    <div class="rounded-t-2xl border-b border-blue-700 bg-blue-600 px-7 py-5">
+                    <div class="rounded-t-2xl border-b border-blue-700 bg-blue-600 px-4 py-4 sm:px-7 sm:py-5">
                         <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                             <div>
                                 <h2 class="text-xl font-bold text-white">
@@ -3927,7 +4187,7 @@ const submitEntryDateUpdate = () => {
                                 >
                                     <td class="px-4 py-5 align-top">
                                         <span class="font-bold text-blue-700">
-                                            #{{ doc.document_no || doc.tracking_no || doc.IDdoc }}
+                                            {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
                                         </span>
                                     </td>
 
@@ -4033,9 +4293,9 @@ const submitEntryDateUpdate = () => {
         <!-- Pending Docs 07 Action Confirmation Modal -->
         <div
             v-if="canManageDts && showPendingActionModal"
-            class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-8"
+            class="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 px-0 py-0 sm:items-center sm:px-4 sm:py-8"
         >
-            <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div class="max-h-[100dvh] w-full max-w-md overflow-y-auto rounded-t-[2rem] bg-white shadow-2xl sm:max-h-[90vh] sm:rounded-2xl">
                 <div class="border-b border-blue-100 bg-blue-600 px-6 py-5">
                     <h2 class="text-xl font-bold text-white">
                         Confirm Action
@@ -4046,7 +4306,7 @@ const submitEntryDateUpdate = () => {
                     </p>
                 </div>
 
-                <div class="p-6">
+                <div class="p-4 sm:p-6">
                     <div class="rounded-xl border border-blue-200 bg-blue-50 p-4">
                         <p class="text-sm font-bold text-blue-700">
                             Document ID
@@ -4091,7 +4351,7 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <div class="flex justify-end gap-3 border-t border-blue-100 bg-blue-50 px-6 py-4">
+                <div class="flex flex-col-reverse gap-3 border-t border-blue-100 bg-blue-50 px-4 py-4 sm:flex-row sm:justify-end sm:px-6">
                     <button
                         type="button"
                         class="rounded-xl border border-blue-300 bg-white px-5 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
@@ -4137,10 +4397,10 @@ const submitEntryDateUpdate = () => {
         <!-- Edit Entry Date Modal -->
         <div
             v-if="canManageDts && showEditEntryDateModal"
-            class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-8"
+            class="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 px-0 py-0 sm:items-center sm:px-4 sm:py-8"
         >
-            <div class="w-full max-w-md rounded-2xl bg-white shadow-2xl">
-                <div class="flex items-center justify-between border-b border-slate-200 px-6 py-5">
+            <div class="max-h-[100dvh] w-full max-w-md overflow-y-auto rounded-t-[2rem] bg-white shadow-2xl sm:rounded-2xl">
+                <div class="flex items-center justify-between border-b border-slate-200 px-4 py-4 sm:px-6 sm:py-5">
                     <div>
                         <h2 class="text-xl font-bold text-slate-900">
                             Edit Entry Date
@@ -4160,7 +4420,7 @@ const submitEntryDateUpdate = () => {
                     </button>
                 </div>
 
-                <form class="space-y-5 p-6" @submit.prevent="submitEntryDateUpdate">
+                <form class="space-y-5 p-4 sm:p-6" @submit.prevent="submitEntryDateUpdate">
                     <div>
                         <label class="mb-1 block text-sm font-bold text-slate-700">
                             Entry Date
@@ -4180,7 +4440,7 @@ const submitEntryDateUpdate = () => {
                         </p>
                     </div>
 
-                    <div class="flex justify-end gap-3 border-t border-slate-200 pt-5">
+                    <div class="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
                         <button
                             type="button"
                             class="rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
@@ -4218,11 +4478,19 @@ const submitEntryDateUpdate = () => {
         visibility: visible !important;
     }
 
+    html,
+    body {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
     .report-print-area {
         position: absolute !important;
         left: 0 !important;
         top: 0 !important;
+        box-sizing: border-box !important;
         width: 100% !important;
+        padding: 12mm !important;
         border: none !important;
         box-shadow: none !important;
     }
@@ -4235,11 +4503,32 @@ const submitEntryDateUpdate = () => {
         display: none !important;
     }
 
+    .screen-report-date-range {
+        display: none !important;
+    }
+
+    .print-report-date-range {
+        display: inline !important;
+    }
+
     .print-report-table {
         display: table !important;
         width: 100% !important;
         min-width: 0 !important;
         font-size: 10px !important;
+    }
+
+    .print-report-table thead {
+        display: table-header-group !important;
+    }
+
+    .print-report-table tfoot {
+        display: table-footer-group !important;
+    }
+
+    .print-report-table tbody tr {
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
     }
 
     .print-report-table th,
@@ -4248,9 +4537,61 @@ const submitEntryDateUpdate = () => {
         vertical-align: top !important;
     }
 
+    .print-report-table .print-page-top-spacer th {
+        height: 10mm !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: white !important;
+    }
+
+    .print-report-table .print-page-bottom-spacer td {
+        height: 7mm !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: white !important;
+    }
+
+    
     @page {
         size: landscape;
-        margin: 12mm;
+        margin: 0;
     }
 }
+@media (max-width: 639px) {
+    html,
+    body {
+        max-width: 100%;
+        overflow-x: hidden;
+    }
+
+    input,
+    select,
+    textarea {
+        font-size: 16px !important;
+    }
+
+    button,
+    a {
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .overflow-x-auto {
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+
+    .screen-report-table {
+        min-width: 760px !important;
+    }
+
+    table th,
+    table td {
+        white-space: normal;
+    }
+
+    .report-print-area {
+        overflow: hidden;
+    }
+}
+
 </style>

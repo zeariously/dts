@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AdminUserManagementController;
+use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\DtsController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
@@ -43,8 +44,17 @@ Route::middleware(['auth', 'verified'])
         Route::get('/users', [AdminUserManagementController::class, 'index'])
             ->name('users.index');
 
+        Route::post('/users', [AdminUserManagementController::class, 'store'])
+            ->name('users.store');
+
         Route::patch('/users/{user}/role', [AdminUserManagementController::class, 'updateRole'])
             ->name('users.role.update');
+
+        Route::post('/announcements', [AdminUserManagementController::class, 'storeAnnouncement'])
+            ->name('announcements.store');
+
+        Route::delete('/announcements/{announcement}', [AdminUserManagementController::class, 'destroyAnnouncement'])
+            ->name('announcements.destroy');
     });
 
 /*
@@ -98,6 +108,15 @@ Route::middleware(['auth', 'verified'])
 
         Route::get('/monitoring-dashboard', [DtsController::class, 'monitoringDashboard'])
             ->name('monitoring-dashboard');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Active Announcements for DTS Users
+        |--------------------------------------------------------------------------
+        */
+
+        Route::get('/announcements/active', [AnnouncementController::class, 'active'])
+            ->name('announcements.active');
 
         /*
         |--------------------------------------------------------------------------

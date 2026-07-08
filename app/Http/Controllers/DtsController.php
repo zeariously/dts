@@ -60,6 +60,14 @@ public function index(Request $request)
         $selectedYear = '';
     }
 
+    /*
+     * Reports use Classification, User, Start Date, and End Date only.
+     * Do not silently apply the current-year filter when section=reports.
+     */
+    if (strtolower(trim((string) $section)) === 'reports') {
+        $selectedYear = '';
+    }
+
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
 
     /*
@@ -127,6 +135,7 @@ public function index(Request $request)
     $isAllDocumentsSection = $forceAllDocuments
         || in_array($normalizedSection, ['all-documents', 'all-docs', 'all_documents'], true)
         || ($normalizedSection === 'documents' && in_array($normalizedFilter, ['all', 'all-documents', 'all-docs', 'all_documents'], true));
+    $isReportsSection = $normalizedSection === 'reports';
     $isCompletedDocumentsSection = $normalizedSection === 'completed-docs'
         || $normalizedFilter === 'completed';
 
@@ -422,13 +431,6 @@ public function index(Request $request)
             }
         });
     };
-    $latestAddressedAction = DB::table('dts_document_remarks as addressedRemark')
-    ->select([
-        'addressedRemark.IDdoc',
-        DB::raw('MAX(addressedRemark.created_at) as addressed_at'),
-    ])
-    ->where('addressedRemark.action_type', 'action_taken')
-    ->groupBy('addressedRemark.IDdoc');
 
     $documentsQuery = DB::table('document as d')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
@@ -524,6 +526,17 @@ public function index(Request $request)
         /*
          * All Documents remains the full registry for the roles allowed
          * to open that module.
+         */
+    } elseif ($isReportsSection) {
+        /*
+         * Reports must start from the complete document registry.
+         *
+         * - All Users: no personnel restriction is applied.
+         * - Specific User: the report_user filter below limits the result
+         *   to that selected personnel.
+         *
+         * Do not apply the logged-in user's normal tagged-document scope here,
+         * otherwise "All Users" would incorrectly show only their own records.
          */
     } elseif ($isCompletedDocumentsSection) {
         /*
@@ -653,12 +666,27 @@ public function index(Request $request)
             $documentsQuery->where('d.classification', $request->input('report_classification'));
         }
 
-        if ($request->filled('report_month')) {
-            $reportMonth = (int) $request->input('report_month');
+        $reportUser = trim((string) $request->input('report_user', ''));
 
-            if ($reportMonth >= 1 && $reportMonth <= 12) {
-                $documentsQuery->whereMonth('d.entrydate', $reportMonth);
-            }
+        if ($reportUser !== '' && strtolower($reportUser) !== 'all') {
+            /*
+             * A specific User filters either the document's staff concern/
+             * current keeper or the latest distribution's tagged personnel.
+             *
+             * Empty or "all" means All Users and applies no user restriction.
+             */
+            $documentsQuery->where(function ($query) use ($reportUser) {
+                $query->where('d.IDkeeper', $reportUser)
+                    ->orWhere('dist.idmapagency', $reportUser);
+            });
+        }
+
+        if ($request->filled('start_date')) {
+            $documentsQuery->whereDate('d.entrydate', '>=', $request->input('start_date'));
+        }
+
+        if ($request->filled('end_date')) {
+            $documentsQuery->whereDate('d.entrydate', '<=', $request->input('end_date'));
         }
     }
 
@@ -1529,7 +1557,9 @@ public function index(Request $request)
             'is_all_documents' => $isAllDocumentsSection,
             'year' => $selectedYear,
             'report_classification' => $request->input('report_classification'),
-            'report_month' => $request->input('report_month'),
+            'report_user' => $request->input('report_user'),
+            'start_date' => $request->input('start_date'),
+            'end_date' => $request->input('end_date'),
         ],
         'years' => $availableYears,
         'offices' => $officesForDropdown,

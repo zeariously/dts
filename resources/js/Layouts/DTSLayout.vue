@@ -1,6 +1,6 @@
 <script setup>
 import { Link, router, usePage } from '@inertiajs/vue3'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 
 const formatNotificationDate = (value) => {
@@ -45,7 +45,21 @@ const page = usePage()
 
 const showUserMenu = ref(false)
 const showNotifications = ref(false)
+const showMobileSidebar = ref(false)
 const seenNotificationKeys = ref([])
+const activeAnnouncements = ref([])
+const announcementLoading = ref(false)
+
+let announcementRefreshTimer = null
+
+const openMobileSidebar = () => {
+    showMobileSidebar.value = true
+    showUserMenu.value = false
+}
+
+const closeMobileSidebar = () => {
+    showMobileSidebar.value = false
+}
 
 const authUser = computed(() => page.props.auth?.user || {})
 
@@ -71,6 +85,10 @@ const notificationStorageKey = computed(() => {
 })
 
 const notificationKey = (item) => {
+    if (item.notification_type === 'announcement') {
+        return `announcement:${item.id || ''}`
+    }
+
     return [
         item.notification_type || 'for_receiving',
         item.IDdoc || item.document_no || '',
@@ -118,8 +136,68 @@ const markNotificationSeen = (item) => {
     saveSeenNotificationKeys()
 }
 
+const isNotificationSeen = (item) => {
+    return seenNotificationKeys.value.includes(notificationKey(item))
+}
+
+const fetchActiveAnnouncements = async () => {
+    if (announcementLoading.value) {
+        return
+    }
+
+    announcementLoading.value = true
+
+    try {
+        const response = await fetch('/dts/announcements/active', {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                Accept: 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+        })
+
+        if (!response.ok) {
+            throw new Error(`Announcement request failed (${response.status}).`)
+        }
+
+        const payload = await response.json()
+
+        activeAnnouncements.value = Array.isArray(payload?.announcements)
+            ? payload.announcements
+            : []
+    } catch (error) {
+        console.error('Unable to load DTS announcements:', error)
+        activeAnnouncements.value = []
+    } finally {
+        announcementLoading.value = false
+    }
+}
+
 onMounted(() => {
     loadSeenNotificationKeys()
+    fetchActiveAnnouncements()
+
+    announcementRefreshTimer = window.setInterval(() => {
+        fetchActiveAnnouncements()
+    }, 60000)
+})
+
+watch(showMobileSidebar, (isOpen) => {
+    if (typeof document === 'undefined') return
+
+    document.body.style.overflow = isOpen ? 'hidden' : ''
+})
+
+onBeforeUnmount(() => {
+    if (announcementRefreshTimer) {
+        window.clearInterval(announcementRefreshTimer)
+        announcementRefreshTimer = null
+    }
+
+    if (typeof document !== 'undefined') {
+        document.body.style.overflow = ''
+    }
 })
 
 const notificationItems = computed(() => {
@@ -127,7 +205,13 @@ const notificationItems = computed(() => {
     const creatorReceivedNotifications = page.props.creatorReceivedNotifications || []
     const notifications = page.props.notifications || []
 
+    const announcements = activeAnnouncements.value.map((announcement) => ({
+        ...announcement,
+        notification_type: 'announcement',
+    }))
+
     return [
+        ...announcements,
         ...viewerNotifications,
         ...creatorReceivedNotifications,
         ...notifications,
@@ -136,7 +220,7 @@ const notificationItems = computed(() => {
 
 const visibleNotificationItems = computed(() => {
     return notificationItems.value.filter((item) => {
-        return !seenNotificationKeys.value.includes(notificationKey(item))
+        return !isNotificationSeen(item)
     })
 })
 
@@ -150,6 +234,10 @@ const notificationReceiverName = (item) => {
 }
 
 const notificationSubject = (item) => {
+    if (item.notification_type === 'announcement') {
+        return item.title || 'DTS Announcement'
+    }
+
     return item.subject
         || item.document_subject
         || item.regarding
@@ -162,16 +250,20 @@ const notificationDate = (item) => {
         || item.received_date
         || item.distdate
         || item.transfer_date
+        || item.starts_at
         || item.created_at
         || ''
 }
 
 const displayNotificationCount = computed(() => {
-    return visibleNotificationItems.value.length
+    return notificationItems.value.filter((item) => {
+        return !isNotificationSeen(item)
+    }).length
 })
 
 const openNotifications = () => {
     showNotifications.value = true
+    fetchActiveAnnouncements()
 }
 
 const closeNotifications = () => {
@@ -306,16 +398,28 @@ const emit = defineEmits([
 <template>
     <div class="min-h-screen bg-slate-100 text-slate-800">
         <div class="flex min-h-screen">
+            <!-- MOBILE SIDEBAR OVERLAY -->
+            <button
+                v-if="showMobileSidebar"
+                type="button"
+                aria-label="Close navigation menu"
+                class="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm lg:hidden"
+                @click="closeMobileSidebar"
+            ></button>
+
             <!-- SIDE NAV BAR -->
-            <aside class="fixed inset-y-0 left-0 z-30 flex w-80 flex-col border-r border-slate-200 bg-slate-950 text-slate-200">
+            <aside
+                class="fixed inset-y-0 left-0 z-50 flex w-[min(20rem,88vw)] -translate-x-full flex-col border-r border-slate-800 bg-slate-950 text-slate-200 shadow-2xl transition-transform duration-300 ease-out lg:z-30 lg:w-80 lg:translate-x-0 lg:shadow-none"
+                :class="showMobileSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'"
+            >
                 <!-- Logo / Title -->
-                <div class="border-b border-slate-800 px-6 py-6">
-                    <div class="flex items-center gap-4">
-                        <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-white p-2 shadow-sm">
+                <div class="border-b border-slate-800 px-4 py-4 sm:px-6 sm:py-6">
+                    <div class="flex items-center gap-3 sm:gap-4">
+                        <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white p-1.5 shadow-sm sm:h-16 sm:w-16 sm:p-2">
                             <img
                                 src="/images/logo_dts-nobg.png"
                                 alt="Pantalan Logo"
-                                class="h-14 w-14 object-contain"
+                                class="h-10 w-10 object-contain sm:h-14 sm:w-14"
                             />
                         </div>
 
@@ -328,6 +432,15 @@ const emit = defineEmits([
                                 Document Tracking System
                             </p>
                         </div>
+
+                        <button
+                            type="button"
+                            aria-label="Close navigation menu"
+                            class="ml-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-xl font-black text-white hover:bg-slate-800 lg:hidden"
+                            @click="closeMobileSidebar"
+                        >
+                            ×
+                        </button>
                     </div>
                 </div>
 
@@ -336,6 +449,7 @@ const emit = defineEmits([
                     <div class="space-y-3">
                         <Link
                             href="/dts"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isDocumentsActive)"
                         >
@@ -351,6 +465,7 @@ const emit = defineEmits([
                         <Link
                             v-if="canViewAllDocuments"
                             href="/dts?section=all-documents"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isAllDocumentsActive)"
                         >
@@ -365,6 +480,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts?section=incoming"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isIncomingActive)"
                         >
@@ -379,6 +495,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts?section=sent-docs"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isOutgoingActive)"
                         >
@@ -393,6 +510,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts/library"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isLibraryActive)"
                         >
@@ -407,6 +525,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts?section=reports&type=by-date"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isReportsActive)"
                         >
@@ -421,6 +540,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts?section=about"
+                            @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isAboutActive)"
                         >
@@ -437,22 +557,34 @@ const emit = defineEmits([
             </aside>
 
             <!-- RIGHT CONTENT -->
-            <div class="min-w-0 flex-1 pl-80">
+            <div class="min-w-0 flex-1 pl-0 lg:pl-80">
                 <!-- TOP USER BAR -->
-                <header class="sticky top-0 z-20 border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
-                    <div class="flex items-center justify-end gap-3">
+                <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-3 py-3 shadow-sm backdrop-blur sm:px-6 sm:py-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <button
+                            type="button"
+                            aria-label="Open navigation menu"
+                            class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-blue-100 bg-blue-50 text-xl font-black text-blue-700 shadow-sm hover:bg-blue-100 lg:hidden"
+                            @click="openMobileSidebar"
+                        >
+                            ☰
+                        </button>
+
+                        <div class="ml-auto flex min-w-0 items-center justify-end gap-2 sm:gap-3">
                         <!-- Notification Bell -->
                         <button
                             type="button"
-                            class="relative inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-700 text-white shadow-sm transition hover:bg-indigo-800 focus:outline-none focus:ring-4 focus:ring-indigo-100"
+                            class="group relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl sm:h-12 sm:w-12 bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-200/80 ring-1 ring-blue-400/40 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.03] hover:from-blue-600 hover:via-blue-700 hover:to-indigo-800 hover:shadow-xl hover:shadow-blue-300/70 focus:outline-none focus:ring-4 focus:ring-blue-200"
                             title="Notifications"
                             @click="openNotifications"
                         >
+                            <span class="pointer-events-none absolute inset-1 rounded-xl bg-white/10 opacity-0 transition group-hover:opacity-100"></span>
+
                             <svg
                                 xmlns="http://www.w3.org/2000/svg"
                                 viewBox="0 0 24 24"
                                 fill="currentColor"
-                                class="h-5 w-5"
+                                class="relative z-10 h-5 w-5 drop-shadow-sm transition-transform duration-200 group-hover:rotate-12 group-hover:scale-110"
                             >
                                 <path
                                     d="M12 2a6 6 0 0 0-6 6v3.586l-1.707 1.707A1 1 0 0 0 5 15h14a1 1 0 0 0 .707-1.707L18 11.586V8a6 6 0 0 0-6-6Z"
@@ -464,7 +596,7 @@ const emit = defineEmits([
 
                             <span
                                 v-if="displayNotificationCount > 0"
-                                class="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-red-600 px-1 text-[10px] font-black leading-none text-white"
+                                class="absolute -right-1.5 -top-1.5 z-20 flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-white bg-rose-600 px-1.5 text-[10px] font-black leading-none text-white shadow-md shadow-rose-200 ring-2 ring-rose-100"
                             >
                                 {{ displayNotificationCount > 99 ? '99+' : displayNotificationCount }}
                             </span>
@@ -473,14 +605,14 @@ const emit = defineEmits([
                         <div class="relative">
                             <button
                                 type="button"
-                                class="flex items-center gap-3 rounded-2xl bg-blue-600 px-4 py-2.5 text-left text-white shadow-sm hover:bg-blue-700"
+                                class="flex h-11 min-w-0 items-center gap-2 rounded-2xl bg-blue-600 px-2.5 text-left text-white shadow-sm hover:bg-blue-700 sm:h-auto sm:gap-3 sm:px-4 sm:py-2.5"
                                 @click="showUserMenu = !showUserMenu"
                             >
                                 <span class="flex h-9 w-9 items-center justify-center rounded-full bg-white text-sm font-bold text-blue-700">
                                     {{ userInitial }}
                                 </span>
 
-                                <span>
+                                <span class="hidden min-w-0 sm:block">
                                     <span class="block text-xs font-semibold text-blue-100">
                                         Welcome back
                                     </span>
@@ -497,7 +629,7 @@ const emit = defineEmits([
 
                             <div
                                 v-if="showUserMenu"
-                                class="absolute right-0 mt-3 w-56 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
+                                class="fixed left-4 right-4 top-[4.75rem] z-50 max-h-[calc(100dvh-6rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl sm:absolute sm:left-auto sm:right-0 sm:top-auto sm:mt-3 sm:w-56"
                             >
                                 <div class="border-b border-slate-100 px-4 py-3">
                                     <p class="text-xs font-bold uppercase tracking-widest text-slate-400">
@@ -549,6 +681,7 @@ const emit = defineEmits([
                             </div>
                         </div>
                     </div>
+                    </div>
                 </header>
 
                 <slot />
@@ -556,11 +689,11 @@ const emit = defineEmits([
                 <!-- NOTIFICATION MODAL -->
                 <div
                     v-if="showNotifications"
-                    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8"
+                    class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 px-0 py-0 backdrop-blur-sm sm:items-center sm:px-4 sm:py-8"
                     @click.self="closeNotifications"
                 >
-                    <div class="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
-                        <div class="border-b border-blue-100 bg-blue-600 px-6 py-5 text-white">
+                    <div class="flex h-[100dvh] max-h-[100dvh] w-full max-w-3xl flex-col overflow-hidden rounded-none bg-white shadow-2xl sm:h-auto sm:max-h-[90vh] sm:rounded-[2rem]">
+                        <div class="shrink-0 border-b border-blue-200 bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-700 px-4 py-4 text-white shadow-lg shadow-blue-200/40 sm:px-6 sm:py-5">
                             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                 <div>
                                     <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
@@ -568,11 +701,11 @@ const emit = defineEmits([
                                     </p>
 
                                     <h2 class="mt-2 text-2xl font-black">
-                                        Document Notifications
+                                        DTS Notifications
                                     </h2>
 
                                     <p class="mt-1 text-sm font-semibold text-blue-100">
-                                        Latest document alerts from your DTS dashboard.
+                                        System announcements and document alerts.
                                     </p>
                                 </div>
 
@@ -586,31 +719,40 @@ const emit = defineEmits([
                             </div>
                         </div>
 
-                        <div class="p-6">
+                        <div class="min-h-0 flex-1 overflow-y-auto bg-gradient-to-b from-blue-50/70 to-white p-4 sm:p-6">
                             <div
                                 v-if="visibleNotificationItems.length"
-                                class="max-h-[58vh] space-y-4 overflow-y-auto pr-1"
+                                class="space-y-4 sm:max-h-[58vh] sm:overflow-y-auto sm:pr-1"
                             >
                                 <div
                                     v-for="(item, index) in visibleNotificationItems"
                                     :key="`layout-notification-${item.IDdoc || item.document_no || index}`"
-                                    class="group overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-lg"
+                                    class="group overflow-hidden rounded-[1.5rem] border border-blue-100 bg-white shadow-sm shadow-blue-100/60 transition duration-200 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-lg hover:shadow-blue-100"
                                 >
                                     <div
                                         class="h-1.5"
-                                        :class="item.notification_type === 'received_by_addressee'
-                                            ? 'bg-emerald-500'
-                                            : item.is_overdue
-                                                ? 'bg-red-500'
-                                                : 'bg-blue-500'"
+                                        :class="item.notification_type === 'announcement'
+                                            ? 'bg-violet-500'
+                                            : item.notification_type === 'received_by_addressee'
+                                                ? 'bg-emerald-500'
+                                                : item.is_overdue
+                                                    ? 'bg-red-500'
+                                                    : 'bg-blue-500'"
                                     ></div>
 
-                                    <div class="p-5">
+                                    <div class="p-4 sm:p-5">
                                         <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                                             <div class="min-w-0 flex-1">
                                                 <div class="flex flex-wrap items-center gap-2">
                                                     <span
-                                                        v-if="item.notification_type === 'received_by_addressee'"
+                                                        v-if="item.notification_type === 'announcement'"
+                                                        class="rounded-full bg-violet-100 px-3 py-1 text-xs font-black text-violet-700"
+                                                    >
+                                                        📣 Announcement
+                                                    </span>
+
+                                                    <span
+                                                        v-else-if="item.notification_type === 'received_by_addressee'"
                                                         class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700"
                                                     >
                                                         ✓ Received
@@ -630,7 +772,10 @@ const emit = defineEmits([
                                                         For Receiving
                                                     </span>
 
-                                                    <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
+                                                    <span
+                                                        v-if="item.notification_type !== 'announcement'"
+                                                        class="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700"
+                                                    >
                                                         DTS #{{ item.document_no || item.IDdoc || '-' }}
                                                     </span>
                                                 </div>
@@ -651,11 +796,18 @@ const emit = defineEmits([
 
                                                 <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                                                     <p class="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
-                                                        Document
+                                                        {{ item.notification_type === 'announcement' ? 'Announcement' : 'Document' }}
                                                     </p>
 
                                                     <p class="mt-1 break-words text-sm font-bold leading-6 text-slate-800">
                                                         {{ notificationSubject(item) }}
+                                                    </p>
+
+                                                    <p
+                                                        v-if="item.notification_type === 'announcement' && item.message"
+                                                        class="mt-2 whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-slate-600"
+                                                    >
+                                                        {{ item.message }}
                                                     </p>
                                                 </div>
 
@@ -667,10 +819,19 @@ const emit = defineEmits([
                                                 </p>
                                             </div>
                                             <div class="flex shrink-0 items-center sm:self-stretch">
+                                                <button
+                                                    v-if="item.notification_type === 'announcement'"
+                                                    type="button"
+                                                    class="inline-flex w-full items-center justify-center rounded-xl bg-violet-600 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-violet-700 sm:w-auto sm:py-2.5"
+                                                    @click="markNotificationSeen(item)"
+                                                >
+                                                    Mark as read
+                                                </button>
+
                                                 <Link
-                                                    v-if="item.IDdoc"
+                                                    v-else-if="item.IDdoc"
                                                     :href="`/dts/${item.IDdoc}`"
-                                                    class="inline-flex items-center justify-center rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-blue-700"
+                                                    class="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-blue-700 sm:w-auto sm:py-2.5"
                                                     @click="markNotificationSeen(item); closeNotifications()"
                                                 >
                                                     View Details
@@ -693,7 +854,7 @@ const emit = defineEmits([
                                 </h3>
 
                                 <p class="mt-2 text-sm font-semibold text-slate-600">
-                                    You have no document notifications at the moment.
+                                    You have no unread announcements or document notifications.
                                 </p>
                             </div>
                         </div>

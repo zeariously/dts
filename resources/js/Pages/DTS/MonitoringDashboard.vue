@@ -513,15 +513,17 @@ const daysPendingClass = (days) => {
 
                     <button
                         type="button"
-                        class="relative inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-100 transition hover:bg-blue-100"
+                        class="group relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-200/80 ring-1 ring-blue-400/40 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.03] hover:from-blue-600 hover:via-blue-700 hover:to-indigo-800 hover:shadow-xl hover:shadow-blue-300/70 focus:outline-none focus:ring-4 focus:ring-blue-200 sm:h-12 sm:w-12"
                         title="Notifications"
                         @click="openNotificationModal"
                     >
+                        <span class="pointer-events-none absolute inset-1 rounded-xl bg-white/10 opacity-0 transition group-hover:opacity-100"></span>
+
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             viewBox="0 0 24 24"
                             fill="currentColor"
-                            class="h-5 w-5"
+                            class="relative z-10 h-5 w-5 drop-shadow-sm transition-transform duration-200 group-hover:rotate-12 group-hover:scale-110"
                         >
                             <path
                                 d="M12 2a6 6 0 0 0-6 6v3.586l-1.707 1.707A1 1 0 0 0 5 15h14a1 1 0 0 0 .707-1.707L18 11.586V8a6 6 0 0 0-6-6Z"
@@ -533,7 +535,7 @@ const daysPendingClass = (days) => {
 
                         <span
                             v-if="notificationCount > 0"
-                            class="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-rose-600 px-1 text-[10px] font-black leading-none text-white"
+                            class="absolute -right-1.5 -top-1.5 z-20 flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-white bg-rose-600 px-1.5 text-[10px] font-black leading-none text-white shadow-md shadow-rose-200 ring-2 ring-rose-100"
                         >
                             {{ notificationCount > 99 ? '99+' : notificationCount }}
                         </span>
