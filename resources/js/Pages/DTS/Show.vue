@@ -2536,7 +2536,7 @@ const formatFileSize = (bytes) => {
                                         :key="file.id"
                                         :href="file.url"
                                         target="_blank"
-                                        class="inline-flex w-full items-center justify-between gap-3 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
+                                        class="inline-flex w-full items-center justify-between gap-3hp rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         <span class="min-w-0 break-words">
                                             {{ file.original_name || file.stored_name || 'View attached file' }}
