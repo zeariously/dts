@@ -4466,30 +4466,29 @@ const submitEntryDateUpdate = () => {
                 <!-- Stats Cards -->
                 <div
                     v-if="activeSection === 'documents'"
-                    class="mb-6 grid grid-cols-2 gap-3 lg:mb-8 lg:gap-4"
-                    :class="canShowReturnedCard ? 'lg:grid-cols-5' : 'lg:grid-cols-4'"
+                    class="mb-6 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-3 lg:mb-8 xl:gap-4"
                 >
                     <Link
                         :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
-                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg backdrop-blur xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12 2xl:rounded-2xl 2xl:text-2xl">
                                 📄
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
+                                    <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">
                                         Total Documents
                                     </p>
 
                                     
                                 </div>
 
-                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
                                     {{ props.stats.total }}
                                 </p>
                             </div>
@@ -4498,27 +4497,27 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'for-receiving' })"
-                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg backdrop-blur xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12 2xl:rounded-2xl 2xl:text-2xl">
                                 ⏳
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
+                                    <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">
                                         For Receiving
                                     </p>
                                 </div>
 
-                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
                                     {{ props.stats.for_receiving }}
                                 </p>
 
-                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
+                                <p class="mt-2 hidden text-xs font-semibold leading-5 text-white/75 2xl:block">
                                     Click to view pending receiving
                                 </p>
                             </div>
@@ -4527,26 +4526,26 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'received' })"
-                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-emerald-600 to-green-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl">
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-emerald-600 to-green-500 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl">
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg backdrop-blur xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12 2xl:rounded-2xl 2xl:text-2xl">
                                 ✅
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
+                                    <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">
                                         Received
                                     </p>
                                 </div>
 
-                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
                                     {{ props.stats.received }}
                                 </p>
 
-                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
+                                <p class="mt-2 hidden text-xs font-semibold leading-5 text-white/75 2xl:block">
                                     Received with no action yet
                                 </p>
                             </div>
@@ -4555,21 +4554,21 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'addressed' })"
-                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-cyan-600 to-sky-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg backdrop-blur xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12 2xl:rounded-2xl 2xl:text-2xl">
                                 📌
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">Addressed</p>
-                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
+                                <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">Addressed</p>
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
                                     {{ props.stats.addressed ?? props.stats.in_progress ?? 0 }}
                                 </p>
-                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
+                                <p class="mt-2 hidden text-xs font-semibold leading-5 text-white/75 2xl:block">
                                     Documents handled through Address
                                 </p>
                             </div>
@@ -4579,21 +4578,21 @@ const submitEntryDateUpdate = () => {
                     <Link
                         v-if="canShowReturnedCard"
                         :href="buildDtsUrl({ section: 'incoming', filter: 'returned' })"
-                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-rose-600 to-red-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-rose-600 to-red-500 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg backdrop-blur xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12 2xl:rounded-2xl 2xl:text-2xl">
                                 ↩️
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">Returned</p>
-                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
+                                <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">Returned</p>
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
                                     {{ props.stats.returned ?? 0 }}
                                 </p>
-                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
+                                <p class="mt-2 hidden text-xs font-semibold leading-5 text-white/75 2xl:block">
                                     Documents returned 
                                 </p>
                             </div>
