@@ -1331,6 +1331,19 @@ const shouldShowReturnedBy = (doc) => {
 
 
 
+const documentToDisplay = (doc) => {
+    return doc?.to_personnel
+        || doc?.receiver_personnel
+        || doc?.personnel_name
+        || doc?.staff_concern
+        || doc?.current_office
+        || doc?.for_office
+        || doc?.to_office
+        || doc?.transferred_to
+        || doc?.received_office
+        || '-'
+}
+
 const canShowReceiveButton = (doc) => {
     return canReceiveDts.value && documentStatusLabel(doc) === 'For Receiving'
 }
@@ -2546,7 +2559,7 @@ const submitEntryDateUpdate = () => {
             <!-- RECEIVED DOCS CONTENT -->
             <div
                 v-else-if="activeSection === 'received-docs'"
-                class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
+                class="rounded-2xl border border-blue-200 bg-white p-4 shadow-sm sm:p-6"
             >
                 <div class="mb-5">
                     <h2 class="text-2xl font-bold tracking-wide text-cyan-700">
@@ -2558,7 +2571,7 @@ const submitEntryDateUpdate = () => {
                     </p>
                 </div>
 
-                <div class="mb-8 rounded-xl border border-blue-200 bg-blue-50 p-5">
+                <div class="mb-8 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:p-5">
                     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-end">
                         <div class="lg:col-span-4">
                             <label class="mb-2 block text-sm font-bold text-black">
@@ -2568,7 +2581,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, office, subject, or type..."
+                                placeholder="Search DOC ID, to, subject, regarding, status, or date sent..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="applyReceivedFilters"
                             />
@@ -2641,31 +2654,156 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <div class="overflow-x-auto rounded-xl border border-blue-300">
-                    <table class="w-full min-w-[1100px] table-fixed border-collapse text-center text-sm">
+                                                <!-- Responsive Incoming Documents list -->
+                <div class="space-y-4 xl:hidden">
+                    <article
+                        v-for="doc in rows"
+                        :key="`incoming-card-${doc.IDdoc}`"
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div class="flex flex-col gap-3 border-b border-slate-200 bg-blue-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="min-w-0">
+                                <p class="text-[11px] font-black uppercase tracking-[0.16em] text-blue-600">
+                                    DOC ID
+                                </p>
+
+                                <Link
+                                    :href="`/dts/${doc.IDdoc}`"
+                                    class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
+                                >
+                                    DTS - #{{ doc.document_no || doc.IDdoc }}
+                                </Link>
+                            </div>
+
+                            <div>
+                                <p class="mb-1 text-[11px] font-black uppercase tracking-wide text-slate-400 sm:text-right">
+                                    Status
+                                </p>
+
+                                <span
+                                    class="inline-flex w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentStatusClass(doc)"
+                                >
+                                    {{ documentStatusLabel(doc) }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    To
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
+                                    {{ documentToDisplay(doc) }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Subject
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-base font-black leading-6 text-slate-950">
+                                    {{ doc.subject || 'No subject' }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Regarding
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
+                                    {{ doc.regarding || '-' }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Date Sent
+                                </p>
+
+                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
+                                    {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                </p>
+                            </div>
+
+                            <div
+                                v-if="shouldShowReturnedBy(doc)"
+                                class="sm:col-span-2"
+                            >
+                                <p class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
+                                    Returned By: {{ returnedByDisplay(doc) }}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="border-t border-slate-200 bg-slate-50 p-4">
+                            <button
+                                v-if="canShowReceiveButton(doc)"
+                                type="button"
+                                class="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white hover:bg-blue-700"
+                                @click="receiveTransferredDocument(doc)"
+                            >
+                                Receive Document
+                            </button>
+
+                            <Link
+                                v-else
+                                :href="`/dts/${doc.IDdoc}`"
+                                class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
+                            >
+                                View Details
+                            </Link>
+                        </div>
+                    </article>
+
+                    <div
+                        v-if="rows.length === 0"
+                        class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-12 text-center"
+                    >
+                        <div class="text-lg font-bold text-black">
+                            No incoming documents found
+                        </div>
+
+                        <p class="mt-2 text-sm font-medium text-black">
+                            Try another keeper, date, or reset the filters.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Desktop table layout -->
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
+                    <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
-                                <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc<br>ID
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    DOC ID
                                 </th>
 
-                                <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Type
+                                <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
+                                    To
                                 </th>
 
-                                <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    From
-                                </th>
-
-                                <th class="w-[35%] border border-black px-4 py-4 text-center font-bold">
+                                <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
                                     Subject
                                 </th>
 
-                                <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    Date Received
+                                <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
+                                    Regarding
                                 </th>
 
-                                <th class="w-[9%] border border-black px-4 py-4 text-center font-bold">
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    Status
+                                </th>
+
+                                <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
+                                    Date Sent
+                                </th>
+
+                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
                                     Action
                                 </th>
                             </tr>
@@ -2677,7 +2815,7 @@ const submitEntryDateUpdate = () => {
                                 :key="doc.IDdoc"
                                 :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                             >
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
@@ -2686,34 +2824,60 @@ const submitEntryDateUpdate = () => {
                                     </Link>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ documentToDisplay(doc) }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                        {{ doc.from_office || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words text-base font-bold leading-6 text-black">
                                         {{ doc.subject || 'No subject' }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ formatDateTime(doc.date_received || doc.received_date || doc.confirmdate || doc.entrydate) }}
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ doc.regarding || '-' }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <span
+                                        class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
+                                        :class="documentStatusClass(doc)"
+                                    >
+                                        {{ documentStatusLabel(doc) }}
+                                    </span>
+
+                                    <p
+                                        v-if="shouldShowReturnedBy(doc)"
+                                        class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                    >
+                                        Returned By: {{ returnedByDisplay(doc) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="font-bold text-black">
+                                        {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <button
+                                        v-if="canShowReceiveButton(doc)"
+                                        type="button"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                        @click="receiveTransferredDocument(doc)"
+                                    >
+                                        Receive
+                                    </button>
+
                                     <Link
+                                        v-else
                                         :href="`/dts/${doc.IDdoc}`"
-                                        class="inline-flex rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         View
                                     </Link>
@@ -2721,13 +2885,13 @@ const submitEntryDateUpdate = () => {
                             </tr>
 
                             <tr v-if="rows.length === 0">
-                                <td colspan="6" class="border border-black px-7 py-14 text-center">
+                                <td colspan="7" class="border border-black px-7 py-14 text-center">
                                     <div class="text-lg font-bold text-black">
                                         No incoming documents found
                                     </div>
 
                                     <p class="mt-2 text-sm font-medium text-black">
-                                        Try another keeper, document type, or reset the filters.
+                                        Try another keeper, date, or reset the filters.
                                     </p>
                                 </td>
                             </tr>
@@ -3336,7 +3500,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, subject, or regarding..."
+                                placeholder="Search DOC ID, to, subject, regarding, status, or date sent..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3360,7 +3524,7 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <!-- Mobile and tablet card layout: no horizontal scrolling -->
+                                                <!-- Responsive Incoming Documents list -->
                 <div class="space-y-4 xl:hidden">
                     <article
                         v-for="doc in rows"
@@ -3370,7 +3534,7 @@ const submitEntryDateUpdate = () => {
                         <div class="flex flex-col gap-3 border-b border-slate-200 bg-blue-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
                             <div class="min-w-0">
                                 <p class="text-[11px] font-black uppercase tracking-[0.16em] text-blue-600">
-                                    Document ID
+                                    DOC ID
                                 </p>
 
                                 <Link
@@ -3381,39 +3545,28 @@ const submitEntryDateUpdate = () => {
                                 </Link>
                             </div>
 
-                            <span
-                                class="inline-flex w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                :class="documentStatusClass(doc)"
-                            >
-                                {{ documentStatusLabel(doc) }}
-                            </span>
+                            <div>
+                                <p class="mb-1 text-[11px] font-black uppercase tracking-wide text-slate-400 sm:text-right">
+                                    Status
+                                </p>
+
+                                <span
+                                    class="inline-flex w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentStatusClass(doc)"
+                                >
+                                    {{ documentStatusLabel(doc) }}
+                                </span>
+                            </div>
                         </div>
 
                         <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
-                            <div>
-                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    Type
-                                </p>
-                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
-                                    {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
-                                </p>
-                            </div>
-
-                            <div>
-                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    Date Sent
-                                </p>
-                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
-                                    {{ formatDateTime(doc.date_sent || doc.distdate || doc.entrydate) }}
-                                </p>
-                            </div>
-
                             <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    From
+                                    To
                                 </p>
-                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold italic leading-6 text-slate-900">
-                                    {{ doc.from_office || '-' }}
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
+                                    {{ documentToDisplay(doc) }}
                                 </p>
                             </div>
 
@@ -3421,6 +3574,7 @@ const submitEntryDateUpdate = () => {
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     Subject
                                 </p>
+
                                 <p class="mt-1 whitespace-pre-line break-words text-base font-black leading-6 text-slate-950">
                                     {{ doc.subject || 'No subject' }}
                                 </p>
@@ -3430,8 +3584,19 @@ const submitEntryDateUpdate = () => {
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     Regarding
                                 </p>
+
                                 <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
                                     {{ doc.regarding || '-' }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Date Sent
+                                </p>
+
+                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
+                                    {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
                                 </p>
                             </div>
 
@@ -3445,10 +3610,7 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                        <div
-                            v-if="canReceiveDts"
-                            class="border-t border-slate-200 bg-slate-50 p-4"
-                        >
+                        <div class="border-t border-slate-200 bg-slate-50 p-4">
                             <button
                                 v-if="canShowReceiveButton(doc)"
                                 type="button"
@@ -3473,10 +3635,7 @@ const submitEntryDateUpdate = () => {
                         class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-12 text-center"
                     >
                         <div class="text-lg font-bold text-black">
-                            {{ activeSection === 'incoming' && !activeFilter
-                                ? 'No incoming documents found'
-                                : 'No documents for receiving found'
-                            }}
+                            {{ activeSection === 'incoming' && !activeFilter ? 'No incoming documents found' : 'No documents for receiving found' }}
                         </div>
 
                         <p class="mt-2 text-sm font-medium text-black">
@@ -3490,38 +3649,31 @@ const submitEntryDateUpdate = () => {
                     <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
-                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
-                                    Doc ID
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    DOC ID
                                 </th>
 
-                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
-                                    Type
+                                <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
+                                    To
                                 </th>
 
-                                <th class="w-[14%] border border-black px-2 py-3 text-center font-bold">
-                                    From
-                                </th>
-
-                                <th class="w-[20%] border border-black px-2 py-3 text-center font-bold">
+                                <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
                                     Subject
                                 </th>
 
-                                <th class="w-[20%] border border-black px-2 py-3 text-center font-bold">
+                                <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
                                     Regarding
                                 </th>
 
-                                <th class="w-[12%] border border-black px-2 py-3 text-center font-bold">
-                                    Date Sent
-                                </th>
-
-                                <th class="w-[9%] border border-black px-2 py-3 text-center font-bold">
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
                                     Status
                                 </th>
 
-                                <th
-                                    v-if="canReceiveDts"
-                                    class="w-[9%] border border-black px-2 py-3 text-center font-bold"
-                                >
+                                <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
+                                    Date Sent
+                                </th>
+
+                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
                                     Action
                                 </th>
                             </tr>
@@ -3543,14 +3695,8 @@ const submitEntryDateUpdate = () => {
                                 </td>
 
                                 <td class="border border-black px-2 py-3 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-2 py-3 align-middle text-center">
-                                    <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                        {{ doc.from_office || '-' }}
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ documentToDisplay(doc) }}
                                     </p>
                                 </td>
 
@@ -3563,12 +3709,6 @@ const submitEntryDateUpdate = () => {
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
                                         {{ doc.regarding || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-2 py-3 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ formatDateTime(doc.date_sent || doc.distdate || doc.entrydate) }}
                                     </p>
                                 </td>
 
@@ -3586,13 +3726,15 @@ const submitEntryDateUpdate = () => {
                                     >
                                         Returned By: {{ returnedByDisplay(doc) }}
                                     </p>
-
                                 </td>
 
-                                <td
-                                    v-if="canReceiveDts"
-                                    class="border border-black px-2 py-3 align-middle text-center"
-                                >
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="font-bold text-black">
+                                        {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <button
                                         v-if="canShowReceiveButton(doc)"
                                         type="button"
@@ -3613,12 +3755,9 @@ const submitEntryDateUpdate = () => {
                             </tr>
 
                             <tr v-if="rows.length === 0">
-                                <td :colspan="canReceiveDts ? 8 : 7" class="border border-black px-7 py-14 text-center">
+                                <td colspan="7" class="border border-black px-7 py-14 text-center">
                                     <div class="text-lg font-bold text-black">
-                                        {{ activeSection === 'incoming' && !activeFilter
-                                            ? 'No incoming documents found'
-                                            : 'No documents for receiving found'
-                                        }}
+                                        {{ activeSection === 'incoming' && !activeFilter ? 'No incoming documents found' : 'No documents for receiving found' }}
                                     </div>
 
                                     <p class="mt-2 text-sm font-medium text-black">
@@ -3660,7 +3799,7 @@ const submitEntryDateUpdate = () => {
             <!-- INCOMING RECEIVED CONTENT -->
             <div
                 v-else-if="['collab-received', 'received', 'for-action'].includes(activeFilter)"
-                class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
+                class="rounded-2xl border border-blue-200 bg-white p-4 shadow-sm sm:p-6"
             >
                 <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
@@ -3678,8 +3817,8 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
-                    <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
+                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:p-5">
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_auto_auto] lg:items-end">
                         <div>
                             <label class="mb-2 block text-sm font-bold text-black">
                                 Search:
@@ -3688,7 +3827,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                placeholder="Search DOC ID, to, subject, regarding, status, or date sent..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3712,35 +3851,158 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <div class="overflow-x-auto rounded-xl border border-black">
-                    <table class="w-full min-w-[1000px] table-fixed border-collapse text-center text-sm">
+                                                <!-- Responsive Incoming Documents list -->
+                <div class="space-y-4 xl:hidden">
+                    <article
+                        v-for="doc in rows"
+                        :key="`incoming-card-${doc.IDdoc}`"
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div class="flex flex-col gap-3 border-b border-slate-200 bg-blue-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="min-w-0">
+                                <p class="text-[11px] font-black uppercase tracking-[0.16em] text-blue-600">
+                                    DOC ID
+                                </p>
+
+                                <Link
+                                    :href="`/dts/${doc.IDdoc}`"
+                                    class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
+                                >
+                                    DTS - #{{ doc.document_no || doc.IDdoc }}
+                                </Link>
+                            </div>
+
+                            <div>
+                                <p class="mb-1 text-[11px] font-black uppercase tracking-wide text-slate-400 sm:text-right">
+                                    Status
+                                </p>
+
+                                <span
+                                    class="inline-flex w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentStatusClass(doc)"
+                                >
+                                    {{ documentStatusLabel(doc) }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    To
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
+                                    {{ documentToDisplay(doc) }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Subject
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-base font-black leading-6 text-slate-950">
+                                    {{ doc.subject || 'No subject' }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Regarding
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
+                                    {{ doc.regarding || '-' }}
+                                </p>
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Date Sent
+                                </p>
+
+                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
+                                    {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                </p>
+                            </div>
+
+                            <div
+                                v-if="shouldShowReturnedBy(doc)"
+                                class="sm:col-span-2"
+                            >
+                                <p class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
+                                    Returned By: {{ returnedByDisplay(doc) }}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="border-t border-slate-200 bg-slate-50 p-4">
+                            <button
+                                v-if="canShowReceiveButton(doc)"
+                                type="button"
+                                class="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white hover:bg-blue-700"
+                                @click="receiveTransferredDocument(doc)"
+                            >
+                                Receive Document
+                            </button>
+
+                            <Link
+                                v-else
+                                :href="`/dts/${doc.IDdoc}`"
+                                class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
+                            >
+                                View Details
+                            </Link>
+                        </div>
+                    </article>
+
+                    <div
+                        v-if="rows.length === 0"
+                        class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-12 text-center"
+                    >
+                        <div class="text-lg font-bold text-black">
+                            No received documents found
+                        </div>
+
+                        <p class="mt-2 text-sm font-medium text-black">
+                            No records available.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Desktop table layout -->
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
+                    <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
-                                <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc ID
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    DOC ID
                                 </th>
 
-                                <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
-                                    Type
+                                <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
+                                    To
                                 </th>
 
-                                <th class="w-[24%] border border-black px-4 py-4 text-center font-bold">
-                                    From
-                                </th>
-
-                                <th class="w-[36%] border border-black px-4 py-4 text-center font-bold">
+                                <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
                                     Subject
                                 </th>
 
-                                <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    Date Sent
+                                <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
+                                    Regarding
                                 </th>
 
-                                <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
                                     Status
                                 </th>
 
+                                <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
+                                    Date Sent
+                                </th>
 
+                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
+                                    Action
+                                </th>
                             </tr>
                         </thead>
 
@@ -3750,7 +4012,7 @@ const submitEntryDateUpdate = () => {
                                 :key="doc.IDdoc"
                                 :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                             >
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
                                         :href="`/dts/${doc.IDdoc}`"
                                         class="font-bold text-blue-700 hover:underline"
@@ -3759,31 +4021,25 @@ const submitEntryDateUpdate = () => {
                                     </Link>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ documentToDisplay(doc) }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                        {{ doc.from_office || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words text-base font-bold leading-6 text-black">
                                         {{ doc.subject || 'No subject' }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ formatDateTime(doc.date_sent || doc.distdate || doc.entrydate) }}
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ doc.regarding || '-' }}
                                     </p>
                                 </td>
 
-                                <td class="border border-black px-4 py-4 align-middle text-center">
+                                <td class="border border-black px-2 py-3 align-middle text-center">
                                     <span
                                         class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
                                         :class="documentStatusClass(doc)"
@@ -3797,14 +4053,36 @@ const submitEntryDateUpdate = () => {
                                     >
                                         Returned By: {{ returnedByDisplay(doc) }}
                                     </p>
-
                                 </td>
 
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="font-bold text-black">
+                                        {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                    </p>
+                                </td>
 
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <button
+                                        v-if="canShowReceiveButton(doc)"
+                                        type="button"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                        @click="receiveTransferredDocument(doc)"
+                                    >
+                                        Receive
+                                    </button>
+
+                                    <Link
+                                        v-else
+                                        :href="`/dts/${doc.IDdoc}`"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                    >
+                                        View
+                                    </Link>
+                                </td>
                             </tr>
 
                             <tr v-if="rows.length === 0">
-                                <td colspan="6" class="border border-black px-7 py-14 text-center">
+                                <td colspan="7" class="border border-black px-7 py-14 text-center">
                                     <div class="text-lg font-bold text-black">
                                         No received documents found
                                     </div>
@@ -3849,7 +4127,7 @@ const submitEntryDateUpdate = () => {
             <!-- IN PROGRESS / COMPLETED / RETURNED CONTENT -->
                 <div
                     v-else-if="['in-progress', 'addressed', 'completed', 'returned'].includes(activeFilter)"
-                    class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
+                    class="rounded-2xl border border-blue-200 bg-white p-4 shadow-sm sm:p-6"
                 >
                     <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                         <div>
@@ -3873,8 +4151,8 @@ const submitEntryDateUpdate = () => {
                         </div>
                     </div>
 
-                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
-                    <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
+                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:p-5">
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_auto_auto] lg:items-end">
                         <div>
                             <label class="mb-2 block text-sm font-bold text-black">
                                 Search:
@@ -3883,7 +4161,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
+                                placeholder="Search DOC ID, to, subject, regarding, status, or date sent..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3907,110 +4185,250 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                    <div class="overflow-x-auto rounded-xl border border-black">
-                        <table class="w-full min-w-[1000px] table-fixed border-collapse text-center text-sm">
-                            <thead>
-                                <tr class="bg-blue-600 text-white">
-                                    <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                        Doc ID
-                                    </th>
+                                                    <!-- Responsive Incoming Documents list -->
+                <div class="space-y-4 xl:hidden">
+                    <article
+                        v-for="doc in rows"
+                        :key="`incoming-card-${doc.IDdoc}`"
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div class="flex flex-col gap-3 border-b border-slate-200 bg-blue-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="min-w-0">
+                                <p class="text-[11px] font-black uppercase tracking-[0.16em] text-blue-600">
+                                    DOC ID
+                                </p>
 
-                                    <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
-                                        Type
-                                    </th>
-
-                                    <th class="w-[24%] border border-black px-4 py-4 text-center font-bold">
-                                        From
-                                    </th>
-
-                                    <th class="w-[36%] border border-black px-4 py-4 text-center font-bold">
-                                        Subject
-                                    </th>
-
-                                    <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                        Date Sent
-                                    </th>
-
-                                    <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                        Status
-                                    </th>
-                                </tr>
-                            </thead>
-
-                            <tbody>
-                                <tr
-                                    v-for="(doc, index) in rows"
-                                    :key="doc.IDdoc"
-                                    :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
+                                <Link
+                                    :href="`/dts/${doc.IDdoc}`"
+                                    class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <Link
-                                            :href="`/dts/${doc.IDdoc}`"
-                                            class="font-bold text-blue-700 hover:underline"
-                                        >
-                                            {{ doc.document_no || doc.IDdoc }}
-                                        </Link>
-                                    </td>
+                                    DTS - #{{ doc.document_no || doc.IDdoc }}
+                                </Link>
+                            </div>
 
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <p class="font-bold text-black">
-                                            {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
-                                        </p>
-                                    </td>
+                            <div>
+                                <p class="mb-1 text-[11px] font-black uppercase tracking-wide text-slate-400 sm:text-right">
+                                    Status
+                                </p>
 
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                            {{ doc.from_office || '-' }}
-                                        </p>
-                                    </td>
+                                <span
+                                    class="inline-flex w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentStatusClass(doc)"
+                                >
+                                    {{ documentStatusLabel(doc) }}
+                                </span>
+                            </div>
+                        </div>
 
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <p class="whitespace-pre-line break-words text-base font-bold leading-6 text-black">
-                                            {{ doc.subject || 'No subject' }}
-                                        </p>
-                                    </td>
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    To
+                                </p>
 
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <p class="font-bold text-black">
-                                            {{ formatDateTime(doc.date_sent || doc.distdate || doc.entrydate) }}
-                                        </p>
-                                    </td>
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
+                                    {{ documentToDisplay(doc) }}
+                                </p>
+                            </div>
 
-                                    <td class="border border-black px-4 py-4 align-middle text-center">
-                                        <span
-                                            class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
-                                            :class="documentStatusClass(doc)"
-                                        >
-                                            {{ documentStatusLabel(doc) }}
-                                        </span>
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Subject
+                                </p>
 
-                                        <p
-                                            v-if="shouldShowReturnedBy(doc)"
-                                            class="mt-2 text-[11px] font-black leading-4 text-rose-700"
-                                        >
-                                            Returned By: {{ returnedByDisplay(doc) }}
-                                        </p>
+                                <p class="mt-1 whitespace-pre-line break-words text-base font-black leading-6 text-slate-950">
+                                    {{ doc.subject || 'No subject' }}
+                                </p>
+                            </div>
 
-                                    </td>
-                                </tr>
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Regarding
+                                </p>
 
-                                <tr v-if="rows.length === 0">
-                                    <td colspan="6" class="border border-black px-7 py-14 text-center">
-                                        <div class="text-lg font-bold text-black">
-                                            {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter)
-                                                ? 'No addressed documents found'
-                                                : 'No returned documents found'
-                                            }}
-                                        </div>
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
+                                    {{ doc.regarding || '-' }}
+                                </p>
+                            </div>
 
-                                        <p class="mt-2 text-sm font-medium text-black">
-                                            No records available.
-                                        </p>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                            <div class="sm:col-span-2">
+                                <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
+                                    Date Sent
+                                </p>
+
+                                <p class="mt-1 break-words text-sm font-bold text-slate-900">
+                                    {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                </p>
+                            </div>
+
+                            <div
+                                v-if="shouldShowReturnedBy(doc)"
+                                class="sm:col-span-2"
+                            >
+                                <p class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
+                                    Returned By: {{ returnedByDisplay(doc) }}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="border-t border-slate-200 bg-slate-50 p-4">
+                            <button
+                                v-if="canShowReceiveButton(doc)"
+                                type="button"
+                                class="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white hover:bg-blue-700"
+                                @click="receiveTransferredDocument(doc)"
+                            >
+                                Receive Document
+                            </button>
+
+                            <Link
+                                v-else
+                                :href="`/dts/${doc.IDdoc}`"
+                                class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
+                            >
+                                View Details
+                            </Link>
+                        </div>
+                    </article>
+
+                    <div
+                        v-if="rows.length === 0"
+                        class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-12 text-center"
+                    >
+                        <div class="text-lg font-bold text-black">
+                            {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter) ? 'No addressed documents found' : 'No returned documents found' }}
+                        </div>
+
+                        <p class="mt-2 text-sm font-medium text-black">
+                            No records available.
+                        </p>
                     </div>
+                </div>
+
+                <!-- Desktop table layout -->
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
+                    <table class="w-full table-fixed border-collapse text-center text-sm">
+                        <thead>
+                            <tr class="bg-blue-600 text-white">
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    DOC ID
+                                </th>
+
+                                <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
+                                    To
+                                </th>
+
+                                <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
+                                    Subject
+                                </th>
+
+                                <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
+                                    Regarding
+                                </th>
+
+                                <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
+                                    Status
+                                </th>
+
+                                <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
+                                    Date Sent
+                                </th>
+
+                                <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
+                                    Action
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            <tr
+                                v-for="(doc, index) in rows"
+                                :key="doc.IDdoc"
+                                :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
+                            >
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <Link
+                                        :href="`/dts/${doc.IDdoc}`"
+                                        class="font-bold text-blue-700 hover:underline"
+                                    >
+                                        {{ doc.document_no || doc.IDdoc }}
+                                    </Link>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ documentToDisplay(doc) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words text-base font-bold leading-6 text-black">
+                                        {{ doc.subject || 'No subject' }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
+                                        {{ doc.regarding || '-' }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <span
+                                        class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
+                                        :class="documentStatusClass(doc)"
+                                    >
+                                        {{ documentStatusLabel(doc) }}
+                                    </span>
+
+                                    <p
+                                        v-if="shouldShowReturnedBy(doc)"
+                                        class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                    >
+                                        Returned By: {{ returnedByDisplay(doc) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <p class="font-bold text-black">
+                                        {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                    </p>
+                                </td>
+
+                                <td class="border border-black px-2 py-3 align-middle text-center">
+                                    <button
+                                        v-if="canShowReceiveButton(doc)"
+                                        type="button"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                        @click="receiveTransferredDocument(doc)"
+                                    >
+                                        Receive
+                                    </button>
+
+                                    <Link
+                                        v-else
+                                        :href="`/dts/${doc.IDdoc}`"
+                                        class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
+                                    >
+                                        View
+                                    </Link>
+                                </td>
+                            </tr>
+
+                            <tr v-if="rows.length === 0">
+                                <td colspan="7" class="border border-black px-7 py-14 text-center">
+                                    <div class="text-lg font-bold text-black">
+                                        {{ ['in-progress', 'addressed', 'completed'].includes(activeFilter) ? 'No addressed documents found' : 'No returned documents found' }}
+                                    </div>
+
+                                    <p class="mt-2 text-sm font-medium text-black">
+                                        No records available.
+                                    </p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
 
                     <div
                         v-if="links.length > 3"
@@ -4048,30 +4466,30 @@ const submitEntryDateUpdate = () => {
                 <!-- Stats Cards -->
                 <div
                     v-if="activeSection === 'documents'"
-                    class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-5 lg:mb-8"
-                    :class="canShowReturnedCard ? '2xl:grid-cols-5' : '2xl:grid-cols-4'"
+                    class="mb-6 grid grid-cols-2 gap-3 lg:mb-8 lg:gap-4"
+                    :class="canShowReturnedCard ? 'lg:grid-cols-5' : 'lg:grid-cols-4'"
                 >
                     <Link
                         :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
-                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-4 text-white shadow-xl sm:p-6 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
+                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
                                 📄
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-base font-black text-white/90">
+                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
                                         Total Documents
                                     </p>
 
                                     
                                 </div>
 
-                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
                                     {{ props.stats.total }}
                                 </p>
                             </div>
@@ -4080,27 +4498,27 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'for-receiving' })"
-                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-4 text-white shadow-xl sm:p-6 shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-violet-600 to-fuchsia-600 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-violet-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
+                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
                                 ⏳
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-base font-black text-white/90">
+                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
                                         For Receiving
                                     </p>
                                 </div>
 
-                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
                                     {{ props.stats.for_receiving }}
                                 </p>
 
-                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
                                     Click to view pending receiving
                                 </p>
                             </div>
@@ -4109,27 +4527,26 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'received' })"
-                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-emerald-600 to-green-500 p-4 text-white shadow-xl sm:p-6 shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl"
-                    >
+                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-emerald-600 to-green-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-emerald-100 transition hover:-translate-y-1 hover:shadow-2xl">
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
+                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
                                 ✅
                             </div>
 
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-base font-black text-white/90">
+                                    <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">
                                         Received
                                     </p>
                                 </div>
 
-                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
                                     {{ props.stats.received }}
                                 </p>
 
-                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
                                     Received with no action yet
                                 </p>
                             </div>
@@ -4138,21 +4555,21 @@ const submitEntryDateUpdate = () => {
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'addressed' })"
-                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-cyan-600 to-sky-500 p-4 text-white shadow-xl sm:p-6 shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-cyan-600 to-sky-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-cyan-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
+                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
                                 📌
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <p class="text-base font-black text-white/90">Addressed</p>
-                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
+                                <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">Addressed</p>
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
                                     {{ props.stats.addressed ?? props.stats.in_progress ?? 0 }}
                                 </p>
-                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
                                     Documents handled through Address
                                 </p>
                             </div>
@@ -4162,21 +4579,21 @@ const submitEntryDateUpdate = () => {
                     <Link
                         v-if="canShowReturnedCard"
                         :href="buildDtsUrl({ section: 'incoming', filter: 'returned' })"
-                        class="group relative min-h-[132px] overflow-hidden rounded-[1.5rem] sm:min-h-[150px] sm:rounded-[1.8rem] bg-gradient-to-br from-rose-600 to-red-500 p-4 text-white shadow-xl sm:p-6 shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                        class="group relative min-h-[112px] overflow-hidden rounded-[1.25rem] sm:rounded-[1.5rem] xl:min-h-[132px] bg-gradient-to-br from-rose-600 to-red-500 p-3 text-white shadow-xl sm:p-4 xl:p-5 shadow-rose-100 transition hover:-translate-y-1 hover:shadow-2xl"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
-                        <div class="relative flex h-full items-start gap-5">
-                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl sm:h-14 sm:w-14 bg-white/15 text-2xl backdrop-blur">
+                        <div class="relative flex h-full items-start gap-3 xl:gap-5">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 text-xl backdrop-blur xl:h-12 xl:w-12 xl:rounded-2xl xl:text-2xl">
                                 ↩️
                             </div>
 
                             <div class="min-w-0 flex-1">
-                                <p class="text-base font-black text-white/90">Returned</p>
-                                <p class="mt-3 text-4xl font-black leading-none tracking-tight sm:text-5xl">
+                                <p class="text-xs font-black leading-tight text-white/90 sm:text-sm xl:text-base">Returned</p>
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight sm:text-4xl xl:mt-3 xl:text-5xl">
                                     {{ props.stats.returned ?? 0 }}
                                 </p>
-                                <p class="mt-3 text-sm font-semibold text-white/75">
+                                <p class="mt-2 hidden text-xs font-semibold text-white/75 xl:block">
                                     Documents returned 
                                 </p>
                             </div>
@@ -4286,108 +4703,107 @@ const submitEntryDateUpdate = () => {
                     </div>
 
                     <div class="overflow-x-auto">
-                        <table class="w-full min-w-[1000px] table-fixed text-left text-sm">
-                            <thead class="bg-slate-50 text-slate-700">
-                                <tr>
-                                    <th class="w-[10%] border-b border-slate-200 px-4 py-4 font-bold">
-                                        DOC ID
-                                    </th>
+                    <table class="w-full min-w-[1000px] table-fixed text-left text-sm">
+                        <thead class="bg-slate-50 text-slate-700">
+                            <tr>
+                                <th class="w-[10%] border-b border-slate-200 px-4 py-4 font-bold">
+                                    DOC ID
+                                </th>
 
-                                    <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold">
-                                        TO
-                                    </th>
+                                <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold">
+                                    TO
+                                </th>
 
-                                    <th class="w-[30%] border-b border-slate-200 px-4 py-4 font-bold">
-                                        SUBJECT
-                                    </th>
+                                <th class="w-[30%] border-b border-slate-200 px-4 py-4 font-bold">
+                                    SUBJECT
+                                </th>
 
-                                    <th class="w-[16%] border-b border-slate-200 px-4 py-4 font-bold">
-                                        DATE SEND
-                                    </th>
+                                <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
+                                    STATUS
+                                </th>
 
-                                    <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
-                                        STATUS
-                                    </th>
+                                <th class="w-[16%] border-b border-slate-200 px-4 py-4 font-bold">
+                                    DATE SENT
+                                </th>
 
-                                    <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
-                                        ACTION
-                                    </th>
-                                </tr>
-                            </thead>
+                                <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
+                                    ACTION
+                                </th>
+                            </tr>
+                        </thead>
 
-                            <tbody class="divide-y divide-slate-100">
-                                <tr
-                                    v-for="doc in rows"
-                                    :key="doc.IDdoc"
-                                    class="hover:bg-slate-50"
-                                >
-                                    <td class="px-4 py-5 align-top">
-                                        <span class="font-bold text-blue-700">
-                                            {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
-                                        </span>
-                                    </td>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="doc in rows"
+                                :key="doc.IDdoc"
+                                class="hover:bg-slate-50"
+                            >
+                                <td class="px-4 py-5 align-top">
+                                    <span class="font-bold text-blue-700">
+                                        {{ doc.document_no || doc.tracking_no || doc.IDdoc }}
+                                    </span>
+                                </td>
 
-                                    <td class="px-4 py-5 align-top">
-                                        <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
-                                            {{ doc.to_personnel || doc.receiver_personnel || doc.personnel_name || doc.staff_concern || doc.current_office || doc.for_office || '-' }}
-                                        </div>
-                                    </td>
+                                <td class="px-4 py-5 align-top">
+                                    <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
+                                        {{ doc.to_personnel || doc.receiver_personnel || doc.personnel_name || doc.staff_concern || doc.current_office || doc.for_office || '-' }}
+                                    </div>
+                                </td>
 
-                                    <td class="px-4 py-5 align-top">
-                                        <div class="whitespace-normal break-words text-sm font-semibold leading-6 text-slate-800">
-                                            {{ doc.subject || 'No subject' }}
-                                        </div>
-                                    </td>
+                                <td class="px-4 py-5 align-top">
+                                    <div class="whitespace-normal break-words text-sm font-semibold leading-6 text-slate-800">
+                                        {{ doc.subject || 'No subject' }}
+                                    </div>
+                                </td>
 
-                                    <td class="px-4 py-5 align-top text-slate-700">
-                                        <div class="whitespace-normal break-words text-sm font-semibold leading-6">
-                                            {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
-                                        </div>
-                                    </td>
+                                <td class="px-4 py-5 text-center align-top">
+                                    <span
+                                        class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
+                                        :class="documentStatusClass(doc)"
+                                    >
+                                        {{ documentStatusLabel(doc) }}
+                                    </span>
 
-                                    <td class="px-4 py-5 text-center align-top">
-                                        <span
-                                            class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
-                                            :class="documentStatusClass(doc)"
+                                    <p
+                                        v-if="shouldShowReturnedBy(doc)"
+                                        class="mt-2 text-[11px] font-black leading-4 text-rose-700"
+                                    >
+                                        Returned By: {{ returnedByDisplay(doc) }}
+                                    </p>
+                                </td>
+
+                                <td class="px-4 py-5 align-top text-slate-700">
+                                    <div class="whitespace-normal break-words text-sm font-semibold leading-6">
+                                        {{ formatDateTime(doc.date_sent || doc.distribution_date || doc.distdate || doc.entrydate) }}
+                                    </div>
+                                </td>
+
+                                <td class="px-4 py-5 text-center align-top">
+                                    <div class="flex flex-col items-center justify-center gap-2">
+                                        <Link
+                                            :href="`/dts/${doc.IDdoc}`"
+                                            class="inline-flex w-16 justify-center rounded-lg border border-blue-600 px-3 py-2 text-xs font-semibold text-blue-600 hover:bg-blue-50"
                                         >
-                                            {{ documentStatusLabel(doc) }}
-                                        </span>
+                                            View
+                                        </Link>
+                                    </div>
+                                </td>
+                            </tr>
 
-                                        <p
-                                            v-if="shouldShowReturnedBy(doc)"
-                                            class="mt-2 text-[11px] font-black leading-4 text-rose-700"
-                                        >
-                                            Returned By: {{ returnedByDisplay(doc) }}
-                                        </p>
+                            <tr v-if="rows.length === 0">
+                                <td colspan="6" class="px-7 py-14 text-center">
+                                    <div class="text-lg font-semibold text-slate-700">
+                                        No documents found
+                                    </div>
 
-                                    </td>
-
-                                    <td class="px-4 py-5 text-center align-top">
-                                        <div class="flex flex-col items-center justify-center gap-2">
-                                            <Link
-                                                :href="`/dts/${doc.IDdoc}`"
-                                                class="inline-flex w-16 justify-center rounded-lg border border-blue-600 px-3 py-2 text-xs font-semibold text-blue-600 hover:bg-blue-50"
-                                            >
-                                                View
-                                            </Link>
-                                        </div>
-                                    </td>
-                                </tr>
-
-                                <tr v-if="rows.length === 0">
-                                    <td colspan="6" class="px-7 py-14 text-center">
-                                        <div class="text-lg font-semibold text-slate-700">
-                                            No documents found
-                                        </div>
-
-                                        <p class="mt-2 text-sm text-slate-500">
-                                            Try another keyword or click Reset.
-                                        </p>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                                    <p class="mt-2 text-sm text-slate-500">
+                                        Try another keyword or click Reset.
+                                    </p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
 
                     <div
                         v-if="links.length > 3"
