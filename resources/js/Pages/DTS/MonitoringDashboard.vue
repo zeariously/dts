@@ -37,6 +37,7 @@ const showUserMenu = ref(false)
 const showNotificationModal = ref(false)
 const showPendingModal = ref(false)
 const showActionTakenModal = ref(false)
+const showForReceivingPersonnelSummary = ref(false)
 
 const authUser = computed(() => {
     return page.props.auth?.user || {}
@@ -93,6 +94,10 @@ const closeActionTakenModal = () => {
     showActionTakenModal.value = false
 }
 
+const toggleForReceivingPersonnelSummary = () => {
+    showForReceivingPersonnelSummary.value = !showForReceivingPersonnelSummary.value
+}
+
 const search = ref(props.filters.search || '')
 const status = ref(props.filters.status ?? '')
 const perPage = ref(props.filters.per_page || 15)
@@ -135,6 +140,51 @@ const documentRows = computed(() => {
 
     return Array.from(uniqueDocuments.values())
 })
+
+const forReceivingPersonnelSummary = computed(() => {
+    if (status.value !== 'for-receiving') {
+        return []
+    }
+
+    const groupedPersonnel = new Map()
+
+    documentRows.value.forEach((document) => {
+        const personnelName = String(
+            document?.assigned_personnel
+            || document?.to_personnel
+            || document?.receiver_personnel
+            || document?.personnel_name
+            || document?.staff_concern
+            || 'Unassigned'
+        ).trim() || 'Unassigned'
+
+        const key = personnelName.toLowerCase()
+        const currentGroup = groupedPersonnel.get(key) || {
+            personnel_name: personnelName,
+            count: 0,
+            max_days_pending: 0,
+            documents: [],
+        }
+
+        const daysPending = Number(document?.days_pending || 0)
+
+        currentGroup.count += 1
+        currentGroup.max_days_pending = Math.max(currentGroup.max_days_pending, daysPending)
+        currentGroup.documents.push(document)
+
+        groupedPersonnel.set(key, currentGroup)
+    })
+
+    return Array.from(groupedPersonnel.values())
+        .sort((first, second) => {
+            if (second.count !== first.count) {
+                return second.count - first.count
+            }
+
+            return second.max_days_pending - first.max_days_pending
+        })
+})
+
 
 const normalizeActionType = (value) => {
     return String(value || '').trim().toLowerCase()
@@ -236,6 +286,16 @@ const actionTakenCount = computed(() => {
     )
 })
 
+const monitoringCardCounts = computed(() => {
+    return {
+        totalDocuments: Number(props.stats?.total_documents ?? props.stats?.total ?? 0),
+        forReceiving: Number(props.stats?.for_receiving ?? props.stats?.for_receiving_documents ?? 0),
+        received: Number(props.stats?.received ?? 0),
+        addressed: actionTakenCount.value,
+        returned: Number(props.stats?.returned ?? 0),
+    }
+})
+
 const totalPendingDocuments = computed(() => {
     return props.peopleNoAction.reduce((total, person) => {
         return total + Number((person.documents || []).length)
@@ -273,7 +333,7 @@ const statusOptions = [
     {
         label: 'Total Documents',
         value: '',
-        shortLabel: 'All',
+        shortLabel: 'Total',
     },
     {
         label: 'For Receiving',
@@ -291,9 +351,9 @@ const statusOptions = [
         shortLabel: 'Addressed',
     },
     {
-        label: 'Return',
+        label: 'Returned',
         value: 'returned',
-        shortLabel: 'Return',
+        shortLabel: 'Returned',
     },
 ]
 
@@ -333,6 +393,13 @@ const togglePerson = (person) => {
 const isPersonExpanded = (person) => {
     return !!expandedPeople.value[personKey(person)]
 }
+
+
+
+
+
+
+
 
 const submitFilters = () => {
     router.get(
@@ -393,6 +460,11 @@ onBeforeUnmount(() => {
 
 const setStatus = (value) => {
     status.value = value
+
+    if (value !== 'for-receiving') {
+        showForReceivingPersonnelSummary.value = false
+    }
+
     submitFilters()
 }
 
@@ -607,7 +679,7 @@ const daysPendingClass = (days) => {
             <!-- Main Workspace -->
             <section class="space-y-5">
                 <!-- Monitoring Status Cards -->
-                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
                     <button
                         type="button"
                         class="rounded-[2rem] bg-white p-5 text-left shadow-sm ring-1 ring-blue-100 transition hover:-translate-y-1 hover:shadow-xl hover:shadow-blue-100"
@@ -625,7 +697,7 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.total_documents ?? 0 }}
+                            {{ monitoringCardCounts.totalDocuments }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
@@ -650,7 +722,7 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.for_receiving ?? 0 }}
+                            {{ monitoringCardCounts.forReceiving }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
@@ -675,7 +747,7 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.received ?? 0 }}
+                            {{ monitoringCardCounts.received }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
@@ -700,7 +772,7 @@ const daysPendingClass = (days) => {
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ actionTakenCount }}
+                            {{ monitoringCardCounts.addressed }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
@@ -720,16 +792,16 @@ const daysPendingClass = (days) => {
                             </div>
 
                             <span class="rounded-full bg-rose-50 px-3 py-1 text-xs font-black text-rose-700">
-                                Return
+                                Returned
                             </span>
                         </div>
 
                         <p class="mt-5 text-3xl font-black text-slate-900">
-                            {{ stats.returned ?? 0 }}
+                            {{ monitoringCardCounts.returned }}
                         </p>
 
                         <p class="mt-1 text-sm font-bold text-slate-500">
-                            Return
+                            Returned
                         </p>
                     </button>
                 </section>
@@ -852,9 +924,9 @@ const daysPendingClass = (days) => {
                                 v-if="status === 'for-receiving'"
                                 type="button"
                                 class="rounded-full bg-blue-600 px-4 py-2 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
-                                @click="openPendingModal"
+                                @click="toggleForReceivingPersonnelSummary"
                             >
-                                View by Personnel
+                                {{ showForReceivingPersonnelSummary ? 'Hide Personnel Count' : 'Show Personnel Count' }}
                             </button>
 
                             <button
@@ -873,6 +945,80 @@ const daysPendingClass = (days) => {
                             <span class="rounded-full bg-slate-50 px-4 py-2 text-sm font-black text-slate-600 ring-1 ring-slate-200">
                                 {{ activeStatusLabel }}
                             </span>
+                        </div>
+                    </div>
+
+                    <div
+                        v-if="status === 'for-receiving' && showForReceivingPersonnelSummary"
+                        class="border-b border-blue-50 bg-blue-50/50 px-5 py-5"
+                    >
+                        <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-600">
+                                    Personnel Count
+                                </p>
+
+                                <h3 class="mt-1 text-lg font-black text-slate-900">
+                                    For Receiving Documents by Personnel
+                                </h3>
+                            </div>
+
+                            <span class="w-fit rounded-full bg-white px-4 py-2 text-xs font-black text-slate-600 ring-1 ring-blue-100">
+                                Based on the currently displayed list
+                            </span>
+                        </div>
+
+                        <div
+                            v-if="forReceivingPersonnelSummary.length"
+                            class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                        >
+                            <article
+                                v-for="person in forReceivingPersonnelSummary"
+                                :key="`for-receiving-person-count-${person.personnel_name}`"
+                                class="rounded-2xl border border-blue-100 bg-white p-4 shadow-sm"
+                            >
+                                <div class="flex items-start justify-between gap-3">
+                                    <div class="min-w-0">
+                                        <p class="break-words text-sm font-black text-slate-900">
+                                            {{ person.personnel_name }}
+                                        </p>
+
+                                        <p class="mt-1 text-xs font-semibold text-slate-500">
+                                            Personnel with for receiving document(s)
+                                        </p>
+                                    </div>
+
+                                    <span class="shrink-0 rounded-full bg-blue-600 px-3 py-1 text-xs font-black text-white">
+                                        {{ person.count }}
+                                    </span>
+                                </div>
+
+                                <div class="mt-3 flex flex-wrap items-center gap-2">
+                                    <span
+                                        class="rounded-full border px-3 py-1 text-[11px] font-black"
+                                        :class="daysPendingClass(person.max_days_pending)"
+                                    >
+                                        Max {{ person.max_days_pending }} day(s)
+                                    </span>
+
+                                    <span class="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-600">
+                                        For Receiving
+                                    </span>
+                                </div>
+                            </article>
+                        </div>
+
+                        <div
+                            v-else
+                            class="rounded-2xl border border-dashed border-blue-200 bg-white px-6 py-10 text-center"
+                        >
+                            <p class="text-3xl">
+                                ✅
+                            </p>
+
+                            <p class="mt-3 text-sm font-black text-slate-800">
+                                No personnel with for receiving documents in the current list.
+                            </p>
                         </div>
                     </div>
 
@@ -1253,7 +1399,7 @@ const daysPendingClass = (days) => {
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-sky-800">
-                                {{ totalPendingDocuments }}
+                                {{ monitoringCardCounts.forReceiving }}
                             </p>
                         </div>
                     </div>

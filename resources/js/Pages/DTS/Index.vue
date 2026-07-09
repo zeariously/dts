@@ -1625,21 +1625,7 @@ const submitEntryDateUpdate = () => {
 
                     <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
                         <div class="grid grid-cols-1 gap-3 min-[430px]:grid-cols-3">
-                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
-                                <p class="text-xs font-black uppercase tracking-wide text-red-700">Total</p>
-                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderCount }}</p>
-                            </div>
-
-                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
-                                <p class="text-xs font-black uppercase tracking-wide text-red-700">For Receiving</p>
-                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('For Receiving') }}</p>
-                            </div>
-
-                            <div class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
-                                <p class="text-xs font-black uppercase tracking-wide text-red-700">Received</p>
-                                <p class="mt-1 text-2xl font-black text-red-900">{{ automaticReminderStatusCount('Received') }}</p>
-                            </div>
-
+                       
                         </div>
 
                         <div class="mt-5 space-y-3 sm:max-h-[55vh] sm:overflow-y-auto sm:pr-1">
