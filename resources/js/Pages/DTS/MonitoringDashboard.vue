@@ -277,10 +277,28 @@ const actionTakenRows = computed(() => {
         })
 })
 
+const displayedDocumentRows = computed(() => {
+    /*
+     * The main table follows the selected card.
+     * Addressed must show only documents with action_taken / final action.
+     */
+    if (status.value === 'addressed') {
+        return actionTakenRows.value
+    }
+
+    return documentRows.value
+})
+
 const actionTakenCount = computed(() => {
+    /*
+     * Addressed in Monitoring Dashboard must be based on Final Action / Action Taken only.
+     * Do not use props.stats.addressed here because that may include documents
+     * that are already marked addressed/completed in the document table but have no action_taken record.
+     */
     return Number(
-        props.stats?.addressed
-        ?? props.stats?.action_taken_documents
+        props.stats?.action_taken_documents
+        ?? props.stats?.final_action_documents
+        ?? props.stats?.action_taken
         ?? actionTakenRows.value.length
         ?? 0
     )
@@ -822,10 +840,6 @@ const daysPendingClass = (days) => {
                                 Search runs automatically while typing.
                             </p>
                         </div>
-
-                        <div class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700">
-                            Current View: {{ activeStatusLabel }}
-                        </div>
                     </div>
 
                     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -897,8 +911,6 @@ const daysPendingClass = (days) => {
                                 <option :value="100">100</option>
                             </select>
                         </div>
-
-
                     </div>
                 </section>
 
@@ -939,7 +951,7 @@ const daysPendingClass = (days) => {
                             </button>
 
                             <span class="rounded-full bg-blue-50 px-4 py-2 text-sm font-black text-blue-700 ring-1 ring-blue-100">
-                                {{ documentRows.length }} shown
+                                {{ displayedDocumentRows.length }} shown
                             </span>
 
                             <span class="rounded-full bg-slate-50 px-4 py-2 text-sm font-black text-slate-600 ring-1 ring-slate-200">
@@ -1050,7 +1062,7 @@ const daysPendingClass = (days) => {
 
                             <tbody>
                                 <tr
-                                    v-for="document in documentRows"
+                                    v-for="document in displayedDocumentRows"
                                     :key="`document-${document.IDdoc || document.document_no || document.id}`"
                                     class="border-b border-slate-100 transition hover:bg-blue-50/60"
                                 >
@@ -1112,7 +1124,7 @@ const daysPendingClass = (days) => {
                                     </td>
                                 </tr>
 
-                                <tr v-if="documentRows.length === 0">
+                                <tr v-if="displayedDocumentRows.length === 0">
                                     <td
                                         colspan="5"
                                         class="px-6 py-16 text-center"

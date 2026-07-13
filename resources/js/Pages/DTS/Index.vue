@@ -1223,11 +1223,46 @@ const documentHasSelectedAction = (doc) => {
         || actionType === 'action_taken'
 }
 
+const isDatabaseAddressedDocument = (doc) => {
+    const statusId = Number(
+        doc?.IDdocstatus
+        ?? doc?.document_status_id
+        ?? doc?.status_id
+        ?? 0
+    )
+
+    const statusText = String(
+        doc?.workflow_status
+        || doc?.status_label
+        || doc?.status
+        || ''
+    ).trim().toLowerCase()
+
+    return statusId === 6
+        || doc?.is_completed === true
+        || doc?.is_completed === 1
+        || doc?.is_completed === '1'
+        || Boolean(doc?.completed_at)
+        || Boolean(doc?.datecleared)
+        || statusText.includes('completed')
+        || statusText.includes('complete')
+        || statusText.includes('cleared')
+}
+
 const documentStatusLabel = (doc) => {
     if (
         ['in-progress', 'addressed', 'completed'].includes(activeFilter.value)
         || ['addressed-docs', 'completed-docs'].includes(activeSection.value)
     ) {
+        return 'Addressed'
+    }
+
+    /*
+     * Database is the source of truth:
+     * If the document table says completed/addressed, display Addressed
+     * even when workflow_status/status_label is still Pending or For Receiving.
+     */
+    if (isDatabaseAddressedDocument(doc) || documentHasSelectedAction(doc)) {
         return 'Addressed'
     }
 
@@ -1237,17 +1272,6 @@ const documentStatusLabel = (doc) => {
         || '-'
 
     const statusText = String(status || '').trim().toLowerCase()
-
-    const isLegacyCompleted = doc?.is_completed === true
-        || doc?.is_completed === 1
-        || doc?.is_completed === '1'
-        || Boolean(doc?.completed_at)
-        || statusText.includes('completed')
-        || statusText.includes('complete')
-
-    if (isLegacyCompleted || documentHasSelectedAction(doc)) {
-        return 'Addressed'
-    }
 
     /* No real Address action yet: do not display Addressed accidentally. */
     if (!documentHasSelectedAction(doc)) {

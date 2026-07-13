@@ -2192,6 +2192,15 @@ public function index(Request $request)
             return;
         }
 
+        /*
+         * Receive has no remarks textbox.
+         * Even if a caller accidentally passes distribution.remarks,
+         * the Received Document row must not display any remarks.
+         */
+        if (strtolower(trim($type)) === 'received') {
+            $remarks = null;
+        }
+
         $actionHistory->push([
             'id' => $type . '-' . $document->IDdoc . '-' . md5($title . '|' . $date . '|' . ($actor ?? '') . '|' . ($office ?? '')),
             'IDdoc' => (int) $document->IDdoc,
@@ -2262,7 +2271,7 @@ public function index(Request $request)
                 $distRow->confirmdate,
                 $receivedBy,
                 $distRow->office_name,
-                $distRow->remarks
+                null
             );
 
             $isReturned = in_array((string) ($distRow->YNreturn ?? ''), array_map('strval', $trueValues), true)
@@ -2371,6 +2380,17 @@ public function index(Request $request)
     $actionHistory = $actionHistory
         ->filter(function ($item) use ($document) {
             return (int) ($item['IDdoc'] ?? 0) === (int) $document->IDdoc;
+        })
+        ->map(function ($item) {
+            /*
+             * Final safety check:
+             * Received Document rows must never carry remarks.
+             */
+            if (strtolower(trim((string) ($item['type'] ?? ''))) === 'received') {
+                $item['remarks'] = null;
+            }
+
+            return $item;
         })
         ->sortByDesc(function ($item) {
             return strtotime((string) ($item['date'] ?? '')) ?: 0;
@@ -3740,11 +3760,11 @@ public function storeAttachment(Request $request, $id)
                 'updated_at' => $createdAt,
             ]);
 
-            DB::table('document')
-                ->where('IDdoc', $document->IDdoc)
-                ->update([
-                    'remarks' => $remarks,
-                ]);
+            /*
+             * Do not update document.remarks here.
+             * document.remarks is a shared legacy/current field.
+             * Keep this as a separate Action History row only.
+             */
         }
     });
 
@@ -3807,9 +3827,11 @@ public function storeRemark(Request $request, $id)
 
         DB::table('dts_document_remarks')->insert($insertData);
 
-        $document->update([
-            'remarks' => $validated['remarks'],
-        ]);
+        /*
+         * Do not update document.remarks here.
+         * The remark is already saved in dts_document_remarks above.
+         * This prevents Role 2 remarks from overwriting Role 3 remarks.
+         */
     });
 
     $this->recordDtsActivity(
@@ -4007,9 +4029,10 @@ public function actionTakenDocument(Request $request, $id)
             DB::table('dts_document_remarks')->insert($insertData);
         }
 
-        $document->update([
-            'remarks' => $remarks,
-        ]);
+        /*
+         * Do not update document.remarks here.
+         * Select Action remarks must stay as their own dts_document_remarks row.
+         */
     });
 
     if ($actionStage === 'final') {

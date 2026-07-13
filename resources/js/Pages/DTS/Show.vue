@@ -1106,6 +1106,15 @@ const isReceiveReturnPulledHistoryItem = (item) => {
         || text.includes('pulled')
 }
 
+const isReceivedHistoryItem = (item) => {
+    const type = normalizeText(item?.type)
+    const title = normalizeText(item?.title)
+
+    return type === 'received'
+        || title === 'received document'
+        || title.includes('received document')
+}
+
 const isInitialTransferHistory = (item, historyList) => {
     if (!isTransferHistoryItem(item)) {
         return false
@@ -1330,7 +1339,13 @@ const actionHistory = computed(() => {
                     || (distribution.confirmuser ? `Account #${distribution.confirmuser}` : 'System'),
                 office: distribution.office || '-',
                 date: distribution.confirmdate,
-                remarks: distribution.remarks || null,
+
+                /*
+                 * Receive Document has no remarks text field.
+                 * Do not copy distribution.remarks here because that value
+                 * usually belongs to Transfer/Return, not Receive.
+                 */
+                remarks: null,
                 files: [],
             })
         }
@@ -1378,16 +1393,31 @@ const actionHistory = computed(() => {
         })),
     ]
 
-    return mergedHistory.sort((a, b) => {
-        const firstDate = toTime(getHistoryDate(a))
-        const secondDate = toTime(getHistoryDate(b))
+    return mergedHistory
+        .map((item) => {
+            /*
+             * Final safety check:
+             * Received Document rows must never show remarks.
+             */
+            if (isReceivedHistoryItem(item)) {
+                return {
+                    ...item,
+                    remarks: null,
+                }
+            }
 
-        if (firstDate === null || secondDate === null) {
-            return 0
-        }
+            return item
+        })
+        .sort((a, b) => {
+            const firstDate = toTime(getHistoryDate(a))
+            const secondDate = toTime(getHistoryDate(b))
 
-        return secondDate - firstDate
-    })
+            if (firstDate === null || secondDate === null) {
+                return 0
+            }
+
+            return secondDate - firstDate
+        })
 })
 
 const getHistoryColorText = (itemOrType) => {
@@ -2521,7 +2551,7 @@ const formatFileSize = (bytes) => {
                                 </div>
 
                                 <p
-                                    v-if="item.remarks"
+                                    v-if="item.remarks && !isReceivedHistoryItem(item)"
                                     class="mt-3 whitespace-pre-line rounded-xl bg-white/80 px-4 py-3 text-sm font-semibold leading-6 text-slate-800"
                                 >
                                     {{ item.remarks }}
