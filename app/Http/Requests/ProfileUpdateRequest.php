@@ -2,30 +2,39 @@
 
 namespace App\Http\Requests;
 
-use App\Models\User;
-use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class ProfileUpdateRequest extends FormRequest
 {
-    /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array<string, ValidationRule|array<mixed>|string>
-     */
     public function rules(): array
     {
+        $user = $this->user();
+
         return [
-            'name' => ['required', 'string', 'max:255'],
-            'email' => [
+            'name' => [
                 'required',
                 'string',
-                'lowercase',
-                'email',
                 'max:255',
-                Rule::unique(User::class)->ignore($this->user()->id),
             ],
+
+            'loginname' => [
+                'required',
+                'string',
+                'max:255',
+                'alpha_dash',
+                Rule::unique('username', 'loginname')->ignore($user->getKey(), $user->getKeyName()),
+            ],
+        ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'name.required' => 'Name is required.',
+            'loginname.required' => 'Username is required.',
+            'loginname.alpha_dash' => 'Username may only contain letters, numbers, dashes, and underscores.',
+            'loginname.unique' => 'This username is already taken.',
         ];
     }
 }

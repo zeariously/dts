@@ -1,73 +1,89 @@
 <script setup>
-import InputError from '@/Components/InputError.vue';
-import InputLabel from '@/Components/InputLabel.vue';
-import PrimaryButton from '@/Components/PrimaryButton.vue';
-import TextInput from '@/Components/TextInput.vue';
-import { useForm } from '@inertiajs/vue3';
-import { ref } from 'vue';
+import InputError from '@/Components/InputError.vue'
+import InputLabel from '@/Components/InputLabel.vue'
+import PrimaryButton from '@/Components/PrimaryButton.vue'
+import TextInput from '@/Components/TextInput.vue'
+import { useForm } from '@inertiajs/vue3'
+import { ref } from 'vue'
 
-const passwordInput = ref(null);
-const currentPasswordInput = ref(null);
+const passwordInput = ref(null)
+const currentPasswordInput = ref(null)
 
 const form = useForm({
     current_password: '',
     password: '',
     password_confirmation: '',
-});
+})
 
 const updatePassword = () => {
     form.put(route('password.update'), {
         preserveScroll: true,
-        onSuccess: () => form.reset(),
+        onSuccess: () => {
+            form.reset()
+        },
         onError: () => {
             if (form.errors.password) {
-                form.reset('password', 'password_confirmation');
-                passwordInput.value.focus();
+                form.reset('password', 'password_confirmation')
+                passwordInput.value?.focus()
             }
 
             if (form.errors.current_password) {
-                form.reset('current_password');
-                currentPasswordInput.value.focus();
+                form.reset('current_password')
+                currentPasswordInput.value?.focus()
             }
         },
-    });
-};
+    })
+}
 </script>
 
 <template>
     <section class="overflow-hidden rounded-3xl border border-blue-100 bg-white shadow-sm">
-        <div class="border-b border-blue-100 bg-gradient-to-r from-blue-600 to-blue-500 px-6 py-6 text-white">
-            <div class="flex items-center gap-4">
-                <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-white text-3xl shadow-sm">
-                    🔐
-                </div>
+        <div class="border-b border-blue-100 bg-gradient-to-r from-slate-900 to-blue-700 px-6 py-6 text-white">
+            <div>
+                <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                    Security Settings
+                </p>
 
-                <div>
-                    <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
-                        Security Settings
-                    </p>
+                <h2 class="mt-1 text-2xl font-black text-white">
+                    Update Password
+                </h2>
 
-                    <h2 class="mt-1 text-2xl font-black text-white">
-                        Update Password
-                    </h2>
-
-                    <p class="mt-1 text-sm font-semibold text-blue-100">
-                        Keep your account secure by using a strong password.
-                    </p>
-                </div>
+                <p class="mt-1 text-sm font-semibold text-blue-100">
+                    Use a secure password to keep your account protected.
+                </p>
             </div>
         </div>
 
         <div class="p-6">
-            <div class="mb-6 rounded-2xl border border-blue-100 bg-blue-50 px-5 py-4">
-                <p class="text-sm font-black text-blue-800">
-                    Password Security Reminder
-                </p>
+            <Transition
+                enter-active-class="transition ease-out duration-300"
+                enter-from-class="opacity-0 -translate-y-2"
+                enter-to-class="opacity-100 translate-y-0"
+                leave-active-class="transition ease-in duration-200"
+                leave-from-class="opacity-100 translate-y-0"
+                leave-to-class="opacity-0 -translate-y-2"
+            >
+                <div
+                    v-if="form.recentlySuccessful"
+                    class="mb-6 rounded-2xl border border-green-200 bg-green-50 px-5 py-4 text-green-800 shadow-sm"
+                >
+                    <div class="flex items-start gap-3">
+                        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-green-600 text-white">
+                            ✓
+                        </div>
 
-                <p class="mt-1 text-sm font-semibold leading-6 text-slate-600">
-                    Use a password that is hard to guess. A strong password usually includes uppercase letters, lowercase letters, numbers, and symbols.
-                </p>
-            </div>
+                        <div>
+                            <p class="text-sm font-black">
+                                Password changed successfully!
+                            </p>
+
+                            <p class="mt-1 text-sm font-semibold text-green-700">
+                                Your new password has been saved.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </Transition>
 
             <form
                 class="space-y-6"
@@ -87,7 +103,7 @@ const updatePassword = () => {
                         type="password"
                         class="mt-2 block w-full rounded-2xl border-blue-200 bg-blue-50/60 px-4 py-3 text-sm font-bold text-slate-900 shadow-sm transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
                         autocomplete="current-password"
-                        placeholder="Enter your current password"
+                        placeholder="Enter current password"
                     />
 
                     <InputError
@@ -110,7 +126,7 @@ const updatePassword = () => {
                         type="password"
                         class="mt-2 block w-full rounded-2xl border-blue-200 bg-blue-50/60 px-4 py-3 text-sm font-bold text-slate-900 shadow-sm transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
                         autocomplete="new-password"
-                        placeholder="Enter your new password"
+                        placeholder="Enter new password"
                     />
 
                     <InputError
@@ -132,7 +148,7 @@ const updatePassword = () => {
                         type="password"
                         class="mt-2 block w-full rounded-2xl border-blue-200 bg-blue-50/60 px-4 py-3 text-sm font-bold text-slate-900 shadow-sm transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
                         autocomplete="new-password"
-                        placeholder="Confirm your new password"
+                        placeholder="Confirm new password"
                     />
 
                     <InputError
@@ -148,22 +164,6 @@ const updatePassword = () => {
                     >
                         {{ form.processing ? 'Saving...' : 'Save Password' }}
                     </PrimaryButton>
-
-                    <Transition
-                        enter-active-class="transition ease-in-out"
-                        enter-from-class="opacity-0 translate-y-1"
-                        enter-to-class="opacity-100 translate-y-0"
-                        leave-active-class="transition ease-in-out"
-                        leave-from-class="opacity-100 translate-y-0"
-                        leave-to-class="opacity-0 translate-y-1"
-                    >
-                        <p
-                            v-if="form.recentlySuccessful"
-                            class="rounded-full bg-green-50 px-4 py-2 text-sm font-black text-green-700 ring-1 ring-green-200"
-                        >
-                            Password updated successfully.
-                        </p>
-                    </Transition>
                 </div>
             </form>
         </div>
