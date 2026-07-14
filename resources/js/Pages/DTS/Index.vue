@@ -4476,9 +4476,8 @@ const submitEntryDateUpdate = () => {
                     v-if="activeSection === 'documents'"
                     class="mb-6 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-3 lg:mb-8 xl:gap-4"
                 >
-                    <Link
-                        :href="buildDtsUrl({ section: userRights === '2' ? 'all-documents' : 'documents' })"
-                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] xl:min-h-[132px] xl:rounded-[1.6rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl xl:p-4 2xl:p-5 shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl"
+                    <div
+                        class="relative min-h-[118px] overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl shadow-blue-100 xl:min-h-[132px] xl:rounded-[1.6rem] xl:p-4 2xl:p-5"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
@@ -4501,7 +4500,7 @@ const submitEntryDateUpdate = () => {
                                 </p>
                             </div>
                         </div>
-                    </Link>
+                    </div>
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'for-receiving' })"

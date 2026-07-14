@@ -295,21 +295,23 @@ public function index(Request $request)
         ->groupBy('rx.IDdoc');
 
     $latestSelectedAction = DB::table('dts_document_remarks as selectedActionLatest')
+        ->joinSub($makeLatestDistribution(), 'selectedActionLatestDist', function ($join) {
+            $join->on('selectedActionLatestDist.IDdoc', '=', 'selectedActionLatest.IDdoc');
+        })
+        ->join('distribution as selectedActionCurrentDist', 'selectedActionCurrentDist.IDdist', '=', 'selectedActionLatestDist.latest_IDdist')
         ->select([
             'selectedActionLatest.IDdoc',
             DB::raw('MAX(selectedActionLatest.id) as latest_selected_action_id'),
         ])
         /*
-         * STRICT RULE:
-         * Received alone must stay Received.
-         * A document becomes Addressed/Done only when there is a real
-         * Select Action record saved by actionTakenDocument().
-         *
-         * Do NOT use action_type_id alone here because other rows/imported
-         * records may also have action_type_id and that makes documents Done
-         * immediately after Receive.
+         * A transfer or Return to Admin starts a NEW workflow cycle.
+         * Only a Final Address action saved on or after the current/latest
+         * distribution date may make the current cycle Addressed.
+         * Historical action_taken records remain in Action History but must not
+         * disable Receive or Select Action for the newly tagged recipient.
          */
         ->where('selectedActionLatest.action_type', 'action_taken')
+        ->whereColumn('selectedActionLatest.created_at', '>=', 'selectedActionCurrentDist.distdate')
         ->groupBy('selectedActionLatest.IDdoc');
 
     $selectedActionLabelExpression = Schema::hasColumn('dts_document_remarks', 'action_label')
@@ -496,6 +498,7 @@ public function index(Request $request)
             'receiverPersonnel.name as to_personnel',
 
             'dist.IDdist',
+            'dist.IDparentdist as distribution_parent_id',
             'dist.IDoffice as distribution_office_id',
             'dist.distdate',
             'dist.distdate as date_sent',
@@ -771,6 +774,16 @@ public function index(Request $request)
         $documentsQuery
             ->whereNotNull('dist.IDdist')
             ->whereNull('dist.confirmdate')
+            ->whereNotExists(function ($query) use ($trueValues) {
+                $query->select(DB::raw(1))
+                    ->from('distribution as forReceivingReturnParent')
+                    ->whereColumn('forReceivingReturnParent.IDdist', 'dist.IDparentdist')
+                    ->whereColumn('forReceivingReturnParent.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('forReceivingReturnParent.YNreturn', $trueValues)
+                            ->orWhereNotNull('forReceivingReturnParent.returndate');
+                    });
+            })
             ->where(function ($query) use ($trueValues) {
                 $query->whereNull('dist.YNreturn')
                     ->orWhereNotIn('dist.YNreturn', $trueValues);
@@ -807,7 +820,8 @@ public function index(Request $request)
                 $query->select(DB::raw(1))
                     ->from('dts_document_remarks as receivedNoActionRemarks')
                     ->whereColumn('receivedNoActionRemarks.IDdoc', 'd.IDdoc')
-                    ->where('receivedNoActionRemarks.action_type', 'action_taken');
+                    ->where('receivedNoActionRemarks.action_type', 'action_taken')
+                    ->whereColumn('receivedNoActionRemarks.created_at', '>=', 'dist.distdate');
             });
         }
     }
@@ -840,7 +854,8 @@ public function index(Request $request)
                         $actionQuery->select(DB::raw(1))
                             ->from('dts_document_remarks as addressedRemarks')
                             ->whereColumn('addressedRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedRemarks.action_type', 'action_taken');
+                            ->where('addressedRemarks.action_type', 'action_taken')
+                            ->whereColumn('addressedRemarks.created_at', '>=', 'dist.distdate');
                     });
                 } else {
                     $query->whereRaw('1 = 0');
@@ -852,36 +867,47 @@ public function index(Request $request)
 
     if ($filter === 'returned') {
         /*
-         * Returned is visible only to Role 3.
-         * The list contains documents whose actual Return action was performed
-         * by a Role 2 account. The returned parent distribution normally stores
-         * the actor in confirmuser; the child return distribution IDuser is used
-         * as a safe fallback.
+         * Returned is a CURRENT pending state, visible only to Role 3.
+         *
+         * returnDocument() marks the old/parent distribution as returned and
+         * creates a new child distribution for the admin/encoder. The document
+         * stays in Returned only while that latest child distribution has not
+         * yet been received. After Receive it moves to Received; after a new
+         * Final Address action it moves to Addressed.
          */
         if ($currentRights !== '3') {
             $documentsQuery->whereRaw('1 = 0');
         } else {
-            $documentsQuery->whereExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as returnedFilterDist')
-                    ->leftJoin('distribution as returnedFilterChild', function ($join) {
-                        $join->on('returnedFilterChild.IDparentdist', '=', 'returnedFilterDist.IDdist')
-                            ->on('returnedFilterChild.IDdoc', '=', 'returnedFilterDist.IDdoc');
-                    })
-                    ->leftJoin('username as returnedFilterUser', function ($join) {
-                        $join->on(
-                            'returnedFilterUser.ID',
-                            '=',
-                            DB::raw('COALESCE(returnedFilterDist.confirmuser, returnedFilterChild.IDuser)')
-                        );
-                    })
-                    ->whereColumn('returnedFilterDist.IDdoc', 'd.IDdoc')
-                    ->where('returnedFilterUser.rights', '2')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('returnedFilterDist.YNreturn', $trueValues)
-                            ->orWhereNotNull('returnedFilterDist.returndate');
-                    });
-            });
+            $documentsQuery
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.IDparentdist')
+                ->whereNull('dist.confirmdate')
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNreturn')
+                        ->orWhereNotIn('dist.YNreturn', $trueValues);
+                })
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNpulled')
+                        ->orWhereNotIn('dist.YNpulled', $trueValues);
+                })
+                ->whereExists(function ($query) use ($trueValues) {
+                    $query->select(DB::raw(1))
+                        ->from('distribution as returnedFilterParent')
+                        ->leftJoin('username as returnedFilterUser', function ($join) {
+                            $join->on(
+                                'returnedFilterUser.ID',
+                                '=',
+                                DB::raw('COALESCE(returnedFilterParent.confirmuser, dist.IDuser)')
+                            );
+                        })
+                        ->whereColumn('returnedFilterParent.IDdist', 'dist.IDparentdist')
+                        ->whereColumn('returnedFilterParent.IDdoc', 'd.IDdoc')
+                        ->where('returnedFilterUser.rights', '2')
+                        ->where(function ($returnedQuery) use ($trueValues) {
+                            $returnedQuery->whereIn('returnedFilterParent.YNreturn', $trueValues)
+                                ->orWhereNotNull('returnedFilterParent.returndate');
+                        });
+                });
         }
     }
 
@@ -898,52 +924,70 @@ public function index(Request $request)
         ->appends($request->query());
 
     if (isset($documents) && method_exists($documents, 'getCollection')) {
-        $documents->getCollection()->transform(function ($doc) use ($trueValues) {
+        $documents->getCollection()->transform(function ($doc) use (
+            $trueValues,
+            $currentRights,
+            $currentUserIdForScope
+        ) {
             /*
-             * Current visible workflow status must be based on the latest/current
-             * distribution row only.
+             * Return to Admin creates a fresh child distribution.
              *
-             * After Return, returnDocument() creates a NEW child distribution
-             * tagged to the encoder. That current child row should display as
-             * For Receiving, not Returned, so the encoder can receive and act.
-             *
-             * The Returned tab/count can still use return_distribution_id/return_date
-             * to know that the document has a return history.
+             * Role 2 (the returner) sees the pending item as Returned.
+             * Role 3/Admin (the new current recipient) sees the same pending
+             * item as For Receiving, so the Receive action remains available.
              */
-            $isReturned = in_array((string) ($doc->YNreturn ?? ''), array_map('strval', $trueValues), true)
-                || ! empty($doc->returndate);
+            $isCurrentReturnChild = ! empty($doc->distribution_parent_id)
+                && ! empty($doc->return_distribution_id)
+                && (string) $doc->distribution_parent_id === (string) $doc->return_distribution_id;
 
-            $isPulled = in_array((string) ($doc->YNpulled ?? ''), array_map('strval', $trueValues), true);
+            $isPendingReturnToAdmin = $isCurrentReturnChild
+                && empty($doc->confirmdate);
 
+            $wasReturnedByCurrentRoleTwo = $currentRights === '2'
+                && ! empty($currentUserIdForScope)
+                && (string) ($doc->returned_by ?? '') === (string) $currentUserIdForScope;
+
+            $isLatestRowReturned = in_array(
+                (string) ($doc->YNreturn ?? ''),
+                array_map('strval', $trueValues),
+                true
+            ) || ! empty($doc->returndate);
+
+            $isPulled = in_array(
+                (string) ($doc->YNpulled ?? ''),
+                array_map('strval', $trueValues),
+                true
+            );
+
+            /*
+             * selectedActionRemark is already limited to the current/latest
+             * distribution cycle by $latestSelectedAction above.
+             */
             $hasSelectedAction = ! empty($doc->has_selected_action)
                 || ! empty($doc->selected_action_id)
                 || ! empty($doc->selected_action_date)
                 || ((string) ($doc->action_type ?? '') === 'action_taken');
 
-            /*
-             * Send an explicit boolean-like flag to Vue.
-             * Index.vue uses this flag so Receive-only documents stay Received,
-             * and only real Select Action/action_taken documents become Done.
-             */
             $doc->has_selected_action = $hasSelectedAction ? 1 : 0;
 
-            /*
-             * Under the new workflow, only the manual completion fields may
-             * make a document Completed. Saving Select Action must leave it
-             * In Progress and keep Select Action available.
-             */
             $isCompleted = ! empty($doc->is_completed)
                 || ! empty($doc->completed_at);
 
-            if ($isReturned) {
-                $doc->workflow_status = 'Returned';
-            } elseif ($isPulled) {
+            if ($isPulled) {
                 $doc->workflow_status = 'Pulled Out';
+            } elseif ($isPendingReturnToAdmin && $wasReturnedByCurrentRoleTwo) {
+                /* Role 2 perspective after clicking Return to Admin. */
+                $doc->workflow_status = 'Returned';
+            } elseif ($isLatestRowReturned) {
+                /* Legacy fallback when no return-child distribution exists. */
+                $doc->workflow_status = 'Returned';
             } elseif ($isCompleted || ($hasSelectedAction && ! empty($doc->confirmdate))) {
                 $doc->workflow_status = 'Addressed';
             } elseif (! empty($doc->confirmdate)) {
+                /* Role 3/Admin after receiving the returned document. */
                 $doc->workflow_status = 'Received';
             } elseif (! empty($doc->distdate)) {
+                /* Role 3/Admin before receiving the returned document. */
                 $doc->workflow_status = 'For Receiving';
             } elseif ((int) ($doc->IDdocstatus ?? 0) === 7) {
                 $doc->workflow_status = 'Pending 07';
@@ -1034,6 +1078,16 @@ public function index(Request $request)
             ->whereNotNull('dist.IDdist')
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
+            ->whereNotExists(function ($query) use ($trueValues) {
+                $query->select(DB::raw(1))
+                    ->from('distribution as forReceivingStatsReturnParent')
+                    ->whereColumn('forReceivingStatsReturnParent.IDdist', 'dist.IDparentdist')
+                    ->whereColumn('forReceivingStatsReturnParent.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('forReceivingStatsReturnParent.YNreturn', $trueValues)
+                            ->orWhereNotNull('forReceivingStatsReturnParent.returndate');
+                    });
+            })
             ->whereRaw($documentIsNotCompletedSql)
             ->where(function ($query) use ($trueValues) {
                 $query->whereNull('dist.YNreturn')
@@ -1066,7 +1120,8 @@ public function index(Request $request)
                     $subQuery->select(DB::raw(1))
                         ->from('dts_document_remarks as receivedStatsRemarks')
                         ->whereColumn('receivedStatsRemarks.IDdoc', 'd.IDdoc')
-                        ->where('receivedStatsRemarks.action_type', 'action_taken');
+                        ->where('receivedStatsRemarks.action_type', 'action_taken')
+                        ->whereColumn('receivedStatsRemarks.created_at', '>=', 'dist.distdate');
                 });
             })
             ->distinct()
@@ -1092,7 +1147,8 @@ public function index(Request $request)
                     $subQuery->select(DB::raw(1))
                         ->from('dts_document_remarks as forActionStatsRemarks')
                         ->whereColumn('forActionStatsRemarks.IDdoc', 'd.IDdoc')
-                        ->where('forActionStatsRemarks.action_type', 'action_taken');
+                        ->where('forActionStatsRemarks.action_type', 'action_taken')
+                        ->whereColumn('forActionStatsRemarks.created_at', '>=', 'dist.distdate');
                 });
             })
             ->distinct()
@@ -1119,7 +1175,8 @@ public function index(Request $request)
                         $actionQuery->select(DB::raw(1))
                             ->from('dts_document_remarks as addressedStatsRemarks')
                             ->whereColumn('addressedStatsRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedStatsRemarks.action_type', 'action_taken');
+                            ->where('addressedStatsRemarks.action_type', 'action_taken')
+                            ->whereColumn('addressedStatsRemarks.created_at', '>=', 'dist.distdate');
                     });
                 } else {
                     $query->whereRaw('1 = 0');
@@ -1148,7 +1205,8 @@ public function index(Request $request)
                         $actionQuery->select(DB::raw(1))
                             ->from('dts_document_remarks as addressedCompatRemarks')
                             ->whereColumn('addressedCompatRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedCompatRemarks.action_type', 'action_taken');
+                            ->where('addressedCompatRemarks.action_type', 'action_taken')
+                            ->whereColumn('addressedCompatRemarks.created_at', '>=', 'dist.distdate');
                     });
                 } else {
                     $query->whereRaw('1 = 0');
@@ -1164,36 +1222,39 @@ public function index(Request $request)
 
         'returned' => $currentRights === '3'
             ? (clone $makeReturnedStatsBaseQuery())
-                /*
-                 * Role 3 Returned count:
-                 * Count documents whose Return action was performed by a
-                 * Role 2 account. The parent confirmuser identifies the
-                 * receiver/return actor; child IDuser is retained as a fallback.
-                 */
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.IDparentdist')
+                ->whereNull('dist.confirmdate')
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNreturn')
+                        ->orWhereNotIn('dist.YNreturn', $trueValues);
+                })
+                ->where(function ($query) use ($trueValues) {
+                    $query->whereNull('dist.YNpulled')
+                        ->orWhereNotIn('dist.YNpulled', $trueValues);
+                })
                 ->whereExists(function ($query) use ($trueValues) {
                     $query->select(DB::raw(1))
-                        ->from('distribution as returnedStatsDist')
-                        ->leftJoin('distribution as returnedStatsChild', function ($join) {
-                            $join->on('returnedStatsChild.IDparentdist', '=', 'returnedStatsDist.IDdist')
-                                ->on('returnedStatsChild.IDdoc', '=', 'returnedStatsDist.IDdoc');
-                        })
+                        ->from('distribution as returnedStatsParent')
                         ->leftJoin('username as returnedStatsUser', function ($join) {
                             $join->on(
                                 'returnedStatsUser.ID',
                                 '=',
-                                DB::raw('COALESCE(returnedStatsDist.confirmuser, returnedStatsChild.IDuser)')
+                                DB::raw('COALESCE(returnedStatsParent.confirmuser, dist.IDuser)')
                             );
                         })
-                        ->whereColumn('returnedStatsDist.IDdoc', 'd.IDdoc')
+                        ->whereColumn('returnedStatsParent.IDdist', 'dist.IDparentdist')
+                        ->whereColumn('returnedStatsParent.IDdoc', 'd.IDdoc')
                         ->where('returnedStatsUser.rights', '2')
                         ->where(function ($returnedQuery) use ($trueValues) {
-                            $returnedQuery->whereIn('returnedStatsDist.YNreturn', $trueValues)
-                                ->orWhereNotNull('returnedStatsDist.returndate');
+                            $returnedQuery->whereIn('returnedStatsParent.YNreturn', $trueValues)
+                                ->orWhereNotNull('returnedStatsParent.returndate');
                         });
                 })
                 ->distinct()
                 ->count('d.IDdoc')
             : 0,
+
 
         'pending_docs' => (clone $makeStatsBaseQuery())
             ->whereNotNull('dist.IDdist')
@@ -1408,7 +1469,10 @@ public function index(Request $request)
         });
 
         if ($latestActionForReminder) {
-            $reminderQuery->whereNull('reminderActionLatest.latest_action_at');
+            $reminderQuery->where(function ($query) {
+                $query->whereNull('reminderActionLatest.latest_action_at')
+                    ->orWhereColumn('reminderActionLatest.latest_action_at', '<', 'dist.distdate');
+            });
         }
 
         $statusExpression = "CASE WHEN dist.confirmdate IS NULL THEN 'For Receiving' ELSE 'Received' END";
@@ -2096,28 +2160,62 @@ public function index(Request $request)
         && Schema::hasColumn('dts_document_remarks', 'action_type')
         && DB::table('dts_document_remarks')
             ->where('IDdoc', $document->IDdoc)
-            /*
-             * STRICT RULE:
-             * Done only after Select Action/action_taken.
-             * Receive records must not count as Done.
-             */
             ->where('action_type', 'action_taken')
+            ->when(! empty($latestDistributionForSummary?->distdate), function ($query) use ($latestDistributionForSummary) {
+                $query->where('created_at', '>=', $latestDistributionForSummary->distdate);
+            })
             ->exists();
+
+    $returnParentForSummary = null;
+
+    if ($latestDistributionForSummary && ! empty($latestDistributionForSummary->IDparentdist)) {
+        $returnParentForSummary = DB::table('distribution')
+            ->where('IDdist', $latestDistributionForSummary->IDparentdist)
+            ->where('IDdoc', $document->IDdoc)
+            ->first();
+    }
+
+    $isCurrentReturnChild = $returnParentForSummary
+        && (
+            in_array(
+                (string) ($returnParentForSummary->YNreturn ?? ''),
+                array_map('strval', $trueValues),
+                true
+            )
+            || ! empty($returnParentForSummary->returndate)
+        );
+
+    $isPendingReturnToAdmin = $isCurrentReturnChild
+        && empty($latestDistributionForSummary?->confirmdate);
+
+    $returnActorIdForSummary = $returnParentForSummary?->confirmuser
+        ?? $latestDistributionForSummary?->IDuser
+        ?? null;
+
+    $wasReturnedByCurrentRoleTwo = $this->currentUserRights() === '2'
+        && ! empty($returnActorIdForSummary)
+        && (string) $returnActorIdForSummary === (string) ($this->currentUserId() ?? '');
 
     $currentWorkflowStatus = 'Pending';
 
-    if ($isLatestReturned) {
-        $currentWorkflowStatus = 'Returned';
-    } elseif ($isLatestPulled) {
+    if ($isLatestPulled) {
         $currentWorkflowStatus = 'Pulled Out';
+    } elseif ($isPendingReturnToAdmin && $wasReturnedByCurrentRoleTwo) {
+        /* Role 2 who performed Return to Admin. */
+        $currentWorkflowStatus = 'Returned';
+    } elseif ($isLatestReturned) {
+        /* Legacy fallback when the latest row itself is marked returned. */
+        $currentWorkflowStatus = 'Returned';
     } elseif (
         $isDocumentCompletedForSummary
         || ($hasSelectedActionForSummary && ! empty($latestDistributionForSummary?->confirmdate))
     ) {
         $currentWorkflowStatus = 'Addressed';
     } elseif (! empty($latestDistributionForSummary?->confirmdate)) {
+        /* Role 3/Admin after Receive. */
         $currentWorkflowStatus = 'Received';
     } elseif (! empty($latestDistributionForSummary?->distdate)) {
+        /* Role 3/Admin before Receive, including a pending return child. */
         $currentWorkflowStatus = 'For Receiving';
     } elseif ((int) ($document->IDdocstatus ?? 0) === 7) {
         $currentWorkflowStatus = 'Pending 07';
@@ -2456,14 +2554,26 @@ public function index(Request $request)
         && ! empty($latestDistributionForSummary?->confirmdate)
         && $hasSelectedActionForSummary;
 
-    /* Addressed documents are history-only. */
+    /*
+     * Receive belongs to the latest distribution and must remain available for
+     * a newly returned/transferred document even when the document has an old
+     * action_taken record from a previous workflow cycle.
+     */
+    $latestDistributionAwaitingReceive = $latestDistributionForSummary
+        && empty($latestDistributionForSummary->confirmdate)
+        && ! $isLatestPulled;
+
+    $canUseReceiveAction = ! $isDocumentCompletedForSummary
+        && $latestDistributionAwaitingReceive;
+
+    /* Other actions are blocked only by a Final Action in the CURRENT cycle. */
     $canUseDocumentActions = ! $isDocumentCompletedForSummary
         && ! $hasSelectedActionForSummary;
 
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
-        'canReceiveDts' => $canUseDocumentActions
+        'canReceiveDts' => $canUseReceiveAction
             && $this->canReceiveDts()
             && $this->viewerCanActOnDocument((int) $document->IDdoc),
         'canTransferDts' => $canUseDocumentActions
@@ -2747,6 +2857,9 @@ public function forward(Request $request, $id)
 
 public function returnDocument(Request $request, $id)
 {
+    /* Return to Admin is performed by Role 2 only. */
+    abort_unless($this->currentUserRights() === '2', 403);
+
     $this->ensureCanReceiveDts();
     $this->ensureViewerCanActOnDocument((int) $id);
 
@@ -2819,7 +2932,7 @@ public function returnDocument(Request $request, $id)
 
     $this->recordDtsActivity(
         'returned document',
-        'Returned document #' . $document->IDdoc . ' to ' . ($returnTarget['name'] ?? 'previous handler') . '.',
+        'Returned document #' . $document->IDdoc . ' to Admin ' . ($returnTarget['name'] ?? 'document encoder') . '.',
         (int) $document->IDdoc,
         [
             'to_personnel_id' => $returnTarget['personnel_id'] ?? null,
@@ -2830,7 +2943,7 @@ public function returnDocument(Request $request, $id)
         ]
     );
 
-    return back()->with('success', 'Document returned and transferred back successfully.');
+    return back()->with('success', 'Document returned to Admin successfully.');
 }
 
 
@@ -3901,9 +4014,22 @@ public function actionTakenDocument(Request $request, $id)
         'close_action' => ['nullable', 'boolean'],
     ]);
 
+    $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
+        ->orderByDesc('IDdist')
+        ->first();
+
+    if (! $latestDistribution || empty($latestDistribution->confirmdate)) {
+        return back()->withErrors([
+            'action' => 'Addressed is available only after the document is received.',
+        ]);
+    }
+
     $existingAddressActions = DB::table('dts_document_remarks')
         ->where('IDdoc', $document->IDdoc)
         ->whereIn('action_type', ['action_saved', 'action_taken'])
+        ->when(! empty($latestDistribution->distdate), function ($query) use ($latestDistribution) {
+            $query->where('created_at', '>=', $latestDistribution->distdate);
+        })
         ->orderBy('id')
         ->get();
 
@@ -3932,16 +4058,6 @@ public function actionTakenDocument(Request $request, $id)
      */
     $finalizeExistingLatestAction = $actionStage === 'final'
         && $existingActionCount >= 2;
-
-    $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
-        ->orderByDesc('IDdist')
-        ->first();
-
-    if (! $latestDistribution || empty($latestDistribution->confirmdate)) {
-        return back()->withErrors([
-            'action' => 'Addressed is available only after the document is received.',
-        ]);
-    }
 
     $remarks = trim((string) $validated['remarks']);
 

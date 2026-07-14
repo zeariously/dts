@@ -112,7 +112,6 @@ const isDocumentClosedOrEnded = computed(() => {
         || status.includes('done')
         || status.includes('addressed')
         || status.includes('pulled')
-        || status.includes('returned')
 })
 
 const isDocumentReceivedForAction = computed(() => {
@@ -810,13 +809,20 @@ const statusSummary = computed(() => {
 })
 
 const currentWorkflowStatus = computed(() => {
+    /*
+     * Backend sends a role-specific status for a pending Return to Admin:
+     * - Role 2 returner: Returned
+     * - Role 3/Admin recipient: For Receiving
+     */
     return statusSummary.value.current_status || props.document.status || 'Pending'
 })
 
 const canReceiveCurrentDocument = computed(() => {
+    const status = String(currentWorkflowStatus.value || '').trim().toLowerCase()
+
     return canReceiveDts.value
         && !isDocumentClosedOrEnded.value
-        && currentWorkflowStatus.value === 'For Receiving'
+        && ['for receiving', 'returned'].includes(status)
 })
 
 const canTransferCurrentDocument = computed(() => {
@@ -851,12 +857,14 @@ const canReturnCurrentDocument = computed(() => {
     const status = String(currentWorkflowStatus.value || '').toLowerCase()
 
     /*
-     * This is NOT role-based.
-     * The controller sends canReceiveDts=true only when the logged-in user
-     * is allowed to act on this document, usually because the document is
-     * tagged to their personnel record.
+     * Return to Admin is an action for an already RECEIVED document.
+     * Do not use canReceiveDts here because that prop correctly becomes false
+     * after the Receive action is completed. Use the current-cycle action
+     * permission supplied by the controller instead.
      */
-    return canReceiveDts.value
+    return isRoleTwo.value
+        && !isSuperAdminViewOnly.value
+        && Boolean(props.canActionTakenDts)
         && !isDocumentClosedOrEnded.value
         && isDocumentReceivedForAction.value
         && !status.includes('returned')
@@ -869,10 +877,34 @@ const canOpenActionMenu = computed(() => {
         || canReturnCurrentDocument.value
 })
 
+const currentWorkflowCycleStartedAt = computed(() => {
+    const latestDistribution = [...(props.document.distributions || [])]
+        .sort((first, second) => Number(second?.IDdist || 0) - Number(first?.IDdist || 0))[0]
+
+    return latestDistribution?.distdate || null
+})
+
 const addressActionHistoryItems = computed(() => {
+    const cycleStartedAt = toTime(currentWorkflowCycleStartedAt.value)
+
     return (props.document.remarks_history || []).filter((item) => {
         const type = normalizeText(item?.action_type)
-        return ['action_saved', 'action_taken'].includes(type)
+
+        if (!['action_saved', 'action_taken'].includes(type)) {
+            return false
+        }
+
+        /*
+         * Ignore Address actions from an older transfer/return cycle.
+         * A new distribution starts a fresh Receive / Select Action workflow.
+         */
+        if (cycleStartedAt === null) {
+            return true
+        }
+
+        const actionTime = toTime(item?.created_at || item?.updated_at)
+
+        return actionTime !== null && actionTime >= cycleStartedAt
     })
 })
 
@@ -927,13 +959,13 @@ const actionDropdownOptions = computed(() => {
         })
     }
 
-   if (canReturnCurrentDocument.value) {
-    options.push({
-        value: RETURN_DOCUMENT_ACTION,
-        label: 'Return to Admin',
-        isSystemAction: true,
-    })
-}
+    if (canReturnCurrentDocument.value) {
+        options.push({
+            value: RETURN_DOCUMENT_ACTION,
+            label: 'Return to Admin',
+            isSystemAction: true,
+        })
+    }
 
     return options
 })
