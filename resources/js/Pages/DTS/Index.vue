@@ -30,6 +30,17 @@ const props = defineProps({
             returned: 0,
         }),
     },
+    reportSummary: {
+        type: Object,
+        default: () => ({
+            total: 0,
+            for_receiving: 0,
+            received: 0,
+            addressed: 0,
+            returned: 0,
+            other: 0,
+        }),
+    },
     filters: {
         type: Object,
         default: () => ({
@@ -92,6 +103,15 @@ const canShowReturnedCard = computed(() => {
      * It contains documents returned by Role 2 accounts.
      */
     return userRights.value === '3'
+})
+
+/*
+ * Report rule:
+ * Role 2 must not see Returned records in the generated report,
+ * including the preview table, summary cards, and printed output.
+ */
+const canShowReturnedInReport = computed(() => {
+    return userRights.value !== '2'
 })
 
 const canShowCompletedCard = computed(() => {
@@ -581,7 +601,11 @@ const applyYearFilter = () => {
 
 const receivedKeeper = ref(currentParams.value.get('keeper') || '')
 const receivedDocType = ref(currentParams.value.get('doc_type') || '')
-const reportClassification = ref(currentParams.value.get('report_classification') || '')
+const reportClassification = ref(
+    currentParams.value.get('report_classification')
+    || props.filters?.report_classification
+    || ''
+)
 const reportUser = ref(currentParams.value.get('report_user') || '')
 
 const isoToDisplayDate = (value) => {
@@ -690,6 +714,66 @@ const selectedReportUserLabel = computed(() => {
     })
 
     return selectedUser ? reportUserOptionLabel(selectedUser) : 'All Users'
+})
+
+
+const reportGeneratedAt = new Date().toISOString()
+
+const reportSummaryCards = computed(() => {
+    const summary = reportStatusSummary.value
+
+    const cards = [
+        {
+            key: 'total',
+            label: 'Total Documents',
+            value: Number(summary.total || 0),
+            cardClass: 'border-blue-200 bg-blue-50',
+            labelClass: 'text-blue-700',
+            valueClass: 'text-blue-950',
+        },
+        {
+            key: 'for_receiving',
+            label: 'For Receiving',
+            value: Number(summary.for_receiving || 0),
+            cardClass: 'border-violet-200 bg-violet-50',
+            labelClass: 'text-violet-700',
+            valueClass: 'text-violet-950',
+        },
+        {
+            key: 'received',
+            label: 'Received',
+            value: Number(summary.received || 0),
+            cardClass: 'border-emerald-200 bg-emerald-50',
+            labelClass: 'text-emerald-700',
+            valueClass: 'text-emerald-950',
+        },
+        {
+            key: 'addressed',
+            label: 'Addressed',
+            value: Number(summary.addressed || 0),
+            cardClass: 'border-cyan-200 bg-cyan-50',
+            labelClass: 'text-cyan-700',
+            valueClass: 'text-cyan-950',
+        },
+    ]
+
+    /*
+     * Returned is a Role 3 report status. Role 2 must not see its card or
+     * count because returned documents are no longer part of their generated
+     * report once the document has been returned to the administrator.
+     */
+    if (canShowReturnedInReport.value) {
+        cards.push({
+            key: 'returned',
+            label: 'Returned',
+            value: Number(summary.returned || 0),
+            cardClass: 'border-rose-200 bg-rose-50',
+            labelClass: 'text-rose-700',
+            valueClass: 'text-rose-950',
+        })
+    }
+
+    return cards
 })
 
 const validateReportFilters = () => {
@@ -1334,6 +1418,122 @@ const documentStatusClass = (doc) => {
     }
 
     return 'border-slate-300 bg-slate-100 text-slate-700'
+}
+
+
+const isPendingReturnForReport = (doc) => {
+    const parentId = String(doc?.distribution_parent_id ?? '').trim()
+    const returnedParentId = String(doc?.return_distribution_id ?? '').trim()
+
+    return parentId !== ''
+        && returnedParentId !== ''
+        && parentId === returnedParentId
+        && !doc?.confirmdate
+}
+
+const reportDocumentStatusLabel = (doc) => {
+    /*
+     * Reports use a neutral process status. A pending Return to Admin is shown
+     * as Returned even though Role 3's action page displays it as For Receiving
+     * so the administrator can still receive it.
+     */
+    if (isPendingReturnForReport(doc)) {
+        return 'Returned'
+    }
+
+    return documentStatusLabel(doc)
+}
+
+/*
+ * Report-only rows.
+ *
+ * The backend already excludes unrouted and pulled-out documents. This second
+ * report-specific guard ensures that a stale or legacy workflow label such as
+ * Pending can never appear in the preview or printed report.
+ */
+const reportRows = computed(() => {
+    const allowedStatuses = new Set([
+        'for receiving',
+        'received',
+        'addressed',
+    ])
+
+    /*
+     * Only Role 3 and other non-Role-2 accounts may include Returned in the
+     * generated report. Role 2 excludes it from preview and print.
+     */
+    if (canShowReturnedInReport.value) {
+        allowedStatuses.add('returned')
+    }
+
+    return rows.value.filter((doc) => {
+        const status = String(reportDocumentStatusLabel(doc) || '')
+            .trim()
+            .toLowerCase()
+
+        return allowedStatuses.has(status)
+    })
+})
+
+const reportStatusSummary = computed(() => {
+    const summary = {
+        total: reportRows.value.length,
+        for_receiving: 0,
+        received: 0,
+        addressed: 0,
+        returned: 0,
+    }
+
+    reportRows.value.forEach((doc) => {
+        const status = String(reportDocumentStatusLabel(doc) || '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+
+        if (Object.prototype.hasOwnProperty.call(summary, status)) {
+            summary[status] += 1
+        }
+    })
+
+    return summary
+})
+
+const reportDocumentStatusClass = (doc) => {
+    const status = String(reportDocumentStatusLabel(doc) || '').toLowerCase()
+
+    if (status.includes('addressed')) {
+        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    }
+
+    if (status.includes('received')) {
+        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
+    }
+
+    if (status.includes('for receiving')) {
+        return 'border-violet-300 bg-violet-100 text-violet-800'
+    }
+
+    if (status.includes('return')) {
+        return 'border-rose-300 bg-rose-100 text-rose-800'
+    }
+
+    if (status.includes('pulled')) {
+        return 'border-slate-300 bg-slate-100 text-slate-800'
+    }
+
+    if (status.includes('pending')) {
+        return 'border-amber-300 bg-amber-100 text-amber-900'
+    }
+
+    return 'border-slate-300 bg-slate-100 text-slate-700'
+}
+
+const reportAssignedToDisplay = (doc) => {
+    return doc?.to_personnel
+        || doc?.receiver_personnel
+        || doc?.current_office
+        || doc?.for_office
+        || '-'
 }
 
 const returnedByDisplay = (doc) => {
@@ -2331,10 +2531,10 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <section class="report-print-area rounded-2xl border border-blue-200 bg-white shadow-sm">
-                    <div class="border-b border-blue-100 bg-blue-600 px-4 py-4 sm:px-6 sm:py-5">
+                    <div class="border-b border-slate-200 px-4 py-4 sm:px-6 sm:py-5">
                         <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                             <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
-                                <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white p-2 shadow-sm">
+                                <div class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
                                     <img
                                         src="/images/dost-logo.png"
                                         alt="DOST Logo"
@@ -2343,21 +2543,18 @@ const submitEntryDateUpdate = () => {
                                 </div>
 
                                 <div>
-                                    <h3 class="text-xl font-bold text-white">
+                                    <h3 class="text-xl font-bold text-slate-900">
                                         Monitoring Report
                                     </h3>
 
-                                    <p class="mt-1 text-sm font-medium text-white">
+                                    <p class="mt-1 text-sm font-medium text-slate-600">
                                          Document Tracking System
                                     </p>
 
-                                    <p class="mt-1 text-xs font-semibold text-blue-100">
-                                        Showing {{ paginationFrom }} to {{ paginationTo }} of {{ paginationTotal }} entries
-                                    </p>
                                 </div>
                             </div>
 
-                            <div class="text-left text-xs font-semibold text-white md:text-right">
+                            <div class="text-left text-xs font-semibold text-slate-600 md:text-right">
                                 <p>
                                     Classification:
                                     <span class="font-bold">
@@ -2384,86 +2581,97 @@ const submitEntryDateUpdate = () => {
                                         {{ reportEndDate ? formatPrintDate(reportEndDate) : 'End' }}
                                     </span>
                                 </p>
+                                <p class="mt-1">
+                                    Generated On:
+                                    <span class="font-bold">
+                                        {{ formatDateTime(reportGeneratedAt) }}
+                                    </span>
+                                </p>
                             </div>
+                        </div>
+                    </div>
+                    <div class="report-summary-grid border-b border-slate-200 bg-slate-50 p-4 sm:p-5">
+                        <div
+                            v-for="card in reportSummaryCards"
+                            :key="`report-summary-${card.key}`"
+                            class="rounded-2xl border px-4 py-4 text-center"
+                            :class="card.cardClass">
+                            <p
+                                class="text-[11px] font-black uppercase tracking-[0.13em]"
+                                :class="card.labelClass"
+                            >
+                                {{ card.label }}
+                            </p>
+
+                            <p
+                                class="mt-2 text-2xl font-black"
+                                :class="card.valueClass"
+                            >
+                                {{ card.value }}
+                            </p>
                         </div>
                     </div>
 
                     <div class="overflow-x-auto">
-                        <table class="screen-report-table w-full min-w-[1200px] table-fixed border-collapse text-center text-sm">
+                        <table class="screen-report-table w-full min-w-[1000px] table-fixed border-collapse text-center text-sm">
                             <thead>
                                 <tr class="bg-blue-50 text-black">
-                                    <th class="w-[9%] border border-black px-4 py-4 font-bold">
-                                        Doc ID
+                                    <th class="w-[10%] border border-black px-3 py-4 font-bold">
+                                        DTS #
                                     </th>
 
-                                    <th class="w-[11%] border border-black px-4 py-4 font-bold">
-                                        Classification
-                                    </th>
-
-                                    <th class="w-[10%] border border-black px-4 py-4 font-bold">
-                                        Type
-                                    </th>
-
-                                    <th class="w-[15%] border border-black px-4 py-4 font-bold">
-                                        Entry Date
-                                    </th>
-
-                                    <th class="w-[17%] border border-black px-4 py-4 font-bold">
-                                        From
-                                    </th>
-
-                                    <th class="w-[17%] border border-black px-4 py-4 font-bold">
+                                    <th class="w-[20%] border border-black px-3 py-4 font-bold">
                                         To
                                     </th>
 
-                                    <th class="w-[21%] border border-black px-4 py-4 font-bold">
+                                    <th class="w-[20%] border border-black px-3 py-4 font-bold">
+                                        From
+                                    </th>
+
+                                    <th class="w-[35%] border border-black px-3 py-4 font-bold">
                                         Subject
+                                    </th>
+
+                                    <th class="w-[15%] border border-black px-3 py-4 font-bold">
+                                        Status
                                     </th>
                                 </tr>
                             </thead>
 
                             <tbody>
                                 <tr
-                                    v-for="(doc, index) in rows"
+                                    v-for="(doc, index) in reportRows"
                                     :key="doc.IDdoc"
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
-                                    <td class="border border-black px-4 py-4 font-bold text-blue-700">
+                                    <td class="border border-black px-3 py-4 font-bold text-blue-700">
                                         {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
-                                    <td class="border border-black px-4 py-4">
-                                        <span
-                                            class="inline-flex rounded-full px-3 py-1 text-xs font-bold"
-                                            :class="classificationBadgeClass(doc.classification)"
-                                        >
-                                            {{ formatClassification(doc.classification) }}
-                                        </span>
+                                    <td class="border border-black px-3 py-4 font-semibold text-black">
+                                        {{ reportAssignedToDisplay(doc) }}
                                     </td>
 
-                                    <td class="border border-black px-4 py-4 font-bold text-black">
-                                        {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || '-' }}
-                                    </td>
-
-                                    <td class="border border-black px-4 py-4 font-bold text-black">
-                                        {{ formatDateTime(doc.entrydate) }}
-                                    </td>
-
-                                    <td class="border border-black px-4 py-4 font-semibold text-black">
+                                    <td class="border border-black px-3 py-4 font-semibold text-black">
                                         {{ doc.from_office || '-' }}
                                     </td>
 
-                                    <td class="border border-black px-4 py-4 font-semibold text-black">
-                                        {{ doc.for_office || doc.current_office || '-' }}
+                                    <td class="border border-black px-3 py-4 text-left font-bold text-black">
+                                        {{ doc.subject || '-' }}
                                     </td>
 
-                                    <td class="border border-black px-4 py-4 font-bold text-black">
-                                        {{ doc.subject || '-' }}
+                                    <td class="border border-black px-3 py-4">
+                                        <span
+                                            class="inline-flex rounded-full border px-3 py-1 text-xs font-black"
+                                            :class="reportDocumentStatusClass(doc)"
+                                        >
+                                            {{ reportDocumentStatusLabel(doc) }}
+                                        </span>
                                     </td>
                                 </tr>
 
-                                <tr v-if="rows.length === 0">
-                                    <td colspan="7" class="border border-black px-7 py-14 text-center">
+                                <tr v-if="reportRows.length === 0">
+                                    <td colspan="5" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
                                             No report records found
                                         </div>
@@ -2476,73 +2684,65 @@ const submitEntryDateUpdate = () => {
                             </tbody>
                         </table>
 
-                        <!-- Print-only table: requested print columns only -->
+                        <!-- Print-only table: concise monitoring columns -->
                         <table class="print-report-table w-full table-fixed border-collapse text-center text-xs">
                             <thead>
                                 <tr class="print-page-top-spacer">
-                                    <th colspan="6"></th>
+                                    <th colspan="5"></th>
                                 </tr>
 
                                 <tr class="bg-blue-50 text-black">
-                                    <th class="w-[10%] border border-black px-3 py-3 font-bold">
-                                        Doc ID
+                                    <th class="w-[10%] border border-black px-2 py-3 font-bold">
+                                        DTS #
                                     </th>
 
-                                    <th class="w-[14%] border border-black px-3 py-3 font-bold">
-                                        Date
-                                    </th>
-
-                                    <th class="w-[18%] border border-black px-3 py-3 font-bold">
+                                    <th class="w-[20%] border border-black px-2 py-3 font-bold">
                                         To
                                     </th>
 
-                                    <th class="w-[18%] border border-black px-3 py-3 font-bold">
+                                    <th class="w-[20%] border border-black px-2 py-3 font-bold">
                                         From
                                     </th>
 
-                                    <th class="w-[25%] border border-black px-3 py-3 font-bold">
+                                    <th class="w-[35%] border border-black px-2 py-3 font-bold">
                                         Subject
                                     </th>
 
-                                    <th class="w-[15%] border border-black px-3 py-3 font-bold">
-                                        Remarks
+                                    <th class="w-[15%] border border-black px-2 py-3 font-bold">
+                                        Status
                                     </th>
                                 </tr>
                             </thead>
 
                             <tbody>
                                 <tr
-                                    v-for="(doc, index) in rows"
+                                    v-for="(doc, index) in reportRows"
                                     :key="`print-${doc.IDdoc}`"
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
-                                    <td class="border border-black px-3 py-3 font-bold text-black">
+                                    <td class="border border-black px-2 py-3 font-bold text-black">
                                         {{ doc.document_no || doc.IDdoc }}
                                     </td>
 
-                                    <td class="border border-black px-3 py-3 font-semibold text-black">
-                                        {{ formatPrintDate(doc.entrydate) }}
+                                    <td class="border border-black px-2 py-3 font-semibold text-black">
+                                        {{ reportAssignedToDisplay(doc) }}
                                     </td>
 
-                                    <td class="border border-black px-3 py-3 font-semibold text-black">
-                                        {{ doc.for_office || doc.current_office || '-' }}
-                                    </td>
-
-                                    <td class="border border-black px-3 py-3 font-semibold text-black">
+                                    <td class="border border-black px-2 py-3 font-semibold text-black">
                                         {{ doc.from_office || '-' }}
                                     </td>
 
-                                    <td class="border border-black px-3 py-3 font-bold text-black">
+                                    <td class="border border-black px-2 py-3 text-left font-bold text-black">
                                         {{ doc.subject || '-' }}
                                     </td>
 
-                                    <td class="border border-black px-3 py-3 font-semibold text-black">
-                                        {{ doc.remarks || doc.distribution_remarks || '-' }}
+                                    <td class="border border-black px-2 py-3 font-black text-black">
+                                        {{ reportDocumentStatusLabel(doc) }}
                                     </td>
                                 </tr>
 
-                                <tr v-if="rows.length === 0">
-                                    <td colspan="6" class="border border-black px-7 py-14 text-center">
+                                <tr v-if="reportRows.length === 0">
+                                    <td colspan="5" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
                                             No report records found
                                         </div>
@@ -2556,7 +2756,7 @@ const submitEntryDateUpdate = () => {
 
                             <tfoot>
                                 <tr class="print-page-bottom-spacer">
-                                    <td colspan="6"></td>
+                                    <td colspan="5"></td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -5023,6 +5223,18 @@ const submitEntryDateUpdate = () => {
 
 <style>
 
+.report-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    align-items: stretch;
+    width: 100%;
+    gap: 12px;
+}
+
+.report-summary-grid > div {
+    width: 100%;
+}
+
 .print-report-table {
     display: none;
 }
@@ -5043,6 +5255,8 @@ const submitEntryDateUpdate = () => {
     }
 
     .report-print-area {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
         position: absolute !important;
         left: 0 !important;
         top: 0 !important;
@@ -5067,6 +5281,26 @@ const submitEntryDateUpdate = () => {
 
     .print-report-date-range {
         display: inline !important;
+    }
+
+    .report-summary-grid {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)) !important;
+        align-items: stretch !important;
+        width: 100% !important;
+        gap: 6px !important;
+        padding: 8px 0 !important;
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+    }
+
+    .report-summary-grid > div {
+        padding: 8px !important;
+        border-radius: 8px !important;
+    }
+
+    .report-summary-grid p {
+        margin: 0 !important;
     }
 
     .print-report-table {

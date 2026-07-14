@@ -493,7 +493,7 @@ const emit = defineEmits([
                             </span>
                         </Link>
 
-                        <Link
+                        <!-- <Link
                             href="/dts?section=sent-docs"
                             @click="closeMobileSidebar"
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
@@ -506,7 +506,7 @@ const emit = defineEmits([
                                 class="text-xs font-bold"
                             >
                             </span>
-                        </Link>
+                        </Link> -->
 
                         <Link
                             href="/dts/library"

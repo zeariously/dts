@@ -39,6 +39,15 @@ public function index(Request $request)
         $perPage = 100;
     }
 
+    /*
+     * Reports are intended for printing/export-style viewing.
+     * Load the complete filtered report instead of printing only the current
+     * 10-row dashboard page. The safety cap avoids an unbounded query.
+     */
+    if (strtolower(trim((string) $section)) === 'reports') {
+        $perPage = 5000;
+    }
+
     $availableYears = DB::table('document')
         ->selectRaw('YEAR(entrydate) as year')
         ->whereNotNull('entrydate')
@@ -664,6 +673,15 @@ public function index(Request $request)
         });
     }
 
+    $reportSummary = [
+        'total' => 0,
+        'for_receiving' => 0,
+        'received' => 0,
+        'addressed' => 0,
+        'returned' => 0,
+        'other' => 0,
+    ];
+
     if ($section === 'reports') {
         if ($request->filled('report_classification')) {
             $documentsQuery->where('d.classification', $request->input('report_classification'));
@@ -691,6 +709,121 @@ public function index(Request $request)
         if ($request->filled('end_date')) {
             $documentsQuery->whereDate('d.entrydate', '<=', $request->input('end_date'));
         }
+
+        /*
+         * REPORT SUMMARY
+         *
+         * These counts are cloned from the SAME filtered report query, so they
+         * always match the selected classification, user, and date range.
+         * The states are mutually exclusive:
+         * - Returned: pending Return to Admin child distribution
+         * - For Receiving: unreceived normal distribution
+         * - Received: received with no current-cycle Final Address action
+         * - Addressed: received with a current-cycle Final Address action
+         * - Other: pending/unrouted/pulled-out records not in the four core states
+         */
+        $reportBaseQuery = clone $documentsQuery;
+
+        $reportSummary['total'] = (clone $reportBaseQuery)
+            ->distinct()
+            ->count('d.IDdoc');
+
+        $reportSummary['returned'] = (clone $reportBaseQuery)
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.IDparentdist')
+            ->whereNull('dist.confirmdate')
+            ->whereRaw($documentIsNotCompletedSql)
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->whereExists(function ($query) use ($trueValues) {
+                $query->select(DB::raw(1))
+                    ->from('distribution as reportReturnParent')
+                    ->whereColumn('reportReturnParent.IDdist', 'dist.IDparentdist')
+                    ->whereColumn('reportReturnParent.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('reportReturnParent.YNreturn', $trueValues)
+                            ->orWhereNotNull('reportReturnParent.returndate');
+                    });
+            })
+            ->distinct()
+            ->count('d.IDdoc');
+
+        $reportSummary['for_receiving'] = (clone $reportBaseQuery)
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.distdate')
+            ->whereNull('dist.confirmdate')
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereNull('selectedActionRemark.id')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->whereNotExists(function ($query) use ($trueValues) {
+                $query->select(DB::raw(1))
+                    ->from('distribution as reportForReceivingReturnParent')
+                    ->whereColumn('reportForReceivingReturnParent.IDdist', 'dist.IDparentdist')
+                    ->whereColumn('reportForReceivingReturnParent.IDdoc', 'd.IDdoc')
+                    ->where(function ($returnedQuery) use ($trueValues) {
+                        $returnedQuery->whereIn('reportForReceivingReturnParent.YNreturn', $trueValues)
+                            ->orWhereNotNull('reportForReceivingReturnParent.returndate');
+                    });
+            })
+            ->distinct()
+            ->count('d.IDdoc');
+
+        $reportSummary['received'] = (clone $reportBaseQuery)
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereNull('selectedActionRemark.id')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->distinct()
+            ->count('d.IDdoc');
+
+        $reportSummary['addressed'] = (clone $reportBaseQuery)
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNreturn')
+                    ->orWhereNotIn('dist.YNreturn', $trueValues);
+            })
+            ->where(function ($query) use ($trueValues) {
+                $query->whereNull('dist.YNpulled')
+                    ->orWhereNotIn('dist.YNpulled', $trueValues);
+            })
+            ->where(function ($query) use ($documentIsCompletedSql) {
+                $query->whereNotNull('selectedActionRemark.id')
+                    ->orWhereRaw($documentIsCompletedSql);
+            })
+            ->distinct()
+            ->count('d.IDdoc');
+
+        $coreReportCount = $reportSummary['for_receiving']
+            + $reportSummary['received']
+            + $reportSummary['addressed']
+            + $reportSummary['returned'];
+
+        $reportSummary['other'] = max(
+            $reportSummary['total'] - $coreReportCount,
+            0
+        );
     }
 
     if ($section === 'incoming' && $filter === '') {
@@ -1612,6 +1745,7 @@ public function index(Request $request)
     return Inertia::render('DTS/Index', [
         'documents' => $documents,
         'stats' => $stats,
+        'reportSummary' => $reportSummary,
         'filters' => [
             'search' => $search,
             'per_page' => $perPage,

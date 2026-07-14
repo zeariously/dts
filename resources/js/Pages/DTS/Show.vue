@@ -2603,7 +2603,6 @@ const formatFileSize = (bytes) => {
                                         <span class="min-w-0 break-words">
                                             {{ file.original_name || file.stored_name || 'View attached file' }}
                                         </span>
-
                                         <span class="shrink-0">
                                             View File
                                         </span>

@@ -81,12 +81,10 @@ const saveProfile = () => {
             enter-to-class="opacity-100 translate-x-0"
             leave-active-class="transition ease-in duration-200"
             leave-from-class="opacity-100 translate-x-0"
-            leave-to-class="opacity-0 translate-x-8"
-        >
+            leave-to-class="opacity-0 translate-x-8">
             <div
                 v-if="showProfileToast"
-                class="fixed right-6 top-6 z-[99999] w-[370px] max-w-[calc(100vw-3rem)] rounded-2xl border border-green-200 bg-white shadow-2xl"
-            >
+                class="fixed right-6 top-6 z-[99999] w-[370px] max-w-[calc(100vw-3rem)] rounded-2xl border border-green-200 bg-white shadow-2xl">
                 <div class="flex gap-4 border-l-8 border-green-500 px-5 py-4">
                     <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-green-100 text-xl font-black text-green-700">
                         ✓
@@ -105,8 +103,7 @@ const saveProfile = () => {
                     <button
                         type="button"
                         class="ml-auto text-lg font-black text-slate-400 hover:text-slate-700"
-                        @click="showProfileToast = false"
-                    >
+                        @click="showProfileToast = false">
                         ×
                     </button>
                 </div>
