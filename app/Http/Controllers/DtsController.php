@@ -852,11 +852,11 @@ public function index(Request $request)
 
     if ($filter === 'returned') {
         /*
-         * Returned is exclusive to Role 3.
-         * Show only documents whose actual return action was performed by
-         * an account with username.rights = 3. The returned parent
-         * distribution normally stores the actor in confirmuser; the child
-         * return distribution IDuser is used as a safe fallback.
+         * Returned is visible only to Role 3.
+         * The list contains documents whose actual Return action was performed
+         * by a Role 2 account. The returned parent distribution normally stores
+         * the actor in confirmuser; the child return distribution IDuser is used
+         * as a safe fallback.
          */
         if ($currentRights !== '3') {
             $documentsQuery->whereRaw('1 = 0');
@@ -876,7 +876,7 @@ public function index(Request $request)
                         );
                     })
                     ->whereColumn('returnedFilterDist.IDdoc', 'd.IDdoc')
-                    ->where('returnedFilterUser.rights', 3)
+                    ->where('returnedFilterUser.rights', '2')
                     ->where(function ($returnedQuery) use ($trueValues) {
                         $returnedQuery->whereIn('returnedFilterDist.YNreturn', $trueValues)
                             ->orWhereNotNull('returnedFilterDist.returndate');
@@ -1166,9 +1166,9 @@ public function index(Request $request)
             ? (clone $makeReturnedStatsBaseQuery())
                 /*
                  * Role 3 Returned count:
-                 * Count only documents actually returned by Role 3 accounts.
-                 * The parent confirmuser identifies the receiver/return actor;
-                 * child IDuser is retained as a fallback.
+                 * Count documents whose Return action was performed by a
+                 * Role 2 account. The parent confirmuser identifies the
+                 * receiver/return actor; child IDuser is retained as a fallback.
                  */
                 ->whereExists(function ($query) use ($trueValues) {
                     $query->select(DB::raw(1))
@@ -1185,7 +1185,7 @@ public function index(Request $request)
                             );
                         })
                         ->whereColumn('returnedStatsDist.IDdoc', 'd.IDdoc')
-                        ->where('returnedStatsUser.rights', 3)
+                        ->where('returnedStatsUser.rights', '2')
                         ->where(function ($returnedQuery) use ($trueValues) {
                             $returnedQuery->whereIn('returnedStatsDist.YNreturn', $trueValues)
                                 ->orWhereNotNull('returnedStatsDist.returndate');

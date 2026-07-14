@@ -927,13 +927,13 @@ const actionDropdownOptions = computed(() => {
         })
     }
 
-    if (canReturnCurrentDocument.value) {
-        options.push({
-            value: RETURN_DOCUMENT_ACTION,
-            label: 'Return',
-            isSystemAction: true,
-        })
-    }
+   if (canReturnCurrentDocument.value) {
+    options.push({
+        value: RETURN_DOCUMENT_ACTION,
+        label: 'Return to Admin',
+        isSystemAction: true,
+    })
+}
 
     return options
 })
@@ -1351,21 +1351,23 @@ const actionHistory = computed(() => {
         }
 
         if (isTrueValue(distribution.YNreturn) || distribution.returndate) {
-            history.push({
-                id: `returned-${currentDocumentId}-${distribution.IDdist}`,
-                IDdoc: currentDocumentId,
-                type: 'Returned',
-                title: 'Returned Document',
-                description: 'Document was returned.',
-                actor: distribution.transferred_by_name
-                    || distribution.transferred_by
-                    || (distribution.IDuser ? `Account #${distribution.IDuser}` : 'System'),
-                office: distribution.office || '-',
-                date: distribution.returndate || distribution.distdate,
-                remarks: distribution.remarks || null,
-                files: [],
-            })
-        }
+    history.push({
+        id: `returned-${currentDocumentId}-${distribution.IDdist}`,
+        IDdoc: currentDocumentId,
+        type: 'Returned',
+        title: 'Returned Document',
+        description: 'Document was returned.',
+        actor: distribution.returned_by_name
+            || (distribution.returned_by ? `Account #${distribution.returned_by}` : null)
+            || distribution.transferred_by_name
+            || distribution.transferred_by
+            || (distribution.IDuser ? `Account #${distribution.IDuser}` : 'System'),
+        office: distribution.office || '-',
+        date: distribution.returndate || distribution.distdate,
+        remarks: distribution.remarks || null,
+        files: [],
+    })
+}
 
         if (isTrueValue(distribution.YNpulled)) {
             history.push({
@@ -2280,9 +2282,7 @@ const formatFileSize = (bytes) => {
                     v-else-if="isReturnDocumentActionSelected"
                     class="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4"
                 >
-                    <p class="text-xs font-black uppercase tracking-[0.18em] text-rose-700">
-                        Return Details
-                    </p>
+                   
 
                     <div class="mt-4">
                         <label class="text-sm font-black uppercase tracking-wide text-rose-700">

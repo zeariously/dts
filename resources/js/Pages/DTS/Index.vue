@@ -88,8 +88,8 @@ const userRights = computed(() => {
 
 const canShowReturnedCard = computed(() => {
     /*
-     * Returned card is exclusive to Role 3.
-     * It contains documents returned by Role 3 accounts.
+     * Returned card is visible only to Role 3.
+     * It contains documents returned by Role 2 accounts.
      */
     return userRights.value === '3'
 })
@@ -252,93 +252,8 @@ const unlockAutomaticReminderSound = async () => {
     }
 }
 
-const parseReminderDate = (value) => {
-    if (!value) return null
-
-    const rawValue = String(value).trim()
-
-    if (!rawValue) return null
-
-    const dateOnlyMatch = rawValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-
-    if (dateOnlyMatch) {
-        return new Date(
-            Number(dateOnlyMatch[1]),
-            Number(dateOnlyMatch[2]) - 1,
-            Number(dateOnlyMatch[3])
-        )
-    }
-
-    const date = new Date(rawValue.replace(' ', 'T'))
-
-    if (Number.isNaN(date.getTime())) {
-        return null
-    }
-
-    return date
-}
-
-const startOfDay = (date) => {
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate())
-}
-
-const isMondayToThursday = (date) => {
-    const day = date.getDay()
-
-    // Sunday = 0, Monday = 1, Tuesday = 2, Wednesday = 3, Thursday = 4,
-    // Friday = 5, Saturday = 6
-    return day >= 1 && day <= 4
-}
-
-const countMondayToThursdayPendingDays = (startedAt) => {
-    const startedDate = parseReminderDate(startedAt)
-
-    if (!startedDate) {
-        return 0
-    }
-
-    const start = startOfDay(startedDate)
-    const today = startOfDay(new Date())
-
-    if (today <= start) {
-        return 0
-    }
-
-    let count = 0
-    const cursor = new Date(start)
-
-    // Start counting on the next day after status_started_at.
-    cursor.setDate(cursor.getDate() + 1)
-
-    while (cursor <= today) {
-        if (isMondayToThursday(cursor)) {
-            count += 1
-        }
-
-        cursor.setDate(cursor.getDate() + 1)
-    }
-
-    return count
-}
-
 const automaticReminderItems = computed(() => {
-    return (props.automaticStatusReminders || [])
-        .map((item) => {
-            const mondayToThursdayDaysPending = countMondayToThursdayPendingDays(
-                item?.status_started_at
-                    || item?.received_date
-                    || item?.transfer_date
-                    || item?.created_at
-            )
-
-            return {
-                ...item,
-                monday_to_thursday_days_pending: mondayToThursdayDaysPending,
-            }
-        })
-        .filter((item) => {
-            return item.monday_to_thursday_days_pending >= 3
-        })
+    return props.automaticStatusReminders || []
 })
 
 const hasAutomaticStatusReminders = computed(() => {
@@ -1718,8 +1633,6 @@ const submitEntryDateUpdate = () => {
                                 <p class="text-xs font-black uppercase tracking-[0.22em] text-red-100">
                                     NOTIFICATION REMINDER
                                 </p>
-
-                                
                             </div>
 
                             <button
@@ -1758,7 +1671,7 @@ const submitEntryDateUpdate = () => {
                                             </span>
 
                                             <span class="rounded-full bg-red-600 px-3 py-1 text-xs font-black text-white">
-                                                {{ formatPendingDays(doc.monday_to_thursday_days_pending) }} day<span v-if="formatPendingDays(doc.monday_to_thursday_days_pending) !== 1">s</span>
+                                                {{ formatPendingDays(doc.days_pending) }} day<span v-if="formatPendingDays(doc.days_pending) !== 1">s</span>
                                             </span>
                                         </div>
 
