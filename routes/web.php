@@ -217,7 +217,13 @@ Route::middleware(['auth', 'verified'])
             ->name('files.view');
 
         Route::post('/{id}/attachments', [DtsController::class, 'storeAttachment'])
+            ->whereNumber('id')
             ->name('attachments.store');
+
+        Route::delete('/{id}/attachments/{file}', [DtsController::class, 'destroyAttachment'])
+            ->whereNumber('id')
+            ->whereNumber('file')
+            ->name('attachments.destroy');
 
         /*
         |--------------------------------------------------------------------------

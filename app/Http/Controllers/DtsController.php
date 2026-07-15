@@ -2757,6 +2757,8 @@ public function index(Request $request)
             && $this->viewerCanTransferDocument((int) $document->IDdoc),
         'canReattachDts' => $canUseDocumentActions
             && $this->viewerCanReattachDocument((int) $document->IDdoc),
+        'canDeleteAttachments' => $this->currentUserRights() === '3'
+            && $this->viewerCanAccessDocument((int) $document->IDdoc),
         'canRemarkDts' => $canUseDocumentActions
             && $this->canRemarkDts()
             && $this->viewerCanRemarkDocument((int) $document->IDdoc),
@@ -4068,6 +4070,79 @@ public function storeAttachment(Request $request, $id)
     );
 
     return back()->with('success', 'File re-attached successfully.');
+}
+
+/**
+ * Remove an existing document attachment.
+ *
+ * Only Role 3 may remove files. The attachment ID must belong to the
+ * document ID in the URL, which prevents deleting a file from another
+ * document by changing the request parameters.
+ */
+public function destroyAttachment(Request $request, $id, $file)
+{
+    abort_unless($this->currentUserRights() === '3', 403);
+    abort_unless($this->viewerCanAccessDocument((int) $id), 403);
+
+    if (! Schema::hasTable('dts_document_files')) {
+        return back()->withErrors([
+            'attachment' => 'Attachment table not found.',
+        ]);
+    }
+
+    $attachment = DB::table('dts_document_files')
+        ->where('id', $file)
+        ->where('IDdoc', $id)
+        ->first();
+
+    if (! $attachment) {
+        return back()->withErrors([
+            'attachment' => 'The attached file was not found for this document.',
+        ]);
+    }
+
+    $originalName = trim((string) (
+        $attachment->original_name
+        ?? $attachment->stored_name
+        ?? 'Uploaded file'
+    ));
+
+    $storedPath = trim((string) ($attachment->path ?? ''));
+
+    /*
+     * Delete the physical file first. A missing physical file is not treated
+     * as an error because the database record still needs to be cleaned up.
+     */
+    if (
+        $storedPath !== ''
+        && Storage::disk('public')->exists($storedPath)
+        && ! Storage::disk('public')->delete($storedPath)
+    ) {
+        return back()->withErrors([
+            'attachment' => 'The file could not be removed from storage. Please try again.',
+        ]);
+    }
+
+    DB::table('dts_document_files')
+        ->where('id', $attachment->id)
+        ->where('IDdoc', $id)
+        ->delete();
+
+    $this->recordDtsActivity(
+        'removed attached file',
+        'Removed attached file "' . $originalName . '" from document #' . $id . '.',
+        (int) $id,
+        [
+            'attachment_id' => (int) $attachment->id,
+            'file_name' => $originalName,
+            'path' => $storedPath,
+        ]
+    );
+
+    return back()->with(
+        'success',
+        'Attached file removed successfully. You may now attach a replacement PDF.'
+    );
 }
 
 public function storeRemark(Request $request, $id)
@@ -5621,15 +5696,24 @@ private function ensureViewerCanRemarkDocument(int $documentId): void
 private function viewerCanReattachDocument(int $documentId): bool
 {
     /*
-     * Re-attach is allowed only to the user who added/encoded the document.
-     * For Role 2, non-tagged documents in All Documents are viewing-only,
-     * so they must also be tagged before re-attach can be allowed.
+     * Role 3 may attach a replacement PDF to any document that they are
+     * authorized to open.
+     *
+     * Other roles retain the original rule: only the user who encoded the
+     * document may re-attach, and Role 2 must also be tagged to the document.
      */
     if (! $this->canReattachDts()) {
         return false;
     }
 
-    if ($this->currentUserRights() === '2' && ! $this->viewerCanActOnDocument($documentId)) {
+    if ($this->currentUserRights() === '3') {
+        return $this->viewerCanAccessDocument($documentId);
+    }
+
+    if (
+        $this->currentUserRights() === '2'
+        && ! $this->viewerCanActOnDocument($documentId)
+    ) {
         return false;
     }
 

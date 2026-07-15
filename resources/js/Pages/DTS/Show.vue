@@ -41,6 +41,10 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    canDeleteAttachments: {
+        type: Boolean,
+        default: false,
+    },
     canRemarkDts: {
         type: Boolean,
         default: false,
@@ -54,7 +58,12 @@ const props = defineProps({
 const page = usePage()
 
 const userRights = computed(() => {
-    return String(page.props.auth?.user?.rights ?? '').trim()
+    return String(
+        page.props.auth?.user?.rights
+        ?? page.props.auth?.user?.role
+        ?? page.props.auth?.user?.role_number
+        ?? ''
+    ).trim()
 })
 
 const isSuperAdminViewOnly = computed(() => {
@@ -88,10 +97,24 @@ const canTransferDts = computed(() => {
 
 const canReattachDts = computed(() => {
     /*
-     * Attach File is allowed from the document details page.
-     * The backend route still validates the actual upload request.
+     * Use the document-level permission supplied by the controller.
+     * Role 3 is allowed to attach a replacement file to any document
+     * that they are allowed to open.
      */
     return !isSuperAdminViewOnly.value
+        && Boolean(props.canReattachDts)
+})
+
+const canDeleteDocumentAttachments = computed(() => {
+    /*
+     * Show the Remove File button directly for Role 3.
+     * Do not hide the button just because an older controller response
+     * does not yet include canDeleteAttachments.
+     *
+     * The DELETE controller method still performs the final Role 3
+     * authorization before removing anything.
+     */
+    return userRights.value === '3'
 })
 
 const canRemarkDts = computed(() => {
@@ -175,6 +198,11 @@ const reattachForm = useForm({
     attachments: [],
     remarks: '',
 })
+
+const attachmentDeleteForm = useForm({})
+const deletingAttachmentId = ref(null)
+const showRemoveAttachmentModal = ref(false)
+const pendingAttachmentToRemove = ref(null)
 
 const selectedReattachFiles = ref([])
 const reattachFileInputKey = ref(0)
@@ -567,6 +595,83 @@ const reattachFiles = () => {
             reattachError.value = 'Upload failed. Please check the selected PDF file(s) and try again.'
         },
     })
+}
+
+const getAttachmentId = (file) => {
+    return file?.id
+        ?? file?.ID
+        ?? file?.file_id
+        ?? file?.attachment_id
+        ?? null
+}
+
+const openRemoveAttachmentModal = (file) => {
+    const attachmentId = getAttachmentId(file)
+
+    if (
+        !canDeleteDocumentAttachments.value
+        || attachmentDeleteForm.processing
+        || !documentId.value
+        || !attachmentId
+    ) {
+        return
+    }
+
+    pendingAttachmentToRemove.value = file
+    attachmentDeleteForm.clearErrors()
+    showRemoveAttachmentModal.value = true
+}
+
+const closeRemoveAttachmentModal = () => {
+    if (attachmentDeleteForm.processing) {
+        return
+    }
+
+    showRemoveAttachmentModal.value = false
+    pendingAttachmentToRemove.value = null
+    attachmentDeleteForm.clearErrors()
+}
+
+const confirmRemoveExistingAttachment = () => {
+    const file = pendingAttachmentToRemove.value
+    const attachmentId = getAttachmentId(file)
+
+    if (
+        !canDeleteDocumentAttachments.value
+        || attachmentDeleteForm.processing
+        || !documentId.value
+        || !attachmentId
+    ) {
+        return
+    }
+
+    deletingAttachmentId.value = attachmentId
+
+    attachmentDeleteForm.delete(
+        `/dts/${documentId.value}/attachments/${attachmentId}`,
+        {
+            preserveScroll: true,
+            preserveState: true,
+            onSuccess: () => {
+                showRemoveAttachmentModal.value = false
+                pendingAttachmentToRemove.value = null
+
+                /*
+                 * Keep the replacement uploader visible after deletion
+                 * so Role 3 can immediately attach another PDF.
+                 */
+                showReattachPanel.value = true
+
+                router.reload({
+                    preserveScroll: true,
+                    only: ['document', 'canReattachDts', 'canDeleteAttachments'],
+                })
+            },
+            onFinish: () => {
+                deletingAttachmentId.value = null
+            },
+        },
+    )
 }
 
 const statusClass = (status) => {
@@ -1639,6 +1744,157 @@ const formatFileSize = (bytes) => {
 <template>
     <Head title="Document Details" />
 
+    <Teleport to="body">
+        <Transition name="attachment-modal">
+            <div
+                v-if="showRemoveAttachmentModal"
+                class="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/65 px-4 py-6 backdrop-blur-sm"
+                @click.self="closeRemoveAttachmentModal"
+            >
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="remove-attachment-title"
+                    class="w-full max-w-md overflow-hidden rounded-[1.75rem] border border-white/20 bg-white shadow-2xl shadow-black/40"
+                >
+                    <div class="bg-gradient-to-br from-red-600 to-rose-700 px-6 py-6 text-white">
+                        <div class="flex items-start gap-4">
+                            <div
+                                class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20"
+                            >
+                                <svg
+                                    class="h-6 w-6"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"
+                                    />
+                                </svg>
+                            </div>
+
+                            <div>
+                                <p class="text-xs font-black uppercase tracking-[0.18em] text-red-100">
+                                    Remove attachment
+                                </p>
+
+                                <h3
+                                    id="remove-attachment-title"
+                                    class="mt-1 text-xl font-black"
+                                >
+                                    Delete this attached file?
+                                </h3>
+
+                                <p class="mt-2 text-sm font-semibold leading-6 text-red-100/90">
+                                    This file will be permanently removed from the document.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="px-6 py-6">
+                        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <p class="text-xs font-black uppercase tracking-wide text-slate-400">
+                                Selected file
+                            </p>
+
+                            <p class="mt-2 break-words text-sm font-black text-slate-900">
+                                {{
+                                    pendingAttachmentToRemove?.original_name
+                                    || pendingAttachmentToRemove?.stored_name
+                                    || 'Uploaded file'
+                                }}
+                            </p>
+
+                            <p
+                                v-if="pendingAttachmentToRemove?.size"
+                                class="mt-1 text-xs font-bold text-slate-500"
+                            >
+                                Size: {{ formatFileSize(pendingAttachmentToRemove.size) }}
+                            </p>
+                        </div>
+
+                        <div class="mt-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                            <svg
+                                class="mt-0.5 h-5 w-5 shrink-0 text-amber-600"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                            >
+                                <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    d="M12 9v4m0 4h.01M10.3 3.7 2.8 17a2 2 0 0 0 1.74 3h14.92A2 2 0 0 0 21.2 17L13.7 3.7a2 2 0 0 0-3.4 0Z"
+                                />
+                            </svg>
+
+                            <p class="text-xs font-semibold leading-5 text-amber-900">
+                                After removal, the Attach File panel will remain available so you can upload a replacement PDF.
+                            </p>
+                        </div>
+
+                        <p
+                            v-if="attachmentDeleteForm.errors.attachment"
+                            class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700"
+                        >
+                            {{ attachmentDeleteForm.errors.attachment }}
+                        </p>
+
+                        <div class="mt-6 grid grid-cols-2 gap-3">
+                            <button
+                                type="button"
+                                class="inline-flex h-12 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                :disabled="attachmentDeleteForm.processing"
+                                @click="closeRemoveAttachmentModal"
+                            >
+                                Cancel
+                            </button>
+
+                            <button
+                                type="button"
+                                class="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 text-sm font-black text-white shadow-lg shadow-red-600/20 transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                :disabled="attachmentDeleteForm.processing"
+                                @click="confirmRemoveExistingAttachment"
+                            >
+                                <svg
+                                    v-if="attachmentDeleteForm.processing"
+                                    class="h-4 w-4 animate-spin"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                >
+                                    <circle
+                                        class="opacity-25"
+                                        cx="12"
+                                        cy="12"
+                                        r="9"
+                                        stroke="currentColor"
+                                        stroke-width="3"
+                                    />
+                                    <path
+                                        class="opacity-75"
+                                        fill="currentColor"
+                                        d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z"
+                                    />
+                                </svg>
+
+                                {{
+                                    attachmentDeleteForm.processing
+                                        ? 'Removing...'
+                                        : 'Remove File'
+                                }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </Transition>
+    </Teleport>
+
     <div class="min-h-screen bg-slate-100">
         <!-- Header -->
         <header class="border-b border-slate-200 bg-white">
@@ -1982,14 +2238,41 @@ const formatFileSize = (bytes) => {
                                     Size: {{ formatFileSize(file.size) }}
                                 </p>
 
-                                <a
-                                    v-if="file.url"
-                                    :href="file.url"
-                                    target="_blank"
-                                    class="mt-3 inline-flex rounded-xl bg-blue-600 px-4 py-2 text-xs font-black text-white hover:bg-blue-700"
+                                <div class="mt-3 flex flex-wrap gap-2">
+                                    <a
+                                        v-if="file.url"
+                                        :href="file.url"
+                                        target="_blank"
+                                        class="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-xs font-black text-white hover:bg-blue-700"
+                                    >
+                                        View File
+                                    </a>
+
+                                    <button
+                                        v-if="canDeleteDocumentAttachments"
+                                        type="button"
+                                        class="inline-flex items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2 text-xs font-black text-red-700 hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                        :disabled="attachmentDeleteForm.processing"
+                                        @click="openRemoveAttachmentModal(file)"
+                                    >
+                                        {{
+                                            attachmentDeleteForm.processing
+                                                && deletingAttachmentId === getAttachmentId(file)
+                                                ? 'Removing...'
+                                                : 'Remove File'
+                                        }}
+                                    </button>
+                                </div>
+
+                                <p
+                                    v-if="
+                                        attachmentDeleteForm.errors.attachment
+                                        && deletingAttachmentId === file.id
+                                    "
+                                    class="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700"
                                 >
-                                    View File
-                                </a>
+                                    {{ attachmentDeleteForm.errors.attachment }}
+                                </p>
                             </article>
                         </div>
 
@@ -2659,3 +2942,29 @@ const formatFileSize = (bytes) => {
         </div>
     </div>
 </template>
+
+
+<style scoped>
+.attachment-modal-enter-active,
+.attachment-modal-leave-active {
+    transition: opacity 180ms ease;
+}
+
+.attachment-modal-enter-active > div,
+.attachment-modal-leave-active > div {
+    transition:
+        transform 180ms ease,
+        opacity 180ms ease;
+}
+
+.attachment-modal-enter-from,
+.attachment-modal-leave-to {
+    opacity: 0;
+}
+
+.attachment-modal-enter-from > div,
+.attachment-modal-leave-to > div {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+}
+</style>
