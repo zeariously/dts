@@ -284,7 +284,7 @@ public function index(Request $request)
         return DB::table('distribution as dx')
             ->select([
                 'dx.IDdoc',
-                DB::raw('MAX(dx.IDdist) as latest_IDdist'),
+                DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
             ])
             ->groupBy('dx.IDdoc');
     };
@@ -295,7 +295,7 @@ public function index(Request $request)
     $latestReturnedDistribution = DB::table('distribution as rx')
         ->select([
             'rx.IDdoc',
-            DB::raw('MAX(rx.IDdist) as latest_returned_IDdist'),
+            DB::raw('MAX(CAST(rx.IDdist AS UNSIGNED)) as latest_returned_IDdist'),
         ])
         ->where(function ($query) use ($trueValues) {
             $query->whereIn('rx.YNreturn', $trueValues)
@@ -1135,7 +1135,7 @@ public function index(Request $request)
     $statsLatestDistribution = DB::table('distribution as dx')
         ->select([
             'dx.IDdoc',
-            DB::raw('MAX(dx.IDdist) as latest_IDdist'),
+            DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
         ])
         ->groupBy('dx.IDdoc');
 
@@ -2192,6 +2192,15 @@ public function index(Request $request)
         ->leftJoin('lu_office as office', 'office.ID', '=', 'dist.IDoffice')
         ->leftJoin('username as transferUser', 'transferUser.ID', '=', 'dist.IDuser')
         ->leftJoin('username as receiveUser', 'receiveUser.ID', '=', 'dist.confirmuser')
+        ->leftJoin('distribution as parentDist', function ($join) {
+            /*
+             * A Return to Admin creates a child distribution whose parent row
+             * is marked returned. We expose the parent flags so Action History
+             * can distinguish that automatic routing row from a real Transfer.
+             */
+            $join->on('parentDist.IDdist', '=', 'dist.IDparentdist')
+                ->on('parentDist.IDdoc', '=', 'dist.IDdoc');
+        })
         ->leftJoin('distribution as returnChildDist', function ($join) {
             /*
              * The returned parent row's confirmuser is the safest source
@@ -2220,6 +2229,8 @@ public function index(Request $request)
             'dist.returndate',
             'dist.YNpulled',
             'dist.remarks',
+            'parentDist.YNreturn as parent_YNreturn',
+            'parentDist.returndate as parent_returndate',
             DB::raw('COALESCE(dist.confirmuser, returnChildDist.IDuser) as returned_by'),
             'office.officename as office_name',
             'targetPersonnel.name as target_personnel_name',
@@ -2253,7 +2264,17 @@ public function index(Request $request)
         })
         ->sortByDesc('IDdist')
         ->values()
-        ->map(function ($distribution) {
+        ->map(function ($distribution) use ($trueValues) {
+            $isReturnChild = ! empty($distribution->IDparentdist)
+                && (
+                    in_array(
+                        (string) ($distribution->parent_YNreturn ?? ''),
+                        array_map('strval', $trueValues),
+                        true
+                    )
+                    || ! empty($distribution->parent_returndate)
+                );
+
             return [
                 'IDdist' => $distribution->IDdist,
                 'IDdoc' => $distribution->IDdoc,
@@ -2270,6 +2291,9 @@ public function index(Request $request)
                 'returndate' => $distribution->returndate,
                 'YNpulled' => $distribution->YNpulled,
                 'remarks' => $distribution->remarks,
+                'parent_YNreturn' => $distribution->parent_YNreturn,
+                'parent_returndate' => $distribution->parent_returndate,
+                'is_return_child' => $isReturnChild,
                 'transferred_by_name' => $distribution->transferred_by_name,
                 'received_by_name' => $distribution->received_by_name,
                 'returned_by' => $distribution->returned_by,
@@ -2480,7 +2504,26 @@ public function index(Request $request)
             $receivedBy = $distRow->received_by_name
                 ?? ($distRow->confirmuser ? 'Account #' . $distRow->confirmuser : null);
 
-            if (! empty($distRow->IDparentdist)) {
+            $returnedBy = $distRow->returned_by_name
+                ?? ($distRow->returned_by ? 'Account #' . $distRow->returned_by : null)
+                ?? $transferredBy;
+
+            /*
+             * Do not label the automatic child distribution created by
+             * Return to Admin as a Transfer. Its parent is the row marked
+             * returned. A genuine Transfer still has a normal parent row.
+             */
+            $isReturnChild = ! empty($distRow->IDparentdist)
+                && (
+                    in_array(
+                        (string) ($distRow->parent_YNreturn ?? ''),
+                        array_map('strval', $trueValues),
+                        true
+                    )
+                    || ! empty($distRow->parent_returndate)
+                );
+
+            if (! empty($distRow->IDparentdist) && ! $isReturnChild) {
                 $transferTarget = $distRow->target_personnel_name
                     ? $distRow->target_personnel_name . ($distRow->office_name ? ' — ' . $distRow->office_name : '')
                     : ($distRow->office_name ?? 'Office #' . $distRow->IDoffice);
@@ -2515,7 +2558,7 @@ public function index(Request $request)
                     'Returned Document',
                     'Document was returned.',
                     $distRow->returndate ?: $distRow->distdate,
-                    $transferredBy,
+                    $returnedBy,
                     $distRow->office_name,
                     $distRow->remarks
                 );
@@ -4567,6 +4610,59 @@ public function monitoringDashboard(Request $request)
         ];
     }
 
+
+    /*
+     * Monitoring current-status rules.
+     *
+     * A document belongs to only one card for its CURRENT/latest distribution:
+     * Addressed -> Returned -> Received -> For Receiving.
+     *
+     * Historical return and action records must not keep a document in an old
+     * card after a new distribution cycle starts.
+     */
+    $notPulledMonitoringSql = "(dist.YNpulled IS NULL OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1'))";
+
+    $pendingReturnMonitoringSql = "(
+        dist.IDparentdist IS NOT NULL
+        AND (
+            returnParent.YNreturn IN ('True', 'true', 'Y', 'y', '1')
+            OR returnParent.returndate IS NOT NULL
+        )
+        AND dist.confirmdate IS NULL
+        AND {$notPulledMonitoringSql}
+    )";
+
+    $currentCycleFinalActionSql = $hasAddressedActionTables
+        ? "EXISTS (
+            SELECT 1
+            FROM dts_document_remarks AS currentCycleFinalAction
+            WHERE currentCycleFinalAction.IDdoc = d.IDdoc
+              AND currentCycleFinalAction.action_type = 'action_taken'
+              AND dist.distdate IS NOT NULL
+              AND currentCycleFinalAction.created_at >= dist.distdate
+        )"
+        : '(0 = 1)';
+
+    $monitoringWorkflowStatusExpression = "
+        CASE
+            WHEN {$documentIsCompletedSql}
+                THEN 'Completed'
+            WHEN dist.YNpulled IN ('True', 'true', 'Y', 'y', '1')
+                THEN 'Pulled Out'
+            WHEN dist.confirmdate IS NOT NULL
+                 AND {$currentCycleFinalActionSql}
+                THEN 'Addressed'
+            WHEN {$pendingReturnMonitoringSql}
+                THEN 'Returned'
+            WHEN dist.confirmdate IS NOT NULL
+                THEN 'Received'
+            WHEN dist.distdate IS NOT NULL
+                 AND {$notPulledMonitoringSql}
+                THEN 'For Receiving'
+            ELSE 'Pending'
+        END
+    ";
+
     /*
      * Main Monitoring Dashboard table:
      *
@@ -4576,10 +4672,16 @@ public function monitoringDashboard(Request $request)
      * documents without distribution rows were excluded and the Vue table showed
      * "No documents found."
      */
+    /*
+     * IDdist is numeric in meaning but may be stored as VARCHAR in the legacy
+     * database. A plain MAX(IDdist) compares text values and can select an older
+     * returned parent instead of the newest received child. Cast it numerically
+     * so the dashboard always evaluates the real latest distribution cycle.
+     */
     $latestDistributionForMonitoring = DB::table('distribution as latestDist')
         ->select([
             'latestDist.IDdoc',
-            DB::raw('MAX(latestDist.IDdist) as latest_IDdist'),
+            DB::raw('MAX(CAST(latestDist.IDdist AS UNSIGNED)) as latest_IDdist'),
         ])
         ->groupBy('latestDist.IDdoc');
 
@@ -4588,6 +4690,7 @@ public function monitoringDashboard(Request $request)
             $join->on('latestMonitoringDist.IDdoc', '=', 'd.IDdoc');
         })
         ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestMonitoringDist.latest_IDdist')
+        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
         ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
         ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
         ->when($hasAddressedActionTables, function ($query) use ($latestAddressedAction) {
@@ -4603,6 +4706,8 @@ public function monitoringDashboard(Request $request)
         })
         ->select([
             'dist.IDdist',
+            'dist.IDparentdist as distribution_parent_id',
+            'returnParent.IDdist as return_parent_distribution_id',
             'd.IDdoc',
             'd.IDdoc as document_no',
             'dist.distdate',
@@ -4618,7 +4723,18 @@ public function monitoringDashboard(Request $request)
             'dt.description as document_type',
             'assignedPersonnel.name as assigned_personnel',
             ...$addressedSelectFields,
-            DB::raw("\n                CASE\n                    WHEN dist.confirmdate IS NULL\n                         AND dist.distdate IS NOT NULL\n                         AND (dist.YNreturn IS NULL OR dist.YNreturn NOT IN ('True', 'true', 'Y', 'y', '1'))\n                         AND (dist.YNpulled IS NULL OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1'))\n                    THEN DATEDIFF(NOW(), dist.distdate)\n                    ELSE 0\n                END as days_pending\n            "),
+            DB::raw($monitoringWorkflowStatusExpression . ' as workflow_status'),
+            DB::raw('CASE WHEN ' . $currentCycleFinalActionSql . ' THEN 1 ELSE 0 END as has_current_cycle_final_action'),
+            DB::raw("
+                CASE
+                    WHEN dist.confirmdate IS NULL
+                         AND dist.distdate IS NOT NULL
+                         AND {$notPulledMonitoringSql}
+                         AND NOT {$pendingReturnMonitoringSql}
+                    THEN DATEDIFF(NOW(), dist.distdate)
+                    ELSE 0
+                END as days_pending
+            "),
         ]);
 
     if ($search !== '') {
@@ -4702,57 +4818,24 @@ public function monitoringDashboard(Request $request)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw('NOT ' . $pendingReturnMonitoringSql);
     }
 
     if ($status === 'received') {
         $transactionsQuery
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->when($hasAddressedActionTables, function ($query) {
-                /*
-                 * First Action (action_saved) remains Received.
-                 * Only Final Action (action_taken) removes the document from
-                 * the Received list and places it under Addressed.
-                 */
-                $query->whereNotExists(function ($subQuery) {
-                    $subQuery->select(DB::raw(1))
-                        ->from('dts_document_remarks as receivedFinalAction')
-                        ->whereColumn('receivedFinalAction.IDdoc', 'd.IDdoc')
-                        ->where('receivedFinalAction.action_type', 'action_taken');
-                });
-            });
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw('NOT ' . $currentCycleFinalActionSql);
     }
 
     if ($status === 'addressed') {
-        if ($hasAddressedActionTables) {
-            $transactionsQuery
-                ->whereRaw($documentIsNotCompletedSql)
-                ->whereNotNull('dist.confirmdate')
-                ->whereExists(function ($query) {
-                    $query->select(DB::raw(1))
-                        ->from('dts_document_remarks as addressedFilterRemarks')
-                        ->whereColumn('addressedFilterRemarks.IDdoc', 'd.IDdoc')
-                        ->where('addressedFilterRemarks.action_type', 'action_taken');
-                });
-        } else {
-            $transactionsQuery->whereRaw('1 = 0');
-        }
+        $transactionsQuery
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereNotNull('dist.confirmdate')
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw($currentCycleFinalActionSql);
     }
 
     if ($status === 'completed') {
@@ -4760,23 +4843,13 @@ public function monitoringDashboard(Request $request)
     }
 
     if ($status === 'returned') {
+        /*
+         * Returned is a CURRENT pending state, not return history.
+         * Once the return child is received or acted on, it leaves Returned.
+         */
         $transactionsQuery
             ->whereRaw($documentIsNotCompletedSql)
-            ->whereExists(function ($query) use ($trueValues) {
-                /*
-                 * A Return creates a child distribution back to the encoder.
-                 * The latest distribution may therefore no longer carry the
-                 * YNreturn flag, so check the document's complete distribution
-                 * history instead of only the latest row.
-                 */
-                $query->select(DB::raw(1))
-                    ->from('distribution as returnedMonitoringDist')
-                    ->whereColumn('returnedMonitoringDist.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('returnedMonitoringDist.YNreturn', $trueValues)
-                            ->orWhereNotNull('returnedMonitoringDist.returndate');
-                    });
-            });
+            ->whereRaw($pendingReturnMonitoringSql);
     }
 
     if ($status === 'pulled-out') {
@@ -4808,6 +4881,7 @@ public function monitoringDashboard(Request $request)
             $join->on('latestStatsDist.IDdoc', '=', 'd.IDdoc');
         })
         ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestStatsDist.latest_IDdist')
+        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
             $query->whereYear('d.entrydate', (int) $selectedYear);
         });
@@ -4834,50 +4908,30 @@ public function monitoringDashboard(Request $request)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.distdate')
             ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
             ->distinct()
             ->count('d.IDdoc'),
 
         'received' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
             ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->when($hasAddressedActionTables, function ($query) {
-                $query->whereNotExists(function ($subQuery) {
-                    $subQuery->select(DB::raw(1))
-                        ->from('dts_document_remarks as receivedStatsFinalAction')
-                        ->whereColumn('receivedStatsFinalAction.IDdoc', 'd.IDdoc')
-                        ->where('receivedStatsFinalAction.action_type', 'action_taken');
-                });
-            })
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw('NOT ' . $currentCycleFinalActionSql)
+            ->distinct()
+            ->count('d.IDdoc'),
+
+        'addressed' => (clone $statsBase)
+            ->whereRaw($documentIsNotCompletedSql)
+            ->whereNotNull('dist.confirmdate')
+            ->whereRaw($notPulledMonitoringSql)
+            ->whereRaw($currentCycleFinalActionSql)
             ->distinct()
             ->count('d.IDdoc'),
 
         'returned' => (clone $statsBase)
             ->whereRaw($documentIsNotCompletedSql)
-            ->whereExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as returnedStatsHistory')
-                    ->whereColumn('returnedStatsHistory.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('returnedStatsHistory.YNreturn', $trueValues)
-                            ->orWhereNotNull('returnedStatsHistory.returndate');
-                    });
-            })
+            ->whereRaw($pendingReturnMonitoringSql)
             ->distinct()
             ->count('d.IDdoc'),
 
@@ -4895,8 +4949,12 @@ public function monitoringDashboard(Request $request)
      * Table: Sino ang hindi uma-action?
      * Group pending documents by assigned personnel, then attach the document list per person.
      */
-    $peopleNoAction = DB::table('distribution as dist')
-        ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
+    $peopleNoAction = DB::table('document as d')
+        ->leftJoinSub($latestDistributionForMonitoring, 'latestPeopleDist', function ($join) {
+            $join->on('latestPeopleDist.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestPeopleDist.latest_IDdist')
+        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
         ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
         ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
@@ -4905,19 +4963,13 @@ public function monitoringDashboard(Request $request)
         ->whereRaw($documentIsNotCompletedSql)
         ->whereNotNull('dist.distdate')
         ->whereNull('dist.confirmdate')
-        ->where(function ($query) use ($trueValues) {
-            $query->whereNull('dist.YNreturn')
-                ->orWhereNotIn('dist.YNreturn', $trueValues);
-        })
-        ->where(function ($query) use ($trueValues) {
-            $query->whereNull('dist.YNpulled')
-                ->orWhereNotIn('dist.YNpulled', $trueValues);
-        })
+        ->whereRaw($notPulledMonitoringSql)
+        ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
         ->select([
             'p.ID as personnel_id',
             DB::raw("COALESCE(p.name, 'Unassigned') as personnel_name"),
             DB::raw("COALESCE(o.officename, 'No office') as office_name"),
-            DB::raw('COUNT(dist.IDdist) as pending_transactions'),
+            DB::raw('COUNT(DISTINCT d.IDdoc) as pending_transactions'),
             DB::raw('MAX(DATEDIFF(NOW(), dist.distdate)) as max_days_pending'),
             DB::raw('MIN(dist.distdate) as oldest_pending_date'),
         ])
@@ -4927,8 +4979,12 @@ public function monitoringDashboard(Request $request)
         ->limit(20)
         ->get();
 
-    $pendingDocumentsForPeople = DB::table('distribution as dist')
-        ->leftJoin('document as d', 'd.IDdoc', '=', 'dist.IDdoc')
+    $pendingDocumentsForPeople = DB::table('document as d')
+        ->leftJoinSub($latestDistributionForMonitoring, 'latestPendingPeopleDist', function ($join) {
+            $join->on('latestPendingPeopleDist.IDdoc', '=', 'd.IDdoc');
+        })
+        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestPendingPeopleDist.latest_IDdist')
+        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
         ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
         ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
         ->when($selectedYear !== '', function ($query) use ($selectedYear) {
@@ -4937,14 +4993,8 @@ public function monitoringDashboard(Request $request)
         ->whereRaw($documentIsNotCompletedSql)
         ->whereNotNull('dist.distdate')
         ->whereNull('dist.confirmdate')
-        ->where(function ($query) use ($trueValues) {
-            $query->whereNull('dist.YNreturn')
-                ->orWhereNotIn('dist.YNreturn', $trueValues);
-        })
-        ->where(function ($query) use ($trueValues) {
-            $query->whereNull('dist.YNpulled')
-                ->orWhereNotIn('dist.YNpulled', $trueValues);
-        })
+        ->whereRaw($notPulledMonitoringSql)
+        ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
         ->select([
             'p.ID as personnel_id',
             DB::raw("COALESCE(p.name, 'Unassigned') as personnel_name"),
@@ -4971,6 +5021,7 @@ public function monitoringDashboard(Request $request)
 
         return $person;
     });
+
     /*
      * Monitoring Dashboard only:
      * Show Action Taken records per document for monitoring.
@@ -5001,6 +5052,10 @@ public function monitoringDashboard(Request $request)
 
         $actionTakenBase = DB::table('dts_document_remarks as remarksTable')
             ->leftJoin('document as d', 'd.IDdoc', '=', 'remarksTable.IDdoc')
+            ->leftJoinSub($latestDistributionForMonitoring, 'latestActionCycleDist', function ($join) {
+                $join->on('latestActionCycleDist.IDdoc', '=', 'd.IDdoc');
+            })
+            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestActionCycleDist.latest_IDdist')
             ->leftJoin('dts_action_types as actionType', 'actionType.id', '=', 'remarksTable.action_type_id')
             ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'remarksTable.created_by')
             ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
@@ -5009,11 +5064,15 @@ public function monitoringDashboard(Request $request)
              * but only for documents that already have a Final Action.
              */
             ->whereIn('remarksTable.action_type', ['action_saved', 'action_taken'])
+            ->whereNotNull('dist.confirmdate')
+            ->whereNotNull('dist.distdate')
+            ->whereColumn('remarksTable.created_at', '>=', 'dist.distdate')
             ->whereExists(function ($query) {
                 $query->select(DB::raw(1))
                     ->from('dts_document_remarks as finalAddressedAction')
                     ->whereColumn('finalAddressedAction.IDdoc', 'd.IDdoc')
-                    ->where('finalAddressedAction.action_type', 'action_taken');
+                    ->where('finalAddressedAction.action_type', 'action_taken')
+                    ->whereColumn('finalAddressedAction.created_at', '>=', 'dist.distdate');
             })
             ->whereRaw($documentIsNotCompletedSql)
             ->when($selectedYear !== '', function ($query) use ($selectedYear) {
@@ -5039,18 +5098,18 @@ public function monitoringDashboard(Request $request)
             ->limit(300)
             ->get();
 
-        $actionTakenCount = $actionTakenItems
-            ->filter(function ($item) {
-                return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_taken';
-            })
-            ->pluck('IDdoc')
-            ->filter()
-            ->unique()
-            ->count();
+        /*
+         * Card count comes from the unpaginated current-status stats query.
+         * The modal list may be search-filtered and limited to 300 records.
+         */
+        $actionTakenCount = (int) ($stats['addressed'] ?? 0);
     }
 
-    $stats['action_taken'] = $actionTakenCount;
-    $stats['action_taken_documents'] = $actionTakenCount;
+    $stats['action_taken'] = (int) ($stats['addressed'] ?? $actionTakenCount);
+    $stats['action_taken_documents'] = (int) ($stats['addressed'] ?? $actionTakenCount);
+    $stats['final_action_documents'] = (int) ($stats['addressed'] ?? $actionTakenCount);
+    $stats['pending_returned'] = (int) ($stats['returned'] ?? 0);
+    $stats['current_returned'] = (int) ($stats['returned'] ?? 0);
 
     return Inertia::render('DTS/MonitoringDashboard', [
         ...$this->dtsNotificationProps(),
@@ -5416,7 +5475,7 @@ private function viewerCanAccessDocument(int $documentId): bool
     $latestDistribution = DB::table('distribution as accessDx')
         ->select([
             'accessDx.IDdoc',
-            DB::raw('MAX(accessDx.IDdist) as latest_IDdist'),
+            DB::raw('MAX(CAST(accessDx.IDdist AS UNSIGNED)) as latest_IDdist'),
         ])
         ->groupBy('accessDx.IDdoc');
 
@@ -5443,7 +5502,7 @@ private function documentIsTaggedToViewer(int $documentId): bool
     $latestDistribution = DB::table('distribution as taggedDx')
         ->select([
             'taggedDx.IDdoc',
-            DB::raw('MAX(taggedDx.IDdist) as latest_IDdist'),
+            DB::raw('MAX(CAST(taggedDx.IDdist AS UNSIGNED)) as latest_IDdist'),
         ])
         ->groupBy('taggedDx.IDdoc');
 
@@ -5522,7 +5581,7 @@ private function viewerCanActOnDocument(int $documentId): bool
     $latestDistribution = DB::table('distribution as actionDx')
         ->select([
             'actionDx.IDdoc',
-            DB::raw('MAX(actionDx.IDdist) as latest_IDdist'),
+            DB::raw('MAX(CAST(actionDx.IDdist AS UNSIGNED)) as latest_IDdist'),
         ])
         ->groupBy('actionDx.IDdoc');
 
@@ -5707,7 +5766,7 @@ private function dtsNotificationProps(): array
         return DB::table('distribution as dx')
             ->select([
                 'dx.IDdoc',
-                DB::raw('MAX(dx.IDdist) as latest_IDdist'),
+                DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
             ])
             ->groupBy('dx.IDdoc');
     };

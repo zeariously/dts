@@ -1305,6 +1305,13 @@ const actionHistory = computed(() => {
         return Number(a.IDdist || 0) - Number(b.IDdist || 0)
     })
 
+    const distributionById = new Map(
+        distributions.map((distribution) => [
+            normalizeId(distribution?.IDdist),
+            distribution,
+        ])
+    )
+
     distributions.forEach((distribution) => {
         const distributionDocumentId = normalizeId(distribution.IDdoc)
 
@@ -1330,7 +1337,30 @@ const actionHistory = computed(() => {
             return
         }
 
-        const isActualTransfer = !!distribution.IDparentdist
+        const parentDistribution = distributionById.get(
+            normalizeId(distribution.IDparentdist)
+        )
+
+        /*
+         * Return to Admin creates an automatic child distribution back to the
+         * encoder/admin. That routing row is not a user-selected Transfer and
+         * must not appear as "Transferred Document" in Action History.
+         */
+        const isReturnChild =
+            distribution?.is_return_child === true
+            || distribution?.is_return_child === 1
+            || distribution?.is_return_child === '1'
+            || (
+                Boolean(distribution.IDparentdist)
+                && Boolean(parentDistribution)
+                && (
+                    isTrueValue(parentDistribution.YNreturn)
+                    || Boolean(parentDistribution.returndate)
+                )
+            )
+
+        const isActualTransfer = Boolean(distribution.IDparentdist)
+            && !isReturnChild
 
         if (distribution.distdate && isActualTransfer) {
             const targetPersonnel = distribution.target_personnel_name

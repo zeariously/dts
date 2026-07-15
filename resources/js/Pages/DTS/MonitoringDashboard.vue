@@ -114,6 +114,23 @@ const rawRows = computed(() => {
 const documentRows = computed(() => {
     const uniqueDocuments = new Map()
 
+    const rowCycleValue = (row) => {
+        const distributionId = Number(row?.IDdist || 0)
+
+        if (Number.isFinite(distributionId) && distributionId > 0) {
+            return distributionId
+        }
+
+        const dateValue = new Date(
+            row?.distdate
+            || row?.confirmdate
+            || row?.entrydate
+            || 0
+        ).getTime()
+
+        return Number.isNaN(dateValue) ? 0 : dateValue
+    }
+
     rawRows.value.forEach((row) => {
         const documentId = row?.IDdoc
             ?? row?.document_no
@@ -123,18 +140,17 @@ const documentRows = computed(() => {
             return
         }
 
-        const existing = uniqueDocuments.get(String(documentId))
+        const key = String(documentId)
+        const existing = uniqueDocuments.get(key)
 
-        if (!existing) {
-            uniqueDocuments.set(String(documentId), row)
-            return
-        }
-
-        const existingDays = Number(existing.days_pending || 0)
-        const currentDays = Number(row.days_pending || 0)
-
-        if (currentDays > existingDays) {
-            uniqueDocuments.set(String(documentId), row)
+        /*
+         * Always retain the newest/current distribution row. The previous
+         * implementation selected the row with the largest days_pending,
+         * which could keep an old Returned row after the new child row was
+         * already received.
+         */
+        if (!existing || rowCycleValue(row) >= rowCycleValue(existing)) {
+            uniqueDocuments.set(key, row)
         }
     })
 
@@ -277,13 +293,100 @@ const actionTakenRows = computed(() => {
         })
 })
 
+const normalizeMonitoringStatus = (value) => {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+}
+
+const monitoringDocumentStatus = (document) => {
+    /*
+     * Current-cycle precedence:
+     * Final Action -> Addressed
+     * Received current distribution -> Received
+     * Pending return child -> Returned
+     * Unreceived normal distribution -> For Receiving
+     *
+     * Received is intentionally checked before Returned. Therefore, even when
+     * a stale backend label still says Returned, a populated confirmdate moves
+     * the document to Received immediately.
+     */
+    const backendStatus = normalizeMonitoringStatus(
+        document?.workflow_status
+        || document?.current_status
+        || document?.status_label
+        || document?.status
+    )
+
+    const hasFinalAction =
+        document?.has_current_cycle_final_action === true
+        || document?.has_current_cycle_final_action === 1
+        || document?.has_current_cycle_final_action === '1'
+        || backendStatus === 'addressed'
+
+    if (hasFinalAction) {
+        return 'addressed'
+    }
+
+    const confirmDate = String(document?.confirmdate ?? '').trim()
+    const hasConfirmDate =
+        confirmDate !== ''
+        && confirmDate !== '0000-00-00'
+        && confirmDate !== '0000-00-00 00:00:00'
+
+    if (hasConfirmDate) {
+        return 'received'
+    }
+
+    const parentId = String(document?.distribution_parent_id ?? '').trim()
+    const returnParentId = String(
+        document?.return_parent_distribution_id
+        ?? document?.return_distribution_id
+        ?? ''
+    ).trim()
+
+    const isPendingReturnChild =
+        backendStatus === 'returned'
+        || (
+            parentId !== ''
+            && returnParentId !== ''
+            && parentId === returnParentId
+        )
+
+    if (isPendingReturnChild) {
+        return 'returned'
+    }
+
+    if (
+        String(document?.distdate ?? '').trim() !== ''
+        || backendStatus === 'for receiving'
+    ) {
+        return 'for-receiving'
+    }
+
+    return backendStatus.replace(/\s+/g, '-')
+}
+
 const displayedDocumentRows = computed(() => {
     /*
-     * The main table follows the selected card.
-     * Addressed must show only documents with action_taken / final action.
+     * Every selected card displays only its CURRENT workflow state.
+     *
+     * Returned is temporary:
+     * - pending return child       -> Returned
+     * - received by the admin      -> Received
+     * - transferred while unreceived -> For Receiving
+     * - Final Action saved         -> Addressed
      */
     if (status.value === 'addressed') {
         return actionTakenRows.value
+    }
+
+    if (['for-receiving', 'received', 'returned'].includes(status.value)) {
+        return documentRows.value.filter((document) => {
+            return monitoringDocumentStatus(document) === status.value
+        })
     }
 
     return documentRows.value
@@ -309,8 +412,18 @@ const monitoringCardCounts = computed(() => {
         totalDocuments: Number(props.stats?.total_documents ?? props.stats?.total ?? 0),
         forReceiving: Number(props.stats?.for_receiving ?? props.stats?.for_receiving_documents ?? 0),
         received: Number(props.stats?.received ?? 0),
-        addressed: actionTakenCount.value,
-        returned: Number(props.stats?.returned ?? 0),
+        addressed: Number(
+            props.stats?.addressed
+            ?? props.stats?.action_taken_documents
+            ?? actionTakenCount.value
+            ?? 0
+        ),
+        returned: Number(
+            props.stats?.pending_returned
+            ?? props.stats?.current_returned
+            ?? props.stats?.returned
+            ?? 0
+        ),
     }
 })
 
@@ -1076,6 +1189,26 @@ const daysPendingClass = (days) => {
                                         <p class="text-sm font-black leading-snug text-slate-900">
                                             {{ document.subject || 'No subject' }}
                                         </p>
+
+                                        <span
+                                            v-if="!isAddressedView"
+                                            class="mt-2 inline-flex rounded-full border px-3 py-1 text-[11px] font-black"
+                                            :class="{
+                                                'border-amber-200 bg-amber-50 text-amber-700': monitoringDocumentStatus(document) === 'for-receiving',
+                                                'border-emerald-200 bg-emerald-50 text-emerald-700': monitoringDocumentStatus(document) === 'received',
+                                                'border-rose-200 bg-rose-50 text-rose-700': monitoringDocumentStatus(document) === 'returned',
+                                            }"
+                                        >
+                                            {{
+                                                monitoringDocumentStatus(document) === 'for-receiving'
+                                                    ? 'For Receiving'
+                                                    : monitoringDocumentStatus(document) === 'received'
+                                                        ? 'Received'
+                                                        : monitoringDocumentStatus(document) === 'returned'
+                                                            ? 'Returned'
+                                                            : 'Current Status'
+                                            }}
+                                        </span>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 align-top">

@@ -504,7 +504,7 @@ const emit = defineEmits([
                             <span
                                 v-if="isOutgoingActive"
                                 class="text-xs font-bold"
-                            >
+                            >   
                             </span>
                         </Link> -->
 
@@ -530,7 +530,6 @@ const emit = defineEmits([
                             :class="navLinkClass(isReportsActive)"
                         >
                             <span>Reports</span>
-
                             <span
                                 v-if="isReportsActive"
                                 class="text-xs font-bold"
@@ -548,8 +547,7 @@ const emit = defineEmits([
 
                             <span
                                 v-if="isAboutActive"
-                                class="text-xs font-bold"
-                            >
+                                class="text-xs font-bold">
                             </span>
                         </Link>
                     </div>
