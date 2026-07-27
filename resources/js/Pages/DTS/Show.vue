@@ -1763,7 +1763,7 @@ const formatFileSize = (bytes) => {
                                 class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20"
                             >
                                 <svg
-                                    class="h-6 w-6"
+                                    class="h-4 w-4"
                                     viewBox="0 0 24 24"
                                     fill="none"
                                     stroke="currentColor"
@@ -1928,10 +1928,6 @@ const formatFileSize = (bytes) => {
                 <div class="grid grid-cols-1 lg:grid-cols-[1fr_330px]">
                     <div class="p-6">
                         <div class="flex flex-wrap items-center gap-2">
-                            <span class="rounded-full bg-blue-600 px-4 py-1.5 text-xs font-black uppercase tracking-wide text-white">
-                                DTS - #{{ documentNumber }}
-                            </span>
-
                             <span
                                 class="rounded-full px-4 py-1.5 text-xs font-black uppercase tracking-wide"
                                 :class="statusClass(currentWorkflowStatus)"
@@ -1958,11 +1954,53 @@ const formatFileSize = (bytes) => {
 
                     <!-- Action Panel -->
                     <div class="border-t border-slate-200 bg-blue-600 p-5 text-white lg:border-l lg:border-t-0">
-                        <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                        <!-- DTS number placed with the actions -->
+                        <div
+                            class="rounded-xl border border-white/20 bg-white px-3.5 py-2.5 text-blue-950 shadow-md shadow-blue-950/10"
+                        >
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500"
+                            >
+                                DTS Number
+                            </p>
+
+                            <div class="mt-1 flex items-center gap-2.5">
+                                <div
+                                    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-700"
+                                >
+                                    <svg
+                                        class="h-5 w-5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2.2"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            d="M7 3h8l4 4v14H7V3Z"
+                                        />
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            d="M15 3v5h5M10 13h6M10 17h6"
+                                        />
+                                    </svg>
+                                </div>
+
+                                <p
+                                    class="whitespace-nowrap text-xl font-black tracking-[-0.02em] text-blue-950"
+                                >
+                                    DTS - #<span class="text-blue-700">{{ documentNumber }}</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <p class="mt-4 text-xs font-black uppercase tracking-[0.22em] text-blue-100">
                             Quick Actions
                         </p>
 
-                        <div class="mt-4 grid grid-cols-1 gap-2">
+                        <div class="mt-3 grid grid-cols-1 gap-2">
                             <button
                                 v-if="!isSuperAdminViewOnly && canReceiveCurrentDocument"
                                 type="button"

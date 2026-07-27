@@ -1782,11 +1782,6 @@ public function index(Request $request)
                 ->get()
             : [],
         'staffConcerns' => $staffConcernsForDropdown,
-        /*
-         * Used by AddDocumentModal for the Doc ID preview.
-         * Always send a number so the modal will not stay on "Generating...".
-         */
-        'nextDocumentId' => ((int) (DB::table('document')->max('IDdoc') ?? 0)) + 1,
         ...$this->dtsNotificationProps(),
 
         /*
@@ -1816,7 +1811,7 @@ public function index(Request $request)
   public function store(Request $request)
 {
     $this->ensureCanManageDts();
-    
+
     $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
 
     $request->merge([
@@ -1849,7 +1844,13 @@ public function index(Request $request)
         'attachments' => ['nullable', 'array'],
         'attachments.*.type_id' => ['nullable', 'integer'],
         'attachments.*.type_name' => ['nullable', 'string', 'max:255'],
-        'attachments.*.file' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', "max:{$maxPdfKilobytes}"],
+        'attachments.*.file' => [
+            'required',
+            'file',
+            'mimes:pdf',
+            'mimetypes:application/pdf',
+            "max:{$maxPdfKilobytes}",
+        ],
     ]);
 
     $entryDate = now()->format('Y-m-d H:i:s');
@@ -1882,7 +1883,6 @@ public function index(Request $request)
             ->value('ID')
         ?? 1;
 
-   
     if (! empty($validated['IDkeeper'])) {
         $selectedPersonnel = DB::table('lu_personnel')
             ->where('ID', $validated['IDkeeper'])
@@ -1898,126 +1898,189 @@ public function index(Request $request)
         }
 
         /*
-         * IMPORTANT:
          * Do not overwrite To Office with the Staff Concern office.
          *
-         * IDfor must always be the office selected in the To Office dropdown.
+         * IDfor is the office selected in the To Office dropdown.
          * IDkeeper is only the assigned/tagged personnel.
          */
     }
 
-    $document = DB::transaction(function () use ($request, $validated, $entryDate, $defaultDocStatusId) {
-        $nextDocumentId = ((int) DtsDocument::max('IDdoc')) + 1;
-        $nextDistributionId = ((int) DtsDistribution::max('IDdist')) + 1;
-        $nextDocTransactionId = ((int) DtsDocTransaction::max('ID')) + 1;
+    /*
+     * CONCURRENCY-SAFE DTS NUMBER GENERATION
+     *
+     * Do not calculate or display the next DTS number before submission.
+     * Multiple users may have the Add Document modal open at the same time.
+     *
+     * GET_LOCK serializes document creation requests. Only the request that
+     * currently owns this lock may read MAX(IDdoc) and insert the next number.
+     * The other request waits, then receives the following number.
+     */
+    $creationLockName = 'dts_create_document';
+    $lockResult = DB::selectOne(
+        'SELECT GET_LOCK(?, 20) AS acquired',
+        [$creationLockName]
+    );
 
-        $hasAttachments = count($request->input('attachments', [])) > 0;
+    if ((int) ($lockResult->acquired ?? 0) !== 1) {
+        return back()
+            ->withErrors([
+                'document' => 'Another user is currently saving a document. Please submit again.',
+            ])
+            ->withInput();
+    }
 
-        $document = DtsDocument::create([
-            'IDdoc' => $nextDocumentId,
-            'classification' => $validated['classification'],
-            'IDdoctype' => $validated['IDdoctype'],
-            'entrydate' => $entryDate,
-            'IDfor' => $validated['IDfor'],
-            'IDfrom' => $validated['IDfrom'],
-            'subject' => $validated['subject'],
-            'regarding' => $validated['regarding'] ?? null,
-            'IDdocstatus' => $defaultDocStatusId,
-            'IDnote' => null,
-            'IDuser' => Auth::id(),
-            'remarks' => $validated['remarks'] ?? null,
-            'IDkeeper' => $validated['IDkeeper'] ?? null,
-            'IDprogram_pms' => null,
-            'IDproject' => null,
-            'IDprogram_prp' => null,
-            'IDproposal' => null,
-            'IDdocrq' => null,
-            'YNdays' => 'False',
-            'datecleared' => null,
-        ]);
+    try {
+        $document = DB::transaction(function () use (
+            $request,
+            $validated,
+            $entryDate,
+            $defaultDocStatusId
+        ) {
+            /*
+             * Lock the latest rows while allocating legacy manual IDs.
+             * The named lock above is the main protection for simultaneous
+             * Add Document requests.
+             */
+            $lastDocumentId = DB::table('document')
+                ->orderByDesc('IDdoc')
+                ->lockForUpdate()
+                ->value('IDdoc');
 
-        /*
-         * Save optional typed names for To/From.
-         * This uses DB::table instead of mass assignment so it will still work
-         * even if the DtsDocument model fillable list is not yet updated.
-         */
-        $documentNameUpdates = [];
+            $lastDistributionId = DtsDistribution::query()
+                ->orderByDesc('IDdist')
+                ->lockForUpdate()
+                ->value('IDdist');
 
-        if (Schema::hasColumn('document', 'to_name')) {
-            $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
-            $document->to_name = $validated['to_name'] ?? null;
-        }
+            $lastDocTransactionId = DtsDocTransaction::query()
+                ->orderByDesc('ID')
+                ->lockForUpdate()
+                ->value('ID');
 
-        if (Schema::hasColumn('document', 'from_name')) {
-            $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
-            $document->from_name = $validated['from_name'] ?? null;
-        }
+            $nextDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
+            $nextDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
+            $nextDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
 
-        if (! empty($documentNameUpdates)) {
-            DB::table('document')
-                ->where('IDdoc', $document->IDdoc)
-                ->update($documentNameUpdates);
-        }
+            $hasAttachments = count($request->input('attachments', [])) > 0;
 
-        if (! empty($validated['IDtransac'])) {
-            DtsDocTransaction::create([
-                'ID' => $nextDocTransactionId,
-                'IDdoc' => $document->IDdoc,
-                'IDtransac' => $validated['IDtransac'],
-                'YNattach' => $hasAttachments ? 'True' : 'False',
-                'IDparentdoc' => null,
+            $document = DtsDocument::create([
+                'IDdoc' => $nextDocumentId,
+                'classification' => $validated['classification'],
+                'IDdoctype' => $validated['IDdoctype'],
+                'entrydate' => $entryDate,
+                'IDfor' => $validated['IDfor'],
+                'IDfrom' => $validated['IDfrom'],
+                'subject' => $validated['subject'],
+                'regarding' => $validated['regarding'] ?? null,
+                'IDdocstatus' => $defaultDocStatusId,
+                'IDnote' => null,
+                'IDuser' => Auth::id(),
+                'remarks' => $validated['remarks'] ?? null,
+                'IDkeeper' => $validated['IDkeeper'] ?? null,
+                'IDprogram_pms' => null,
+                'IDproject' => null,
+                'IDprogram_prp' => null,
+                'IDproposal' => null,
+                'IDdocrq' => null,
+                'YNdays' => 'False',
+                'datecleared' => null,
             ]);
-        }
 
-        DtsDistribution::create([
-            'IDdist' => $nextDistributionId,
-            'IDdoc' => $document->IDdoc,
-            'IDoffice' => $validated['IDfor'],
-            'distdate' => now()->format('Y-m-d H:i:s'),
-            'confirmdate' => null,
-            'confirmuser' => null,
-            'YNreturn' => 'False',
-            'returndate' => null,
-            'IDuser' => Auth::id(),
-            'remarks' => $validated['remarks'] ?? null,
-            'IDparentdist' => null,
-            'YNpulled' => 'False',
-            'idmapagency' => $validated['IDkeeper'] ?? null,
-        ]);
+            /*
+             * Save optional typed names for To/From.
+             * DB::table is used so this still works even when the model
+             * fillable list has not yet been updated.
+             */
+            $documentNameUpdates = [];
 
-        $attachments = $request->input('attachments', []);
-
-        foreach ($attachments as $index => $attachment) {
-            $file = $request->file("attachments.{$index}.file");
-
-            if (! $file) {
-                continue;
+            if (Schema::hasColumn('document', 'to_name')) {
+                $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
+                $document->to_name = $validated['to_name'] ?? null;
             }
 
-            $attachmentTypeId = $attachment['type_id'] ?? null;
-            $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+            if (Schema::hasColumn('document', 'from_name')) {
+                $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
+                $document->from_name = $validated['from_name'] ?? null;
+            }
 
-            $path = $file->store("dts/documents/{$document->IDdoc}", 'public');
+            if (! empty($documentNameUpdates)) {
+                DB::table('document')
+                    ->where('IDdoc', $document->IDdoc)
+                    ->update($documentNameUpdates);
+            }
 
-            if (Schema::hasTable('dts_document_files')) {
-                DB::table('dts_document_files')->insert([
+            if (! empty($validated['IDtransac'])) {
+                DtsDocTransaction::create([
+                    'ID' => $nextDocTransactionId,
                     'IDdoc' => $document->IDdoc,
-                    'IDattachment' => $attachmentTypeId ?: 0,
-                    'type_name' => $attachmentTypeName,
-                    'original_name' => $file->getClientOriginalName(),
-                    'stored_name' => basename($path),
-                    'path' => $path,
-                    'mime_type' => $file->getClientMimeType(),
-                    'size' => $file->getSize(),
-                    'uploaded_by' => Auth::id(),
-                    'created_at' => now(),
-                    'updated_at' => now(),
+                    'IDtransac' => $validated['IDtransac'],
+                    'YNattach' => $hasAttachments ? 'True' : 'False',
+                    'IDparentdoc' => null,
                 ]);
             }
-        }
 
-        return $document;
-    });
+            DtsDistribution::create([
+                'IDdist' => $nextDistributionId,
+                'IDdoc' => $document->IDdoc,
+                'IDoffice' => $validated['IDfor'],
+                'distdate' => now()->format('Y-m-d H:i:s'),
+                'confirmdate' => null,
+                'confirmuser' => null,
+                'YNreturn' => 'False',
+                'returndate' => null,
+                'IDuser' => Auth::id(),
+                'remarks' => $validated['remarks'] ?? null,
+                'IDparentdist' => null,
+                'YNpulled' => 'False',
+                'idmapagency' => $validated['IDkeeper'] ?? null,
+            ]);
+
+            $attachments = $request->input('attachments', []);
+
+            foreach ($attachments as $index => $attachment) {
+                $file = $request->file("attachments.{$index}.file");
+
+                if (! $file) {
+                    continue;
+                }
+
+                $attachmentTypeId = $attachment['type_id'] ?? null;
+                $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+
+                $path = $file->store(
+                    "dts/documents/{$document->IDdoc}",
+                    'public'
+                );
+
+                if (Schema::hasTable('dts_document_files')) {
+                    DB::table('dts_document_files')->insert([
+                        'IDdoc' => $document->IDdoc,
+                        'IDattachment' => $attachmentTypeId ?: 0,
+                        'type_name' => $attachmentTypeName,
+                        'original_name' => $file->getClientOriginalName(),
+                        'stored_name' => basename($path),
+                        'path' => $path,
+                        'mime_type' => $file->getClientMimeType(),
+                        'size' => $file->getSize(),
+                        'uploaded_by' => Auth::id(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            return $document;
+        }, 3);
+    } finally {
+        /*
+         * MySQL named locks are connection-level, so always release the lock
+         * even when validation after allocation, insertion, or file storage
+         * throws an exception.
+         */
+        DB::selectOne(
+            'SELECT RELEASE_LOCK(?) AS released',
+            [$creationLockName]
+        );
+    }
 
     $this->recordDtsActivity(
         'created document',
@@ -2029,8 +2092,18 @@ public function index(Request $request)
         ]
     );
 
-    return redirect()->route('dts.show', $document->IDdoc);
+    /*
+     * The final DTS number is shown only after the database has successfully
+     * assigned and saved it.
+     */
+    return redirect()
+        ->route('dts.show', $document->IDdoc)
+        ->with(
+            'success',
+            'Document saved successfully as DTS - ' . $document->IDdoc . '.'
+        );
 }
+
   public function show($id)
 {
     $document = DtsDocument::query()

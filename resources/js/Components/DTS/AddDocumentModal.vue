@@ -28,10 +28,6 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
-    nextDocumentId: {
-        type: [Number, String],
-        default: null,
-    },
 })
 
 const emit = defineEmits(['close'])
@@ -117,13 +113,6 @@ const form = useForm({
     staff_concern_id: '',
     attachments: [],
 })
-
-const nextDocumentIdDisplay = computed(() => {
-    const value = String(props.nextDocumentId ?? '').trim()
-
-    return value ? `DTS - ${value}` : 'Generating...'
-})
-
 
 const formatFileSize = (bytes) => {
     if (!bytes) return '0 KB'
@@ -338,15 +327,9 @@ const submitForm = () => {
                         Fill out the document details below.
                     </p>
 
-                    <div class="mt-3 inline-flex items-center gap-2 rounded-full border border-green-200 bg-green-50 px-3 py-1.5">
-                        <span class="text-xs font-black uppercase tracking-[0.16em] text-green-700">
-                            Doc ID
-                        </span>
-
-                        <span class="text-sm font-black text-green-900">
-                            {{ nextDocumentIdDisplay }}
-                        </span>
-                    </div>
+                    <p class="mt-2 text-xs font-semibold text-slate-400">
+                        A unique DTS No. will be assigned only after the document is successfully saved.
+                    </p>
                 </div>
 
                 <button
