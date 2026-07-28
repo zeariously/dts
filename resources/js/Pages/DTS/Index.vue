@@ -97,6 +97,10 @@ const userRights = computed(() => {
     return String(page.props.auth?.user?.rights ?? '').trim()
 })
 
+const isRoleTwo = computed(() => {
+    return userRights.value === '2'
+})
+
 const canShowReturnedCard = computed(() => {
     /*
      * Returned card is visible only to Role 3.
@@ -1568,6 +1572,39 @@ const documentToDisplay = (doc) => {
         || '-'
 }
 
+/*
+ * Role 2 sees where the document came from.
+ * Other roles continue to see the current To/recipient column.
+ */
+const documentAgencyColumnLabel = computed(() => {
+    return isRoleTwo.value ? 'FROM' : 'To'
+})
+
+const documentAgencyDisplay = (doc) => {
+    if (isRoleTwo.value) {
+        return doc?.from_office
+            || doc?.from_office_name
+            || doc?.sender_office
+            || doc?.office_from
+            || '-'
+    }
+
+    return documentToDisplay(doc)
+}
+
+const documentAgencyAbbrev = (doc) => {
+    if (!isRoleTwo.value) {
+        return ''
+    }
+
+    return String(
+        doc?.from_office_abbrev
+        || doc?.from_abbrev
+        || doc?.office_abbrev
+        || ''
+    ).trim()
+}
+
 const canShowReceiveButton = (doc) => {
     return canReceiveDts.value && documentStatusLabel(doc) === 'For Receiving'
 }
@@ -2900,11 +2937,20 @@ const submitEntryDateUpdate = () => {
                         <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
                             <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </p>
 
                                 <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
-                                    {{ documentToDisplay(doc) }}
+                                    <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                 </p>
                             </div>
 
@@ -2992,7 +3038,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
@@ -3034,7 +3080,16 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
-                                        {{ documentToDisplay(doc) }}
+                                        <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                     </p>
                                 </td>
 
@@ -3206,7 +3261,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[22%] border border-black px-4 py-4 text-center font-bold">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[34%] border border-black px-4 py-4 text-center font-bold">
@@ -3249,7 +3304,16 @@ const submitEntryDateUpdate = () => {
 
                         <td class="border border-black px-4 py-4 align-middle text-center">
                             <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                {{ doc.for_office || doc.current_office || '-' }}
+                                <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                             </p>
                         </td>
 
@@ -3405,7 +3469,7 @@ const submitEntryDateUpdate = () => {
                             </th>
 
                             <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                To
+                                {{ documentAgencyColumnLabel }}
                             </th>
 
                             <th class="w-[32%] border border-black px-4 py-4 text-center font-bold">
@@ -3445,7 +3509,16 @@ const submitEntryDateUpdate = () => {
 
                             <td class="border border-black px-4 py-4 align-middle text-center">
                                 <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                    {{ doc.for_office || doc.current_office || '-' }}
+                                    <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                 </p>
                             </td>
 
@@ -3770,11 +3843,20 @@ const submitEntryDateUpdate = () => {
                         <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
                             <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </p>
 
                                 <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
-                                    {{ documentToDisplay(doc) }}
+                                    <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                 </p>
                             </div>
 
@@ -3862,7 +3944,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
@@ -3904,7 +3986,16 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
-                                        {{ documentToDisplay(doc) }}
+                                        <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                     </p>
                                 </td>
 
@@ -4097,11 +4188,20 @@ const submitEntryDateUpdate = () => {
                         <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
                             <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </p>
 
                                 <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
-                                    {{ documentToDisplay(doc) }}
+                                    <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                 </p>
                             </div>
 
@@ -4189,7 +4289,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
@@ -4231,7 +4331,16 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
-                                        {{ documentToDisplay(doc) }}
+                                        <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                     </p>
                                 </td>
 
@@ -4431,11 +4540,20 @@ const submitEntryDateUpdate = () => {
                         <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
                             <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </p>
 
                                 <p class="mt-1 whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-900">
-                                    {{ documentToDisplay(doc) }}
+                                    <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                 </p>
                             </div>
 
@@ -4523,7 +4641,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    To
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
@@ -4565,7 +4683,16 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <p class="whitespace-pre-line break-words font-semibold leading-6 text-black">
-                                        {{ documentToDisplay(doc) }}
+                                        <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                     </p>
                                 </td>
 
@@ -4917,7 +5044,7 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold">
-                                    TO
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[30%] border-b border-slate-200 px-4 py-4 font-bold">
@@ -4952,7 +5079,16 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="px-4 py-5 align-top">
                                     <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
-                                        {{ doc.to_personnel || doc.receiver_personnel || doc.personnel_name || doc.staff_concern || doc.current_office || doc.for_office || '-' }}
+                                        <span class="block">
+                                            {{ documentAgencyDisplay(doc) }}
+                                        </span>
+
+                                        <span
+                                            v-if="documentAgencyAbbrev(doc)"
+                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
+                                        >
+                                            ({{ documentAgencyAbbrev(doc) }})
+                                        </span>
                                     </div>
                                 </td>
 

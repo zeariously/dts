@@ -501,6 +501,7 @@ public function index(Request $request)
             'dt.description as doctype',
 
             'fromOffice.officename as from_office',
+            'fromOffice.abbrev as from_office_abbrev',
             'forOffice.officename as for_office',
             'distOffice.officename as current_office',
             'receiverPersonnel.name as receiver_personnel',
@@ -572,103 +573,184 @@ public function index(Request $request)
     }
 
     if ($search !== '') {
-        $searchLike = "%{$search}%";
-        $statusSearch = strtolower($search);
+        $searchLike = '%' . $search . '%';
+        $lowerSearchLike = '%' . strtolower($search) . '%';
 
-        $documentsQuery->where(function ($query) use ($searchLike, $statusSearch, $doctypeCodeColumn, $selectedActionLabelExpression, $trueValues) {
-            $query->where('d.IDdoc', 'like', $searchLike)
+        /*
+         * Search must follow only what the logged-in viewer can actually see
+         * in the index table.
+         *
+         * Role 2:
+         * - DOC ID
+         * - From (Agency)
+         * - From agency abbreviation
+         * - Subject
+         * - Status
+         * - Date Sent
+         *
+         * Role 3 and other roles whose table displays To:
+         * - DOC ID
+         * - the exact To value displayed by documentToDisplay()
+         * - Subject
+         * - Status
+         * - Date Sent
+         *
+         * Do not search hidden database fields such as remarks, regarding,
+         * document type, classification, action details, return history,
+         * hidden To/From values, or non-displayed fallback office values.
+         */
+
+        /*
+         * This SQL expression follows the exact frontend priority used by
+         * documentToDisplay():
+         *
+         * receiver personnel -> current distribution office -> original To office
+         *
+         * COALESCE is important. It prevents a hidden fallback office from
+         * matching when a receiver personnel name is already the visible value.
+         */
+        $visibleToExpression = "
+            COALESCE(
+                NULLIF(TRIM(receiverPersonnel.name), ''),
+                NULLIF(TRIM(distOffice.officename), ''),
+                NULLIF(TRIM(forOffice.officename), ''),
+                '-'
+            )
+        ";
+
+        /*
+         * Date Sent follows the frontend display:
+         * dist.date_sent / distribution_date / distdate, then entrydate.
+         */
+        $visibleDateSentExpression = 'COALESCE(dist.distdate, d.entrydate)';
+
+        /*
+         * Build the same status shown by the frontend after the query result
+         * is transformed. Searching a status therefore matches only the label
+         * that the current viewer actually sees.
+         */
+        $roleTwoPendingReturnCondition = $currentRights === '2'
+            ? "
+                (
+                    dist.IDparentdist IS NOT NULL
+                    AND returnDist.IDdist IS NOT NULL
+                    AND CAST(dist.IDparentdist AS CHAR) = CAST(returnDist.IDdist AS CHAR)
+                    AND dist.confirmdate IS NULL
+                    AND COALESCE(returnDist.confirmuser, returnChildDist.IDuser) = "
+                    . (int) ($currentUserIdForScope ?? 0) .
+                "
+                )
+            "
+            : '0 = 1';
+
+        $visibleWorkflowStatusExpression = "
+            CASE
+                WHEN LOWER(COALESCE(CAST(dist.YNpulled AS CHAR), '')) IN ('true', 'y', '1')
+                    THEN 'Pulled Out'
+
+                WHEN {$roleTwoPendingReturnCondition}
+                    THEN 'Returned'
+
+                WHEN (
+                    LOWER(COALESCE(CAST(dist.YNreturn AS CHAR), '')) IN ('true', 'y', '1')
+                    OR dist.returndate IS NOT NULL
+                )
+                    THEN 'Returned'
+
+                WHEN (
+                    {$documentIsCompletedSql}
+                    OR (
+                        selectedActionRemark.id IS NOT NULL
+                        AND dist.confirmdate IS NOT NULL
+                    )
+                )
+                    THEN 'Addressed'
+
+                WHEN dist.confirmdate IS NOT NULL
+                    THEN 'Received'
+
+                WHEN dist.distdate IS NOT NULL
+                    THEN 'For Receiving'
+
+                WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
+                    THEN 'Pending 07'
+
+                ELSE 'Pending'
+            END
+        ";
+
+        $documentsQuery->where(function ($query) use (
+            $searchLike,
+            $lowerSearchLike,
+            $currentRights,
+            $visibleToExpression,
+            $visibleDateSentExpression,
+            $visibleWorkflowStatusExpression
+        ) {
+            /*
+             * Common visible columns for all viewers.
+             */
+            $query
+                ->whereRaw('CAST(d.IDdoc AS CHAR) LIKE ?', [$searchLike])
                 ->orWhere('d.subject', 'like', $searchLike)
-                ->orWhere('d.regarding', 'like', $searchLike)
-                ->orWhere('d.remarks', 'like', $searchLike)
-                ->orWhere('d.classification', 'like', $searchLike)
-                ->orWhere('dt.description', 'like', $searchLike)
-                ->orWhereRaw($doctypeCodeColumn . ' LIKE ?', [$searchLike])
-                ->orWhere('fromOffice.officename', 'like', $searchLike)
-                ->orWhere('forOffice.officename', 'like', $searchLike)
-                ->when(Schema::hasColumn('document', 'to_name'), function ($nameQuery) use ($searchLike) {
-                    $nameQuery->orWhere('d.to_name', 'like', $searchLike);
-                })
-                ->when(Schema::hasColumn('document', 'from_name'), function ($nameQuery) use ($searchLike) {
-                    $nameQuery->orWhere('d.from_name', 'like', $searchLike);
-                })
-                ->orWhere('distOffice.officename', 'like', $searchLike)
-                ->orWhere('receiverPersonnel.name', 'like', $searchLike)
-                ->orWhere('dist.remarks', 'like', $searchLike)
-                ->orWhere('selectedActionRemark.remarks', 'like', $searchLike)
-                ->orWhere('selectedActionType.name', 'like', $searchLike)
-                ->orWhereRaw($selectedActionLabelExpression . ' LIKE ?', [$searchLike])
-                ->orWhereRaw('CAST(d.IDdocstatus AS CHAR) LIKE ?', [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(COALESCE(returnDist.returndate, dist.returndate), '%b %e, %Y') LIKE ?", [$searchLike]);
+                ->orWhereRaw(
+                    'LOWER(' . $visibleWorkflowStatusExpression . ') LIKE ?',
+                    [$lowerSearchLike]
+                )
 
-            if (str_contains($statusSearch, 'incoming')) {
-                $query->orWhere('d.classification', 'False');
-            }
+                /*
+                 * Search the Date Sent exactly as displayed, supporting the
+                 * common date formats users may type.
+                 */
+                ->orWhereRaw(
+                    $visibleDateSentExpression . ' LIKE ?',
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%Y-%m-%d %H:%i:%s') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%b %e, %Y, %l:%i %p') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%M %e, %Y, %l:%i %p') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%b %e, %Y') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%M %e, %Y') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%m/%d/%Y') LIKE ?",
+                    [$searchLike]
+                )
+                ->orWhereRaw(
+                    "DATE_FORMAT({$visibleDateSentExpression}, '%d/%m/%Y') LIKE ?",
+                    [$searchLike]
+                );
 
-            if (str_contains($statusSearch, 'outgoing')) {
-                $query->orWhere('d.classification', 'True');
-            }
-
-            if (str_contains($statusSearch, 'received') || str_contains($statusSearch, 'done')) {
-                $query->orWhereNotNull('dist.confirmdate');
-            }
-
-            if (str_contains($statusSearch, 'for receiving') || str_contains($statusSearch, 'receiving')) {
-                $query->orWhere(function ($statusQuery) use ($trueValues) {
-                    $statusQuery->whereNotNull('dist.IDdist')
-                        ->whereNull('dist.confirmdate')
-                        ->where(function ($subQuery) use ($trueValues) {
-                            $subQuery->whereNull('dist.YNreturn')
-                                ->orWhereNotIn('dist.YNreturn', $trueValues);
-                        })
-                        ->where(function ($subQuery) use ($trueValues) {
-                            $subQuery->whereNull('dist.YNpulled')
-                                ->orWhereNotIn('dist.YNpulled', $trueValues);
-                        });
-                });
-            }
-
-            if (str_contains($statusSearch, 'pending')) {
-                $query->orWhere(function ($statusQuery) use ($trueValues) {
-                    $statusQuery->where(function ($subQuery) {
-                        $subQuery->whereNull('dist.IDdist')
-                            ->orWhereNull('dist.confirmdate');
-                    })
-                    ->where(function ($subQuery) use ($trueValues) {
-                        $subQuery->whereNull('dist.YNreturn')
-                            ->orWhereNotIn('dist.YNreturn', $trueValues);
-                    })
-                    ->where(function ($subQuery) use ($trueValues) {
-                        $subQuery->whereNull('dist.YNpulled')
-                            ->orWhereNotIn('dist.YNpulled', $trueValues);
-                    });
-                });
-            }
-
-            if (str_contains($statusSearch, 'pending 07') || str_contains($statusSearch, '07')) {
-                $query->orWhere('d.IDdocstatus', 7);
-            }
-
-            if (str_contains($statusSearch, 'return')) {
-                $query->orWhere(function ($statusQuery) use ($trueValues) {
-                    $statusQuery->whereIn('dist.YNreturn', $trueValues)
-                        ->orWhereNotNull('dist.returndate')
-                        ->orWhereNotNull('returnDist.returndate');
-                });
-            }
-
-            if (str_contains($statusSearch, 'pulled') || str_contains($statusSearch, 'pullout')) {
-                $query->orWhereIn('dist.YNpulled', $trueValues);
+            if ($currentRights === '2') {
+                /*
+                 * Role 2 sees From (Agency) and its abbreviation.
+                 */
+                $query
+                    ->orWhere('fromOffice.officename', 'like', $searchLike)
+                    ->orWhere('fromOffice.abbrev', 'like', $searchLike);
+            } else {
+                /*
+                 * Role 3 and other non-Role-2 viewers see To.
+                 * Search only the first non-empty value that is displayed.
+                 */
+                $query->orWhereRaw(
+                    $visibleToExpression . ' LIKE ?',
+                    [$searchLike]
+                );
             }
         });
     }

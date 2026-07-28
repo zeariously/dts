@@ -1918,9 +1918,9 @@ const formatFileSize = (bytes) => {
                     class="inline-flex w-fit items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-black text-slate-700 shadow-sm hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
                 >
                     ← Back to Homepage
-                </Link>
-            </div>
-        </header>
+                    </Link>
+                </div>
+            </header>
 
         <main class="mx-auto max-w-screen-2xl px-6 py-5">
             <!-- Compact Hero -->
