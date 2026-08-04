@@ -31,6 +31,40 @@ public function index(Request $request)
     $section = $request->input('section', 'documents');
     $filter = $request->input('filter');
 
+    /*
+     * Sort the complete query before pagination.
+     * Default: highest/latest DOC ID first.
+     */
+    $sortBy = strtolower(
+        trim((string) $request->input('sort_by', 'doc_id'))
+    );
+
+    $sortDirection = strtolower(
+        trim((string) $request->input('sort_direction', 'desc'))
+    );
+
+    $allowedSortColumns = [
+        'doc_id',
+        'agency',
+        'to',
+        'from',
+        'type',
+        'subject',
+        'regarding',
+        'status',
+        'date_sent',
+        'distribution_date',
+        'return_date',
+    ];
+
+    if (! in_array($sortBy, $allowedSortColumns, true)) {
+        $sortBy = 'doc_id';
+    }
+
+    if (! in_array($sortDirection, ['asc', 'desc'], true)) {
+        $sortDirection = $sortBy === 'doc_id' ? 'desc' : 'asc';
+    }
+
     if ($perPage < 1) {
         $perPage = 10;
     }
@@ -109,6 +143,46 @@ public function index(Request $request)
     $completedByExpression = Schema::hasColumn('document', 'completed_by')
         ? 'd.completed_by'
         : 'NULL';
+
+    /*
+     * Multiple-assignment presentation fields.
+     *
+     * IDdoc remains numeric and continues to be used for every route,
+     * receive/action/transfer/return operation, attachment, remark, and history.
+     */
+    $hasMultipleAssignmentColumns =
+        Schema::hasColumn('document', 'document_group_id')
+        && Schema::hasColumn('document', 'assignment_suffix');
+
+    $displayDocumentNumberExpression = $hasMultipleAssignmentColumns
+        ? "CASE
+            WHEN d.document_group_id IS NOT NULL
+                AND NULLIF(TRIM(d.assignment_suffix), '') IS NOT NULL
+            THEN CONCAT(
+                CAST(d.document_group_id AS CHAR),
+                '-',
+                UPPER(TRIM(d.assignment_suffix))
+            )
+            ELSE CAST(d.IDdoc AS CHAR)
+        END"
+        : 'CAST(d.IDdoc AS CHAR)';
+
+    $documentGroupIdSelectExpression = $hasMultipleAssignmentColumns
+        ? 'd.document_group_id'
+        : 'NULL';
+
+    $assignmentSuffixSelectExpression = $hasMultipleAssignmentColumns
+        ? 'UPPER(NULLIF(TRIM(d.assignment_suffix), \'\'))'
+        : 'NULL';
+
+    $isMultipleAssignmentSelectExpression = $hasMultipleAssignmentColumns
+        ? "CASE
+            WHEN d.document_group_id IS NOT NULL
+                AND NULLIF(TRIM(d.assignment_suffix), '') IS NOT NULL
+            THEN 1
+            ELSE 0
+        END"
+        : '0';
 
     $currentRights = (string) $this->currentUserRights();
 
@@ -477,6 +551,10 @@ public function index(Request $request)
         ->select([
             'd.IDdoc',
             'd.IDdoc as document_no',
+            DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
+            DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
+            DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
+            DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
             'd.classification',
             'd.IDdoctype',
             'd.entrydate',
@@ -685,13 +763,17 @@ public function index(Request $request)
             $currentRights,
             $visibleToExpression,
             $visibleDateSentExpression,
-            $visibleWorkflowStatusExpression
+            $visibleWorkflowStatusExpression,
+            $displayDocumentNumberExpression
         ) {
             /*
              * Common visible columns for all viewers.
              */
             $query
-                ->whereRaw('CAST(d.IDdoc AS CHAR) LIKE ?', [$searchLike])
+                ->whereRaw(
+                    '(' . $displayDocumentNumberExpression . ') LIKE ?',
+                    [$searchLike]
+                )
                 ->orWhere('d.subject', 'like', $searchLike)
                 ->orWhereRaw(
                     'LOWER(' . $visibleWorkflowStatusExpression . ') LIKE ?',
@@ -1132,9 +1214,86 @@ public function index(Request $request)
             ->whereDate('d.entrydate', '<=', now()->subDays(15)->toDateString());
     }
 
+    /*
+     * These expressions mirror the values visible in the Vue tables.
+     */
+    $visibleToSortExpression = "
+        COALESCE(
+            NULLIF(TRIM(receiverPersonnel.name), ''),
+            NULLIF(TRIM(distOffice.officename), ''),
+            NULLIF(TRIM(forOffice.officename), ''),
+            '-'
+        )
+    ";
+
+    $visibleAgencySortExpression = $currentRights === '2'
+        ? "COALESCE(NULLIF(TRIM(fromOffice.officename), ''), '-')"
+        : $visibleToSortExpression;
+
+    $visibleStatusSortExpression = "
+        CASE
+            WHEN LOWER(COALESCE(CAST(dist.YNpulled AS CHAR), ''))
+                IN ('true', 'y', '1')
+                THEN 'Pulled Out'
+
+            WHEN (
+                LOWER(COALESCE(CAST(dist.YNreturn AS CHAR), ''))
+                    IN ('true', 'y', '1')
+                OR dist.returndate IS NOT NULL
+            )
+                THEN 'Returned'
+
+            WHEN (
+                {$documentIsCompletedSql}
+                OR (
+                    selectedActionRemark.id IS NOT NULL
+                    AND dist.confirmdate IS NOT NULL
+                )
+            )
+                THEN 'Addressed'
+
+            WHEN dist.confirmdate IS NOT NULL
+                THEN 'Received'
+
+            WHEN dist.distdate IS NOT NULL
+                THEN 'For Receiving'
+
+            WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
+                THEN 'Pending 07'
+
+            ELSE 'Pending'
+        END
+    ";
+
+    $sortExpressions = [
+        'doc_id' => 'CAST(d.IDdoc AS UNSIGNED)',
+        'agency' => $visibleAgencySortExpression,
+        'to' => $visibleToSortExpression,
+        'from' => "COALESCE(NULLIF(TRIM(fromOffice.officename), ''), '-')",
+        'type' => $doctypeCodeColumn,
+        'subject' => "COALESCE(NULLIF(TRIM(d.subject), ''), '-')",
+        'regarding' => "COALESCE(NULLIF(TRIM(d.regarding), ''), '-')",
+        'status' => $visibleStatusSortExpression,
+        'date_sent' => 'COALESCE(dist.distdate, d.entrydate)',
+        'distribution_date' => 'dist.distdate',
+        'return_date' => 'COALESCE(returnDist.returndate, dist.returndate)',
+    ];
+
+    $selectedSortExpression = $sortExpressions[$sortBy]
+        ?? $sortExpressions['doc_id'];
+
+    $documentsQuery->orderByRaw(
+        $selectedSortExpression . ' ' . strtoupper($sortDirection)
+    );
+
+    /*
+     * Keep equal values stable and predictable.
+     */
+    if ($sortBy !== 'doc_id') {
+        $documentsQuery->orderByDesc('d.IDdoc');
+    }
+
     $documents = $documentsQuery
-        ->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'))
-        ->orderByDesc('d.IDdoc')
         ->paginate($perPage)
         ->appends($request->query());
 
@@ -1549,6 +1708,10 @@ public function index(Request $request)
                 DB::raw("'for_receiving' as notification_type"),
                 'd.IDdoc',
                 'd.IDdoc as document_no',
+                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
+                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
+                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
+                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
                 'd.subject',
                 'd.entrydate',
                 DB::raw($doctypeCodeColumn . ' as code'),
@@ -1569,6 +1732,10 @@ public function index(Request $request)
                     'notification_type' => 'for_receiving',
                     'IDdoc' => $doc->IDdoc,
                     'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
+                    'document_group_id' => $doc->document_group_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
+                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
                     'subject' => $doc->subject,
                     'entrydate' => $doc->entrydate,
                     'code' => $doc->code,
@@ -1697,6 +1864,10 @@ public function index(Request $request)
             ->select([
                 'd.IDdoc',
                 'd.IDdoc as document_no',
+                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
+                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
+                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
+                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
                 'd.subject',
                 'd.entrydate',
                 DB::raw($doctypeCodeColumn . ' as code'),
@@ -1720,6 +1891,10 @@ public function index(Request $request)
                     'notification_type' => 'automatic_status_reminder',
                     'IDdoc' => $doc->IDdoc,
                     'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
+                    'document_group_id' => $doc->document_group_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
+                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
                     'subject' => $doc->subject,
                     'entrydate' => $doc->entrydate,
                     'code' => $doc->code,
@@ -1755,6 +1930,10 @@ public function index(Request $request)
             ->select([
                 'd.IDdoc',
                 'd.IDdoc as document_no',
+                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
+                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
+                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
+                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
                 'd.subject',
                 'd.entrydate',
                 DB::raw($doctypeCodeColumn . ' as code'),
@@ -1773,6 +1952,10 @@ public function index(Request $request)
                     'notification_type' => 'received_by_addressee',
                     'IDdoc' => $doc->IDdoc,
                     'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
+                    'document_group_id' => $doc->document_group_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
+                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
                     'subject' => $doc->subject,
                     'entrydate' => $doc->entrydate,
                     'code' => $doc->code,
@@ -1831,6 +2014,8 @@ public function index(Request $request)
         'filters' => [
             'search' => $search,
             'per_page' => $perPage,
+            'sort_by' => $sortBy,
+            'sort_direction' => $sortDirection,
             'section' => $section,
             'filter' => $filter,
             'scope' => $request->input('scope'),
@@ -1896,12 +2081,50 @@ public function index(Request $request)
 
     $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
 
+    /*
+     * The updated modal supports both modes:
+     *
+     * SINGLE MODE
+     * - staff_concern_id contains one personnel ID.
+     * - The original one-document workflow is preserved.
+     *
+     * MULTIPLE MODE
+     * - staff_concern_ids contains two or more personnel IDs.
+     * - One independent document row is created for every selected personnel.
+     * - Each row therefore keeps its own distribution, status, actions,
+     *   remarks, notifications, attachments, and history.
+     */
+    $requestedStaffIds = collect($request->input('staff_concern_ids', []))
+        ->filter(fn ($id) => $id !== null && $id !== '')
+        ->map(fn ($id) => (int) $id)
+        ->filter(fn ($id) => $id > 0)
+        ->unique()
+        ->values();
+
+    $singleStaffId = $request->input(
+        'staff_concern_id',
+        $request->input('IDkeeper')
+    );
+
+    if ($requestedStaffIds->isEmpty() && $singleStaffId !== null && $singleStaffId !== '') {
+        $requestedStaffIds = collect([(int) $singleStaffId]);
+    }
+
+    $isMultipleAssignment = $requestedStaffIds->count() > 1;
+
     $request->merge([
         'classification' => $request->input('classification_id', $request->input('classification')),
         'IDdoctype' => $request->input('type_id', $request->input('IDdoctype')),
         'IDfrom' => $request->input('from_office_id', $request->input('IDfrom')),
         'IDfor' => $request->input('to_office_id', $request->input('IDfor')),
-        'IDkeeper' => $request->input('staff_concern_id', $request->input('IDkeeper')),
+
+        /*
+         * Preserve the original field only for the original single workflow.
+         * Multiple entries receive their individual IDkeeper inside the loop.
+         */
+        'IDkeeper' => $isMultipleAssignment
+            ? null
+            : $requestedStaffIds->first(),
     ]);
 
     $validated = $request->validate([
@@ -1914,6 +2137,15 @@ public function index(Request $request)
         'from_name' => ['nullable', 'string', 'max:255'],
         'IDdocstatus' => ['nullable', 'integer', 'exists:lu_docstatus,ID'],
         'IDkeeper' => ['nullable', 'integer', 'exists:lu_personnel,ID'],
+
+        /* Multiple-select payload from AddDocumentModal. */
+        'staff_concern_ids' => ['nullable', 'array', 'max:20'],
+        'staff_concern_ids.*' => [
+            'required',
+            'integer',
+            'distinct',
+            'exists:lu_personnel,ID',
+        ],
 
         'entry_month' => ['nullable', 'digits_between:1,2'],
         'entry_day' => ['nullable', 'digits_between:1,2'],
@@ -1934,6 +2166,50 @@ public function index(Request $request)
             "max:{$maxPdfKilobytes}",
         ],
     ]);
+
+    /*
+     * Rebuild the final validated list. This also supports older clients that
+     * still submit only staff_concern_id / IDkeeper.
+     */
+    $staffIds = collect($validated['staff_concern_ids'] ?? [])
+        ->filter(fn ($id) => $id !== null && $id !== '')
+        ->map(fn ($id) => (int) $id)
+        ->filter(fn ($id) => $id > 0)
+        ->unique()
+        ->values();
+
+    if ($staffIds->isEmpty() && ! empty($validated['IDkeeper'])) {
+        $staffIds = collect([(int) $validated['IDkeeper']]);
+    }
+
+    if ($staffIds->isEmpty()) {
+        return back()
+            ->withErrors([
+                'staff_concern_ids' => 'Select at least one Staff Concern.',
+            ])
+            ->withInput();
+    }
+
+    $isMultipleAssignment = $staffIds->count() > 1;
+
+    /*
+     * Multiple entries need these two nullable columns so every independent
+     * numeric IDdoc can still display one shared reference such as:
+     * DTS-184782-A, DTS-184782-B, DTS-184782-C.
+     */
+    if (
+        $isMultipleAssignment
+        && (
+            ! Schema::hasColumn('document', 'document_group_id')
+            || ! Schema::hasColumn('document', 'assignment_suffix')
+        )
+    ) {
+        return back()
+            ->withErrors([
+                'staff_concern_ids' => 'Multiple assignment database columns are missing. Run the provided migration first.',
+            ])
+            ->withInput();
+    }
 
     $entryDate = now()->format('Y-m-d H:i:s');
 
@@ -1965,37 +2241,53 @@ public function index(Request $request)
             ->value('ID')
         ?? 1;
 
-    if (! empty($validated['IDkeeper'])) {
-        $selectedPersonnel = DB::table('lu_personnel')
-            ->where('ID', $validated['IDkeeper'])
-            ->select(['ID', 'name', 'IDoffice'])
-            ->first();
+    /*
+     * Confirm all selected personnel in one query. Validation already checks
+     * existence, while this provides a friendly error if records change
+     * between validation and insertion.
+     */
+    $selectedPersonnel = DB::table('lu_personnel')
+        ->whereIn('ID', $staffIds->all())
+        ->select(['ID', 'name', 'IDoffice'])
+        ->get()
+        ->keyBy(fn ($personnel) => (int) $personnel->ID);
 
-        if (! $selectedPersonnel) {
-            return back()
-                ->withErrors([
-                    'IDkeeper' => 'Selected staff concern was not found.',
-                ])
-                ->withInput();
-        }
-
-        /*
-         * Do not overwrite To Office with the Staff Concern office.
-         *
-         * IDfor is the office selected in the To Office dropdown.
-         * IDkeeper is only the assigned/tagged personnel.
-         */
+    if ($selectedPersonnel->count() !== $staffIds->count()) {
+        return back()
+            ->withErrors([
+                'staff_concern_ids' => 'One or more selected Staff Concern records were not found.',
+            ])
+            ->withInput();
     }
 
     /*
-     * CONCURRENCY-SAFE DTS NUMBER GENERATION
-     *
-     * Do not calculate or display the next DTS number before submission.
-     * Multiple users may have the Add Document modal open at the same time.
-     *
-     * GET_LOCK serializes document creation requests. Only the request that
-     * currently owns this lock may read MAX(IDdoc) and insert the next number.
-     * The other request waits, then receives the following number.
+     * Keep the A/B/C assignment order identical to the modal preview.
+     * The multi-select dropdown displays selected staff alphabetically.
+     */
+    $staffIds = $staffIds
+        ->sortBy(function ($staffId) use ($selectedPersonnel) {
+            $name = (string) ($selectedPersonnel->get((int) $staffId)->name ?? '');
+
+            return mb_strtolower(trim($name));
+        })
+        ->values();
+
+    /* Convert 1, 2, 3 ... to A, B, C ... Z, AA, AB. */
+    $makeAssignmentSuffix = function (int $number): string {
+        $suffix = '';
+
+        while ($number > 0) {
+            $number--;
+            $suffix = chr(65 + ($number % 26)) . $suffix;
+            $number = intdiv($number, 26);
+        }
+
+        return $suffix;
+    };
+
+    /*
+     * Keep the current concurrency-safe manual ID allocation.
+     * Only one Add Document request may allocate IDs at a time.
      */
     $creationLockName = 'dts_create_document';
     $lockResult = DB::selectOne(
@@ -2012,177 +2304,391 @@ public function index(Request $request)
     }
 
     try {
-        $document = DB::transaction(function () use (
-            $request,
-            $validated,
-            $entryDate,
-            $defaultDocStatusId
-        ) {
-            /*
-             * Lock the latest rows while allocating legacy manual IDs.
-             * The named lock above is the main protection for simultaneous
-             * Add Document requests.
-             */
-            $lastDocumentId = DB::table('document')
-                ->orderByDesc('IDdoc')
-                ->lockForUpdate()
-                ->value('IDdoc');
+        /*
+         * ORIGINAL SINGLE MODE
+         *
+         * This block intentionally preserves the existing one-document process.
+         * No group ID and no A/B/C suffix are written when only one staff is
+         * selected.
+         */
+        if (! $isMultipleAssignment) {
+            $validated['IDkeeper'] = (int) $staffIds->first();
 
-            $lastDistributionId = DtsDistribution::query()
-                ->orderByDesc('IDdist')
-                ->lockForUpdate()
-                ->value('IDdist');
+            $document = DB::transaction(function () use (
+                $request,
+                $validated,
+                $entryDate,
+                $defaultDocStatusId
+            ) {
+                $lastDocumentId = DB::table('document')
+                    ->orderByDesc('IDdoc')
+                    ->lockForUpdate()
+                    ->value('IDdoc');
 
-            $lastDocTransactionId = DtsDocTransaction::query()
-                ->orderByDesc('ID')
-                ->lockForUpdate()
-                ->value('ID');
+                $lastDistributionId = DtsDistribution::query()
+                    ->orderByDesc('IDdist')
+                    ->lockForUpdate()
+                    ->value('IDdist');
 
-            $nextDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
-            $nextDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
-            $nextDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
+                $lastDocTransactionId = DtsDocTransaction::query()
+                    ->orderByDesc('ID')
+                    ->lockForUpdate()
+                    ->value('ID');
 
-            $hasAttachments = count($request->input('attachments', [])) > 0;
+                $nextDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
+                $nextDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
+                $nextDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
 
-            $document = DtsDocument::create([
-                'IDdoc' => $nextDocumentId,
-                'classification' => $validated['classification'],
-                'IDdoctype' => $validated['IDdoctype'],
-                'entrydate' => $entryDate,
-                'IDfor' => $validated['IDfor'],
-                'IDfrom' => $validated['IDfrom'],
-                'subject' => $validated['subject'],
-                'regarding' => $validated['regarding'] ?? null,
-                'IDdocstatus' => $defaultDocStatusId,
-                'IDnote' => null,
-                'IDuser' => Auth::id(),
-                'remarks' => $validated['remarks'] ?? null,
-                'IDkeeper' => $validated['IDkeeper'] ?? null,
-                'IDprogram_pms' => null,
-                'IDproject' => null,
-                'IDprogram_prp' => null,
-                'IDproposal' => null,
-                'IDdocrq' => null,
-                'YNdays' => 'False',
-                'datecleared' => null,
-            ]);
+                $hasAttachments = count($request->input('attachments', [])) > 0;
 
-            /*
-             * Save optional typed names for To/From.
-             * DB::table is used so this still works even when the model
-             * fillable list has not yet been updated.
-             */
-            $documentNameUpdates = [];
-
-            if (Schema::hasColumn('document', 'to_name')) {
-                $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
-                $document->to_name = $validated['to_name'] ?? null;
-            }
-
-            if (Schema::hasColumn('document', 'from_name')) {
-                $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
-                $document->from_name = $validated['from_name'] ?? null;
-            }
-
-            if (! empty($documentNameUpdates)) {
-                DB::table('document')
-                    ->where('IDdoc', $document->IDdoc)
-                    ->update($documentNameUpdates);
-            }
-
-            if (! empty($validated['IDtransac'])) {
-                DtsDocTransaction::create([
-                    'ID' => $nextDocTransactionId,
-                    'IDdoc' => $document->IDdoc,
-                    'IDtransac' => $validated['IDtransac'],
-                    'YNattach' => $hasAttachments ? 'True' : 'False',
-                    'IDparentdoc' => null,
+                $document = DtsDocument::create([
+                    'IDdoc' => $nextDocumentId,
+                    'classification' => $validated['classification'],
+                    'IDdoctype' => $validated['IDdoctype'],
+                    'entrydate' => $entryDate,
+                    'IDfor' => $validated['IDfor'],
+                    'IDfrom' => $validated['IDfrom'],
+                    'subject' => $validated['subject'],
+                    'regarding' => $validated['regarding'] ?? null,
+                    'IDdocstatus' => $defaultDocStatusId,
+                    'IDnote' => null,
+                    'IDuser' => Auth::id(),
+                    'remarks' => $validated['remarks'] ?? null,
+                    'IDkeeper' => $validated['IDkeeper'],
+                    'IDprogram_pms' => null,
+                    'IDproject' => null,
+                    'IDprogram_prp' => null,
+                    'IDproposal' => null,
+                    'IDdocrq' => null,
+                    'YNdays' => 'False',
+                    'datecleared' => null,
                 ]);
-            }
 
-            DtsDistribution::create([
-                'IDdist' => $nextDistributionId,
-                'IDdoc' => $document->IDdoc,
-                'IDoffice' => $validated['IDfor'],
-                'distdate' => now()->format('Y-m-d H:i:s'),
-                'confirmdate' => null,
-                'confirmuser' => null,
-                'YNreturn' => 'False',
-                'returndate' => null,
-                'IDuser' => Auth::id(),
-                'remarks' => $validated['remarks'] ?? null,
-                'IDparentdist' => null,
-                'YNpulled' => 'False',
-                'idmapagency' => $validated['IDkeeper'] ?? null,
-            ]);
+                $documentNameUpdates = [];
 
-            $attachments = $request->input('attachments', []);
-
-            foreach ($attachments as $index => $attachment) {
-                $file = $request->file("attachments.{$index}.file");
-
-                if (! $file) {
-                    continue;
+                if (Schema::hasColumn('document', 'to_name')) {
+                    $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
+                    $document->to_name = $validated['to_name'] ?? null;
                 }
 
-                $attachmentTypeId = $attachment['type_id'] ?? null;
-                $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+                if (Schema::hasColumn('document', 'from_name')) {
+                    $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
+                    $document->from_name = $validated['from_name'] ?? null;
+                }
 
-                $path = $file->store(
-                    "dts/documents/{$document->IDdoc}",
-                    'public'
-                );
+                if (! empty($documentNameUpdates)) {
+                    DB::table('document')
+                        ->where('IDdoc', $document->IDdoc)
+                        ->update($documentNameUpdates);
+                }
 
-                if (Schema::hasTable('dts_document_files')) {
-                    DB::table('dts_document_files')->insert([
+                if (! empty($validated['IDtransac'])) {
+                    DtsDocTransaction::create([
+                        'ID' => $nextDocTransactionId,
                         'IDdoc' => $document->IDdoc,
-                        'IDattachment' => $attachmentTypeId ?: 0,
-                        'type_name' => $attachmentTypeName,
-                        'original_name' => $file->getClientOriginalName(),
-                        'stored_name' => basename($path),
-                        'path' => $path,
-                        'mime_type' => $file->getClientMimeType(),
-                        'size' => $file->getSize(),
-                        'uploaded_by' => Auth::id(),
-                        'created_at' => now(),
-                        'updated_at' => now(),
+                        'IDtransac' => $validated['IDtransac'],
+                        'YNattach' => $hasAttachments ? 'True' : 'False',
+                        'IDparentdoc' => null,
                     ]);
                 }
-            }
 
-            return $document;
-        }, 3);
+                DtsDistribution::create([
+                    'IDdist' => $nextDistributionId,
+                    'IDdoc' => $document->IDdoc,
+                    'IDoffice' => $validated['IDfor'],
+                    'distdate' => now()->format('Y-m-d H:i:s'),
+                    'confirmdate' => null,
+                    'confirmuser' => null,
+                    'YNreturn' => 'False',
+                    'returndate' => null,
+                    'IDuser' => Auth::id(),
+                    'remarks' => $validated['remarks'] ?? null,
+                    'IDparentdist' => null,
+                    'YNpulled' => 'False',
+                    'idmapagency' => $validated['IDkeeper'],
+                ]);
+
+                $attachments = $request->input('attachments', []);
+
+                foreach ($attachments as $index => $attachment) {
+                    $file = $request->file("attachments.{$index}.file");
+
+                    if (! $file) {
+                        continue;
+                    }
+
+                    $attachmentTypeId = $attachment['type_id'] ?? null;
+                    $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+
+                    $path = $file->store(
+                        "dts/documents/{$document->IDdoc}",
+                        'public'
+                    );
+
+                    if (Schema::hasTable('dts_document_files')) {
+                        DB::table('dts_document_files')->insert([
+                            'IDdoc' => $document->IDdoc,
+                            'IDattachment' => $attachmentTypeId ?: 0,
+                            'type_name' => $attachmentTypeName,
+                            'original_name' => $file->getClientOriginalName(),
+                            'stored_name' => basename($path),
+                            'path' => $path,
+                            'mime_type' => $file->getClientMimeType(),
+                            'size' => $file->getSize(),
+                            'uploaded_by' => Auth::id(),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                    }
+                }
+
+                return $document;
+            }, 3);
+
+            $createdDocuments = collect([
+                (object) [
+                    'document' => $document,
+                    'reference' => 'DTS - ' . $document->IDdoc,
+                    'personnel_id' => (int) $validated['IDkeeper'],
+                    'personnel_name' => $selectedPersonnel->get((int) $validated['IDkeeper'])->name ?? null,
+                    'suffix' => null,
+                ],
+            ]);
+        } else {
+            /*
+             * MULTIPLE MODE
+             *
+             * Create one complete, independent document workflow per selected
+             * staff member. The original details are copied, while IDdoc,
+             * IDkeeper, distribution, status, actions, and history remain
+             * separate for every entry.
+             */
+            $createdDocuments = DB::transaction(function () use (
+                $request,
+                $validated,
+                $entryDate,
+                $defaultDocStatusId,
+                $staffIds,
+                $selectedPersonnel,
+                $makeAssignmentSuffix
+            ) {
+                $lastDocumentId = DB::table('document')
+                    ->orderByDesc('IDdoc')
+                    ->lockForUpdate()
+                    ->value('IDdoc');
+
+                $lastDistributionId = DtsDistribution::query()
+                    ->orderByDesc('IDdist')
+                    ->lockForUpdate()
+                    ->value('IDdist');
+
+                $lastDocTransactionId = DtsDocTransaction::query()
+                    ->orderByDesc('ID')
+                    ->lockForUpdate()
+                    ->value('ID');
+
+                $baseDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
+                $baseDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
+                $baseDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
+
+                $hasAttachments = count($request->input('attachments', [])) > 0;
+                $created = collect();
+
+                foreach ($staffIds as $index => $staffId) {
+                    $documentId = $baseDocumentId + $index;
+                    $distributionId = $baseDistributionId + $index;
+                    $suffix = $makeAssignmentSuffix($index + 1);
+
+                    $document = DtsDocument::create([
+                        'IDdoc' => $documentId,
+                        'classification' => $validated['classification'],
+                        'IDdoctype' => $validated['IDdoctype'],
+                        'entrydate' => $entryDate,
+                        'IDfor' => $validated['IDfor'],
+                        'IDfrom' => $validated['IDfrom'],
+                        'subject' => $validated['subject'],
+                        'regarding' => $validated['regarding'] ?? null,
+                        'IDdocstatus' => $defaultDocStatusId,
+                        'IDnote' => null,
+                        'IDuser' => Auth::id(),
+                        'remarks' => $validated['remarks'] ?? null,
+                        'IDkeeper' => (int) $staffId,
+                        'IDprogram_pms' => null,
+                        'IDproject' => null,
+                        'IDprogram_prp' => null,
+                        'IDproposal' => null,
+                        'IDdocrq' => null,
+                        'YNdays' => 'False',
+                        'datecleared' => null,
+                    ]);
+
+                    /*
+                     * These fields are updated directly so the DtsDocument
+                     * model fillable list does not need to be changed yet.
+                     */
+                    $documentUpdates = [
+                        'document_group_id' => $baseDocumentId,
+                        'assignment_suffix' => $suffix,
+                    ];
+
+                    if (Schema::hasColumn('document', 'to_name')) {
+                        $documentUpdates['to_name'] = $validated['to_name'] ?? null;
+                        $document->to_name = $validated['to_name'] ?? null;
+                    }
+
+                    if (Schema::hasColumn('document', 'from_name')) {
+                        $documentUpdates['from_name'] = $validated['from_name'] ?? null;
+                        $document->from_name = $validated['from_name'] ?? null;
+                    }
+
+                    DB::table('document')
+                        ->where('IDdoc', $document->IDdoc)
+                        ->update($documentUpdates);
+
+                    $document->document_group_id = $baseDocumentId;
+                    $document->assignment_suffix = $suffix;
+
+                    if (! empty($validated['IDtransac'])) {
+                        DtsDocTransaction::create([
+                            'ID' => $baseDocTransactionId + $index,
+                            'IDdoc' => $document->IDdoc,
+                            'IDtransac' => $validated['IDtransac'],
+                            'YNattach' => $hasAttachments ? 'True' : 'False',
+                            'IDparentdoc' => null,
+                        ]);
+                    }
+
+                    DtsDistribution::create([
+                        'IDdist' => $distributionId,
+                        'IDdoc' => $document->IDdoc,
+                        'IDoffice' => $validated['IDfor'],
+                        'distdate' => now()->format('Y-m-d H:i:s'),
+                        'confirmdate' => null,
+                        'confirmuser' => null,
+                        'YNreturn' => 'False',
+                        'returndate' => null,
+                        'IDuser' => Auth::id(),
+                        'remarks' => $validated['remarks'] ?? null,
+                        'IDparentdist' => null,
+                        'YNpulled' => 'False',
+                        'idmapagency' => (int) $staffId,
+                    ]);
+
+                    /*
+                     * Store an independent physical copy for each entry.
+                     * This keeps the existing attachment remove/replace logic
+                     * isolated: deleting A's file will not break B or C.
+                     */
+                    $attachments = $request->input('attachments', []);
+
+                    foreach ($attachments as $attachmentIndex => $attachment) {
+                        $file = $request->file("attachments.{$attachmentIndex}.file");
+
+                        if (! $file) {
+                            continue;
+                        }
+
+                        $attachmentTypeId = $attachment['type_id'] ?? null;
+                        $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+
+                        $path = $file->store(
+                            "dts/documents/{$document->IDdoc}",
+                            'public'
+                        );
+
+                        if (Schema::hasTable('dts_document_files')) {
+                            DB::table('dts_document_files')->insert([
+                                'IDdoc' => $document->IDdoc,
+                                'IDattachment' => $attachmentTypeId ?: 0,
+                                'type_name' => $attachmentTypeName,
+                                'original_name' => $file->getClientOriginalName(),
+                                'stored_name' => basename($path),
+                                'path' => $path,
+                                'mime_type' => $file->getClientMimeType(),
+                                'size' => $file->getSize(),
+                                'uploaded_by' => Auth::id(),
+                                'created_at' => now(),
+                                'updated_at' => now(),
+                            ]);
+                        }
+                    }
+
+                    $personnel = $selectedPersonnel->get((int) $staffId);
+
+                    $created->push((object) [
+                        'document' => $document,
+                        'reference' => 'DTS - ' . $baseDocumentId . '-' . $suffix,
+                        'personnel_id' => (int) $staffId,
+                        'personnel_name' => $personnel->name ?? null,
+                        'suffix' => $suffix,
+                    ]);
+                }
+
+                return $created;
+            }, 3);
+        }
     } finally {
-        /*
-         * MySQL named locks are connection-level, so always release the lock
-         * even when validation after allocation, insertion, or file storage
-         * throws an exception.
-         */
+        /* Always release the connection-level MySQL named lock. */
         DB::selectOne(
             'SELECT RELEASE_LOCK(?) AS released',
             [$creationLockName]
         );
     }
 
-    $this->recordDtsActivity(
-        'created document',
-        'Created document #' . $document->IDdoc . ': ' . ($document->subject ?? 'No subject'),
-        (int) $document->IDdoc,
-        [
-            'subject' => $document->subject ?? null,
-            'classification' => $document->classification ?? null,
-        ]
-    );
+    foreach ($createdDocuments as $createdEntry) {
+        $createdDocument = $createdEntry->document;
+
+        $this->recordDtsActivity(
+            $isMultipleAssignment
+                ? 'created document assignment'
+                : 'created document',
+            'Created ' . $createdEntry->reference
+                . ' for '
+                . ($createdEntry->personnel_name ?? 'Personnel #' . $createdEntry->personnel_id)
+                . ': '
+                . ($createdDocument->subject ?? 'No subject'),
+            (int) $createdDocument->IDdoc,
+            [
+                'display_reference' => $createdEntry->reference,
+                'document_group_id' => $isMultipleAssignment
+                    ? (int) $createdDocuments->first()->document->document_group_id
+                    : null,
+                'assignment_suffix' => $createdEntry->suffix,
+                'assigned_personnel_id' => $createdEntry->personnel_id,
+                'assigned_personnel_name' => $createdEntry->personnel_name,
+                'subject' => $createdDocument->subject ?? null,
+                'classification' => $createdDocument->classification ?? null,
+            ]
+        );
+    }
+
+    $firstCreatedDocument = $createdDocuments->first()->document;
+
+    if (! $isMultipleAssignment) {
+        return redirect()
+            ->route('dts.show', $firstCreatedDocument->IDdoc)
+            ->with(
+                'success',
+                'Document saved successfully as DTS - ' . $firstCreatedDocument->IDdoc . '.'
+            );
+    }
+
+    $createdReferences = $createdDocuments
+        ->pluck('reference')
+        ->implode(', ');
 
     /*
-     * The final DTS number is shown only after the database has successfully
-     * assigned and saved it.
+     * Open the first independent assignment after saving. The remaining
+     * entries are available in the normal DTS list and keep separate actions.
      */
     return redirect()
-        ->route('dts.show', $document->IDdoc)
+        ->route('dts.show', $firstCreatedDocument->IDdoc)
         ->with(
             'success',
-            'Document saved successfully as DTS - ' . $document->IDdoc . '.'
+            $createdDocuments->count()
+                . ' separate document assignments were saved: '
+                . $createdReferences
+                . '.'
         );
 }
 
@@ -2902,6 +3408,45 @@ public function index(Request $request)
     $canUseDocumentActions = ! $isDocumentCompletedForSummary
         && ! $hasSelectedActionForSummary;
 
+    /*
+     * Multiple-assignment display values.
+     *
+     * IDdoc remains the internal numeric identifier used by routes, actions,
+     * distributions, remarks, attachments, and history.
+     *
+     * display_document_no is presentation only:
+     * - Single assignment: 184782
+     * - Multiple assignment: 184782-A / 184782-B / 184782-C
+     */
+    $hasMultipleAssignmentColumnsForShow =
+        Schema::hasColumn('document', 'document_group_id')
+        && Schema::hasColumn('document', 'assignment_suffix');
+
+    $documentGroupIdForShow = $hasMultipleAssignmentColumnsForShow
+        && ! empty($document->document_group_id)
+            ? (int) $document->document_group_id
+            : null;
+
+    $assignmentSuffixForShow = $hasMultipleAssignmentColumnsForShow
+        ? strtoupper(trim((string) ($document->assignment_suffix ?? '')))
+        : '';
+
+    $isMultipleAssignmentForShow =
+        ! empty($documentGroupIdForShow)
+        && $assignmentSuffixForShow !== '';
+
+    $assignmentCountForShow = $isMultipleAssignmentForShow
+        ? DB::table('document')
+            ->where('document_group_id', $documentGroupIdForShow)
+            ->whereNotNull('assignment_suffix')
+            ->whereRaw("TRIM(assignment_suffix) != ''")
+            ->count()
+        : 1;
+
+    $displayDocumentNumberForShow = $isMultipleAssignmentForShow
+        ? $documentGroupIdForShow . '-' . $assignmentSuffixForShow
+        : (string) $document->IDdoc;
+
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
         'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
@@ -2922,8 +3467,20 @@ public function index(Request $request)
             && $this->viewerCanActOnDocument((int) $document->IDdoc),
         'canCompleteDts' => $canCompleteCurrentDocumentForViewer,
                 'document' => [
+                /*
+                 * Keep IDdoc/document_no numeric for existing routes and
+                 * internal workflow logic. The Vue page uses
+                 * display_document_no only for the visible DTS reference.
+                 */
                 'IDdoc' => $document->IDdoc,
                 'document_no' => $document->IDdoc,
+                'display_document_no' => $displayDocumentNumberForShow,
+                'document_group_id' => $documentGroupIdForShow,
+                'assignment_suffix' => $assignmentSuffixForShow !== ''
+                    ? $assignmentSuffixForShow
+                    : null,
+                'is_multiple_assignment' => $isMultipleAssignmentForShow,
+                'assignment_count' => $assignmentCountForShow,
                 'created_by' => $document->IDuser,
                 'created_by_name' => $documentCreatorName ?? (! empty($document->IDuser) ? 'Account #' . $document->IDuser : null),
 
