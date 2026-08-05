@@ -47,8 +47,6 @@ const props = defineProps({
             search: '',
             per_page: 10,
             year: '',
-            sort_by: 'doc_id',
-            sort_direction: 'desc',
         }),
     },
     years: {
@@ -372,7 +370,8 @@ const saveSeenNotificationKeys = () => {
 const notificationKey = (item) => {
     return [
         item.notification_type || 'for_receiving',
-        item.IDdoc || item.document_no || '',
+        item.IDdoc || '',
+        item.assignment_id || 'legacy',
         item.received_date || item.transfer_date || item.due_date || '',
     ].join(':')
 }
@@ -538,84 +537,9 @@ const selectedYear = ref(String(
     new Date().getFullYear()
 ))
 
-const sortableColumns = new Set([
-    'doc_id',
-    'agency',
-    'to',
-    'from',
-    'type',
-    'subject',
-    'regarding',
-    'status',
-    'date_sent',
-    'distribution_date',
-    'return_date',
-])
-
-const requestedSortBy = String(
-    currentParams.value.get('sort_by')
-    || props.filters?.sort_by
-    || 'doc_id'
-).trim().toLowerCase()
-
-const sortBy = ref(
-    sortableColumns.has(requestedSortBy)
-        ? requestedSortBy
-        : 'doc_id'
-)
-
-const sortDirection = ref(
-    String(
-        currentParams.value.get('sort_direction')
-        || props.filters?.sort_direction
-        || 'desc'
-    ).trim().toLowerCase() === 'asc'
-        ? 'asc'
-        : 'desc'
-)
-
-const defaultSortDirection = (column) => {
-    return [
-        'doc_id',
-        'date_sent',
-        'distribution_date',
-        'return_date',
-    ].includes(column)
-        ? 'desc'
-        : 'asc'
-}
-
-const sortTableBy = (column) => {
-    if (!sortableColumns.has(column)) return
-
-    if (sortBy.value === column) {
-        sortDirection.value = sortDirection.value === 'asc'
-            ? 'desc'
-            : 'asc'
-    } else {
-        sortBy.value = column
-        sortDirection.value = defaultSortDirection(column)
-    }
-
-    router.get('/dts', buildCurrentPayload(), {
-        preserveScroll: true,
-        replace: true,
-    })
-}
-
-const sortIndicator = (column) => {
-    if (sortBy.value !== column) {
-        return '↕'
-    }
-
-    return sortDirection.value === 'asc' ? '▲' : '▼'
-}
-
 const buildCurrentPayload = () => {
     const payload = {
         per_page: perPage.value,
-        sort_by: sortBy.value,
-        sort_direction: sortDirection.value,
     }
 
     if (activeSection.value !== 'reports') {
@@ -896,8 +820,6 @@ const loadReportAutomatically = () => {
         start_date: reportStartDate.value,
         end_date: reportEndDate.value,
         per_page: perPage.value,
-        sort_by: sortBy.value,
-        sort_direction: sortDirection.value,
     }, {
         preserveScroll: true,
         replace: true,
@@ -978,9 +900,6 @@ const pageTabsDescription = computed(() => {
 
 const buildDtsUrl = (params = {}) => {
     const query = new URLSearchParams()
-
-    query.set('sort_by', sortBy.value)
-    query.set('sort_direction', sortDirection.value)
 
     if (selectedYear.value === 'all') {
         query.set('year', 'all')
@@ -1172,58 +1091,64 @@ const rows = computed(() => {
     return sourceRows.filter((doc) => !shouldHideReturnedAwayFromRoleTwo(doc))
 })
 
+const assignmentIdOf = (doc) => {
+    const value = Number(doc?.assignment_id || 0)
 
-/*
- * Visible DTS reference.
- *
- * IMPORTANT:
- * - IDdoc remains the internal numeric ID used by routes and actions.
- * - Single assignment displays the original number, e.g. 184782.
- * - Multiple assignment displays the shared number plus suffix,
- *   e.g. 184782-A, 184782-B, 184782-C.
- */
+    return Number.isFinite(value) && value > 0 ? value : null
+}
+
 const documentNumberDisplay = (doc) => {
     if (!doc) {
         return '-'
     }
 
-    const explicitDisplayNumber = String(
+    const explicitNumber = String(
         doc?.display_document_no
-        ?? doc?.assignment_reference
+        ?? doc?.document_no
+        ?? doc?.tracking_no
         ?? ''
     ).trim()
 
-    if (explicitDisplayNumber) {
-        return explicitDisplayNumber
+    if (explicitNumber) {
+        return explicitNumber
     }
 
-    const groupId = String(
-        doc?.document_group_id
-        ?? doc?.group_document_id
-        ?? ''
-    ).trim()
+    const suffix = String(doc?.assignment_suffix || '')
+        .trim()
+        .toUpperCase()
 
-    const suffix = String(
-        doc?.assignment_suffix
-        ?? doc?.assignment_code
-        ?? ''
-    ).trim().toUpperCase()
-
-    if (groupId && suffix) {
-        return `${groupId}-${suffix}`
+    if (assignmentIdOf(doc) && suffix) {
+        return `${doc.IDdoc}-${suffix}`
     }
 
-    return doc?.document_no
-        || doc?.tracking_no
-        || doc?.IDdoc
-        || '-'
+    return doc?.IDdoc || '-'
 }
 
-const isMultipleAssignmentDocument = (doc) => {
-    return Boolean(
-        String(doc?.document_group_id ?? '').trim()
-        && String(doc?.assignment_suffix ?? '').trim()
-    )
+const documentUrl = (doc) => {
+    if (!doc?.IDdoc) {
+        return '/dts'
+    }
+
+    const assignmentId = assignmentIdOf(doc)
+
+    return assignmentId
+        ? `/dts/${doc.IDdoc}?assignment_id=${assignmentId}`
+        : `/dts/${doc.IDdoc}`
+}
+
+const workflowActionUrl = (doc, action) => {
+    if (!doc?.IDdoc) {
+        return '/dts'
+    }
+
+    return `/dts/${doc.IDdoc}/${action}`
+}
+
+const workflowActionPayload = (doc, extra = {}) => {
+    return {
+        ...extra,
+        assignment_id: assignmentIdOf(doc),
+    }
 }
 
 const links = computed(() => {
@@ -1301,8 +1226,6 @@ const resetSearch = () => {
 
     const payload = {
         per_page: perPage.value,
-        sort_by: sortBy.value,
-        sort_direction: sortDirection.value,
     }
 
     if (selectedYear.value) {
@@ -1334,8 +1257,6 @@ const applyReceivedFilters = () => {
         keeper: receivedKeeper.value,
         doc_type: receivedDocType.value,
         per_page: perPage.value,
-        sort_by: sortBy.value,
-        sort_direction: sortDirection.value,
     }
 
     if (search.value) {
@@ -1357,8 +1278,6 @@ const resetReceivedFilters = () => {
         section: 'received-docs',
         year: selectedYear.value === 'all' ? 'all' : (selectedYear.value || undefined),
         per_page: perPage.value,
-        sort_by: sortBy.value,
-        sort_direction: sortDirection.value,
     }, {
         preserveScroll: true,
         replace: true,
@@ -1369,8 +1288,11 @@ const resetReceivedFilters = () => {
 const receiveTransferredDocument = (doc) => {
     if (!canReceiveDts.value || !doc?.IDdoc) return
 
-    router.post(`/dts/${doc.IDdoc}/receive`, {}, {
-        preserveScroll: true,
+    router.post(
+        workflowActionUrl(doc, 'receive'),
+        workflowActionPayload(doc),
+        {
+            preserveScroll: true,
         onSuccess: () => {
             router.reload({
                 preserveScroll: true,
@@ -1411,12 +1333,12 @@ const confirmPendingAction = () => {
 
     pendingActionProcessing.value = true
 
-    const documentId = selectedPendingDocument.value.IDdoc
+    const selectedDocument = selectedPendingDocument.value
     const endpoint = pendingActionType.value === 'receive'
-        ? `/dts/${documentId}/receive`
-        : `/dts/${documentId}/pullout`
+        ? workflowActionUrl(selectedDocument, 'receive')
+        : workflowActionUrl(selectedDocument, 'pullout')
 
-    router.post(endpoint, {}, {
+    router.post(endpoint, workflowActionPayload(selectedDocument), {
         preserveScroll: true,
         onSuccess: () => {
             showPendingActionModal.value = false
@@ -1713,6 +1635,7 @@ const documentToDisplay = (doc) => {
         || doc?.received_office
         || '-'
 }
+
 /*
  * Role 2 sees where the document came from.
  * Other roles continue to see the current To/recipient column.
@@ -2081,7 +2004,7 @@ const submitEntryDateUpdate = () => {
                                     </div>
 
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="w-full shrink-0 rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black text-white hover:bg-red-700 lg:w-auto lg:py-2.5"
                                         @click="closeAutomaticReminderModal"
                                     >
@@ -2149,7 +2072,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                DTS Number: {{ documentNumberDisplay(doc) }}
+                                                Doc ID: {{ documentNumberDisplay(doc) }}
                                             </span>
 
                                             <span
@@ -2228,7 +2151,7 @@ const submitEntryDateUpdate = () => {
                                         </button>
 
                                         <Link
-                                            :href="`/dts/${doc.IDdoc}`"
+                                            :href="documentUrl(doc)"
                                             class="rounded-xl border border-blue-300 bg-white px-5 py-2.5 text-center text-sm font-black text-blue-700 hover:bg-blue-50"
                                             @click="markNotificationSeen(doc)"
                                         >
@@ -3054,18 +2977,11 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <Link
-                                    :href="`/dts/${doc.IDdoc}`"
+                                    :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
                                     DTS - #{{ documentNumberDisplay(doc) }}
                                 </Link>
-
-                                <span
-                                    v-if="isMultipleAssignmentDocument(doc)"
-                                    class="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-indigo-700"
-                                >
-                                    Assignment {{ String(doc.assignment_suffix || '').toUpperCase() }}
-                                </span>
                             </div>
 
                             <div>
@@ -3082,8 +2998,8 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 text-center">
-                            <div class="sm:col-span-2 text-center">
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     {{ documentAgencyColumnLabel }}
                                 </p>
@@ -3154,7 +3070,7 @@ const submitEntryDateUpdate = () => {
 
                             <Link
                                 v-else
-                                :href="`/dts/${doc.IDdoc}`"
+                                :href="documentUrl(doc)"
                                 class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
                             >
                                 View Details
@@ -3177,152 +3093,32 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <!-- Desktop table layout -->
-                <div class="hidden overflow-hidden rounded-xl border border-black xl:block text-center">
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
                     <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DOC ID</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    DOC ID
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'regarding'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('regarding')"
-                                    >
-                                        <span>Regarding</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'regarding'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('regarding') }}
-                                        </span>
-                                    </button>
+                                    Regarding
                                 </th>
 
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'status'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('status')"
-                                    >
-                                        <span>Status</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'status'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('status') }}
-                                        </span>
-                                    </button>
+                                    Status
                                 </th>
 
                                 <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
 
                                 <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
@@ -3339,7 +3135,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
                                         {{ documentNumberDisplay(doc) }}
@@ -3407,7 +3203,7 @@ const submitEntryDateUpdate = () => {
 
                                     <Link
                                         v-else
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         View
@@ -3492,7 +3288,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search DTS Number, type, office, or subject..."
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3516,7 +3312,7 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-                <div class="overflow-x-auto rounded-xl border border-black text-center">
+                <div class="overflow-x-auto rounded-xl border border-black">
                     <table class="w-full min-w-[1100px] table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
@@ -3525,99 +3321,19 @@ const submitEntryDateUpdate = () => {
                                 </th>
 
                                 <th class="w-[11%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'type'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('type')"
-                                    >
-                                        <span>Type</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'type'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('type') }}
-                                        </span>
-                                    </button>
+                                    Type
                                 </th>
 
                                 <th class="w-[22%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[34%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[14%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
 
                                 <th
@@ -3637,7 +3353,7 @@ const submitEntryDateUpdate = () => {
                     >
                         <td class="border border-black px-4 py-4 align-middle text-center">
                             <Link
-                                :href="`/dts/${doc.IDdoc}`"
+                                :href="documentUrl(doc)"
                                 class="font-bold text-blue-700 hover:underline"
                             >
                                 {{ documentNumberDisplay(doc) }}
@@ -3780,7 +3496,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search DTS Number, type, office, or subject..."
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -3804,105 +3520,25 @@ const submitEntryDateUpdate = () => {
                     </div>
                 </div>
 
-            <div class="overflow-x-auto rounded-xl border border-black text-center">
+            <div class="overflow-x-auto rounded-xl border border-black">
                 <table class="w-full min-w-[1100px] table-fixed border-collapse text-center text-sm">
                     <thead>
                         <tr class="bg-blue-600 text-white">
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DTS Number</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
-                                </th>
+                                Doc ID
+                            </th>
 
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'type'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('type')"
-                                    >
-                                        <span>Type</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'type'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('type') }}
-                                        </span>
-                                    </button>
-                                </th>
+                                Type
+                            </th>
 
                             <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
-                                </th>
+                                {{ documentAgencyColumnLabel }}
+                            </th>
 
                             <th class="w-[32%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
-                                </th>
+                                Subject
+                            </th>
 
                             <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
                                 Distribution<br>Date
@@ -3922,7 +3558,7 @@ const submitEntryDateUpdate = () => {
                         >
                             <td class="border border-black px-4 py-4 align-middle text-center">
                                 <Link
-                                    :href="`/dts/${doc.IDdoc}`"
+                                    :href="documentUrl(doc)"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
                                     {{ documentNumberDisplay(doc) }}
@@ -4043,7 +3679,7 @@ const submitEntryDateUpdate = () => {
                             <input
                                 v-model="search"
                                 type="text"
-                                placeholder="Search DTS Number, type, office, or subject..."
+                                placeholder="Search Doc ID, type, office, or subject..."
                                 class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 @keyup.enter="runSearch"
                             />
@@ -4072,123 +3708,23 @@ const submitEntryDateUpdate = () => {
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DTS Number</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    Doc ID
                                 </th>
 
                                 <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'type'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('type')"
-                                    >
-                                        <span>Type</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'type'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('type') }}
-                                        </span>
-                                    </button>
+                                    Type
                                 </th>
 
                                 <th class="w-[24%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'from'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('from')"
-                                    >
-                                        <span>From</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'from'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('from') }}
-                                        </span>
-                                    </button>
+                                    From
                                 </th>
 
                                 <th class="w-[36%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
                             </tr>
                         </thead>
@@ -4201,7 +3737,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="border border-black px-4 py-4 align-middle text-center">
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
                                         {{ documentNumberDisplay(doc) }}
@@ -4347,18 +3883,11 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <Link
-                                    :href="`/dts/${doc.IDdoc}`"
+                                    :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
                                     DTS - #{{ documentNumberDisplay(doc) }}
                                 </Link>
-
-                                <span
-                                    v-if="isMultipleAssignmentDocument(doc)"
-                                    class="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-indigo-700"
-                                >
-                                    Assignment {{ String(doc.assignment_suffix || '').toUpperCase() }}
-                                </span>
                             </div>
 
                             <div>
@@ -4375,8 +3904,8 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 text-center">
-                            <div class="sm:col-span-2 text-center">
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     {{ documentAgencyColumnLabel }}
                                 </p>
@@ -4447,7 +3976,7 @@ const submitEntryDateUpdate = () => {
 
                             <Link
                                 v-else
-                                :href="`/dts/${doc.IDdoc}`"
+                                :href="documentUrl(doc)"
                                 class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
                             >
                                 View Details
@@ -4470,152 +3999,32 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <!-- Desktop table layout -->
-                <div class="hidden overflow-hidden rounded-xl border border-black xl:block text-center">
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
                     <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DOC ID</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    DOC ID
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'regarding'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('regarding')"
-                                    >
-                                        <span>Regarding</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'regarding'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('regarding') }}
-                                        </span>
-                                    </button>
+                                    Regarding
                                 </th>
 
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'status'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('status')"
-                                    >
-                                        <span>Status</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'status'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('status') }}
-                                        </span>
-                                    </button>
+                                    Status
                                 </th>
 
                                 <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
 
                                 <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
@@ -4632,7 +4041,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
                                         {{ documentNumberDisplay(doc) }}
@@ -4700,7 +4109,7 @@ const submitEntryDateUpdate = () => {
 
                                     <Link
                                         v-else
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         View
@@ -4819,18 +4228,11 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <Link
-                                    :href="`/dts/${doc.IDdoc}`"
+                                    :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
                                     DTS - #{{ documentNumberDisplay(doc) }}
                                 </Link>
-
-                                <span
-                                    v-if="isMultipleAssignmentDocument(doc)"
-                                    class="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-indigo-700"
-                                >
-                                    Assignment {{ String(doc.assignment_suffix || '').toUpperCase() }}
-                                </span>
                             </div>
 
                             <div>
@@ -4847,8 +4249,8 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 text-center">
-                            <div class="sm:col-span-2 text-center">
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     {{ documentAgencyColumnLabel }}
                                 </p>
@@ -4919,7 +4321,7 @@ const submitEntryDateUpdate = () => {
 
                             <Link
                                 v-else
-                                :href="`/dts/${doc.IDdoc}`"
+                                :href="documentUrl(doc)"
                                 class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
                             >
                                 View Details
@@ -4942,152 +4344,32 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <!-- Desktop table layout -->
-                <div class="hidden overflow-hidden rounded-xl border border-black xl:block text-center">
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
                     <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DOC ID</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    DOC ID
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'regarding'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('regarding')"
-                                    >
-                                        <span>Regarding</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'regarding'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('regarding') }}
-                                        </span>
-                                    </button>
+                                    Regarding
                                 </th>
 
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'status'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('status')"
-                                    >
-                                        <span>Status</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'status'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('status') }}
-                                        </span>
-                                    </button>
+                                    Status
                                 </th>
 
                                 <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
 
                                 <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
@@ -5104,7 +4386,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
                                         {{ documentNumberDisplay(doc) }}
@@ -5172,7 +4454,7 @@ const submitEntryDateUpdate = () => {
 
                                     <Link
                                         v-else
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         View
@@ -5298,18 +4580,11 @@ const submitEntryDateUpdate = () => {
                                 </p>
 
                                 <Link
-                                    :href="`/dts/${doc.IDdoc}`"
+                                    :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
                                     DTS - #{{ documentNumberDisplay(doc) }}
                                 </Link>
-
-                                <span
-                                    v-if="isMultipleAssignmentDocument(doc)"
-                                    class="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-indigo-700"
-                                >
-                                    Assignment {{ String(doc.assignment_suffix || '').toUpperCase() }}
-                                </span>
                             </div>
 
                             <div>
@@ -5326,8 +4601,8 @@ const submitEntryDateUpdate = () => {
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 text-center">
-                            <div class="sm:col-span-2 text-center">
+                        <div class="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
                                 <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                     {{ documentAgencyColumnLabel }}
                                 </p>
@@ -5398,7 +4673,7 @@ const submitEntryDateUpdate = () => {
 
                             <Link
                                 v-else
-                                :href="`/dts/${doc.IDdoc}`"
+                                :href="documentUrl(doc)"
                                 class="inline-flex w-full items-center justify-center rounded-xl border border-blue-300 bg-white px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-50"
                             >
                                 View Details
@@ -5421,152 +4696,32 @@ const submitEntryDateUpdate = () => {
                 </div>
 
                 <!-- Desktop table layout -->
-                <div class="hidden overflow-hidden rounded-xl border border-black xl:block text-center">
+                <div class="hidden overflow-hidden rounded-xl border border-black xl:block">
                     <table class="w-full table-fixed border-collapse text-center text-sm">
                         <thead>
                             <tr class="bg-blue-600 text-white">
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DOC ID</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    DOC ID
                                 </th>
 
                                 <th class="w-[15%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[22%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>Subject</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    Subject
                                 </th>
 
                                 <th class="w-[24%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'regarding'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('regarding')"
-                                    >
-                                        <span>Regarding</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'regarding'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('regarding') }}
-                                        </span>
-                                    </button>
+                                    Regarding
                                 </th>
 
                                 <th class="w-[10%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'status'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('status')"
-                                    >
-                                        <span>Status</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'status'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('status') }}
-                                        </span>
-                                    </button>
+                                    Status
                                 </th>
 
                                 <th class="w-[11%] border border-black px-2 py-3 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>Date Sent</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    Date Sent
                                 </th>
 
                                 <th class="w-[8%] border border-black px-2 py-3 text-center font-bold">
@@ -5583,7 +4738,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="border border-black px-2 py-3 align-middle text-center">
                                     <Link
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
                                         {{ documentNumberDisplay(doc) }}
@@ -5651,7 +4806,7 @@ const submitEntryDateUpdate = () => {
 
                                     <Link
                                         v-else
-                                        :href="`/dts/${doc.IDdoc}`"
+                                        :href="documentUrl(doc)"
                                         class="inline-flex w-full max-w-20 justify-center rounded-lg border border-blue-700 bg-white px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-50"
                                     >
                                         View
@@ -5944,128 +5099,28 @@ const submitEntryDateUpdate = () => {
                         </div>
                     </div>
 
-                    <div class="overflow-x-auto text-center">
+                    <div class="overflow-x-auto">
                     <table class="w-full min-w-[1000px] table-fixed text-left text-sm">
                         <thead class="bg-slate-50 text-slate-700">
                             <tr>
                                 <th class="w-[10%] border-b border-slate-200 px-4 py-4 font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'doc_id'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('doc_id')"
-                                    >
-                                        <span>DOC ID</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'doc_id'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('doc_id') }}
-                                        </span>
-                                    </button>
+                                    DOC ID
                                 </th>
 
-                                <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold text-center">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'agency'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('agency')"
-                                    >
-                                        <span>{{ documentAgencyColumnLabel }}</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'agency'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('agency') }}
-                                        </span>
-                                    </button>
+                                <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold">
+                                    {{ documentAgencyColumnLabel }}
                                 </th>
 
                                 <th class="w-[30%] border-b border-slate-200 px-4 py-4 font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'subject'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('subject')"
-                                    >
-                                        <span>SUBJECT</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'subject'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('subject') }}
-                                        </span>
-                                    </button>
+                                    SUBJECT
                                 </th>
 
                                 <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'status'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('status')"
-                                    >
-                                        <span>STATUS</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'status'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('status') }}
-                                        </span>
-                                    </button>
+                                    STATUS
                                 </th>
 
                                 <th class="w-[16%] border-b border-slate-200 px-4 py-4 font-bold">
-                                    <button
-                                        type="button"
-                                        class="group inline-flex w-full cursor-pointer items-center justify-center gap-2"
-                                        :title="sortBy === 'date_sent'
-                                            ? (sortDirection === 'asc'
-                                                ? 'Sort descending'
-                                                : 'Sort ascending')
-                                            : 'Sort this column'"
-                                        @click="sortTableBy('date_sent')"
-                                    >
-                                        <span>DATE SENT</span>
-
-                                        <span
-                                            class="inline-flex h-5 min-w-5 items-center justify-center rounded bg-white/20 px-1 text-[10px] font-black"
-                                            :class="sortBy === 'date_sent'
-                                                ? 'opacity-100'
-                                                : 'opacity-70 group-hover:opacity-100'"
-                                        >
-                                            {{ sortIndicator('date_sent') }}
-                                        </span>
-                                    </button>
+                                    DATE SENT
                                 </th>
 
                                 <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
@@ -6086,7 +5141,7 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 </td>
 
-                                <td class="px-4 py-5 align-top text-center">
+                                <td class="px-4 py-5 align-top">
                                     <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
                                         <span class="block">
                                             {{ documentAgencyDisplay(doc) }}
@@ -6132,7 +5187,7 @@ const submitEntryDateUpdate = () => {
                                 <td class="px-4 py-5 text-center align-top">
                                     <div class="flex flex-col items-center justify-center gap-2">
                                         <Link
-                                            :href="`/dts/${doc.IDdoc}`"
+                                            :href="documentUrl(doc)"
                                             class="inline-flex w-16 justify-center rounded-lg border border-blue-600 px-3 py-2 text-xs font-semibold text-blue-600 hover:bg-blue-50"
                                         >
                                             View
@@ -6310,7 +5365,7 @@ const submitEntryDateUpdate = () => {
                         </h2>
 
                         <p class="mt-1 text-sm text-slate-500">
-                            DTS Number: {{ documentNumberDisplay(selectedDocument) }}
+                            Doc ID: {{ selectedDocument?.IDdoc }}
                         </p>
                     </div>
 

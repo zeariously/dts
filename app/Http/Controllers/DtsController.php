@@ -20,67 +20,21 @@ use Illuminate\Support\Facades\Storage;
 
 class DtsController extends Controller
 {
-
 public function index(Request $request)
 {
-    // Always define this so accounts without mapped personnel do not trigger a 500.
-    $automaticStatusReminders = collect();
-
-    $perPage = (int) $request->input('per_page', 10);
+    $perPage = max(1, min((int) $request->input('per_page', 10), 100));
     $search = trim((string) $request->input('search', ''));
-    $section = $request->input('section', 'documents');
-    $filter = $request->input('filter');
+    $section = strtolower(trim((string) $request->input('section', 'documents')));
+    $filter = strtolower(trim((string) $request->input('filter', '')));
+    $scope = strtolower(trim((string) $request->input('scope', '')));
 
-    /*
-     * Sort the complete query before pagination.
-     * Default: highest/latest DOC ID first.
-     */
-    $sortBy = strtolower(
-        trim((string) $request->input('sort_by', 'doc_id'))
-    );
-
-    $sortDirection = strtolower(
-        trim((string) $request->input('sort_direction', 'desc'))
-    );
-
-    $allowedSortColumns = [
-        'doc_id',
-        'agency',
-        'to',
-        'from',
-        'type',
-        'subject',
-        'regarding',
-        'status',
-        'date_sent',
-        'distribution_date',
-        'return_date',
-    ];
-
-    if (! in_array($sortBy, $allowedSortColumns, true)) {
-        $sortBy = 'doc_id';
-    }
-
-    if (! in_array($sortDirection, ['asc', 'desc'], true)) {
-        $sortDirection = $sortBy === 'doc_id' ? 'desc' : 'asc';
-    }
-
-    if ($perPage < 1) {
-        $perPage = 10;
-    }
-
-    if ($perPage > 100) {
-        $perPage = 100;
-    }
-
-    /*
-     * Reports are intended for printing/export-style viewing.
-     * Load the complete filtered report instead of printing only the current
-     * 10-row dashboard page. The safety cap avoids an unbounded query.
-     */
-    if (strtolower(trim((string) $section)) === 'reports') {
+    if ($section === 'reports') {
         $perPage = 5000;
     }
+
+    $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
+    $currentRights = $this->currentUserRights();
+    $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
 
     $availableYears = DB::table('document')
         ->selectRaw('YEAR(entrydate) as year')
@@ -92,257 +46,49 @@ public function index(Request $request)
         ->map(fn ($year) => (int) $year)
         ->values();
 
-    $requestedYear = $request->input('year');
-    $selectedYear = $requestedYear !== null
-        ? trim((string) $requestedYear)
-        : (string) ($availableYears->contains((int) now()->year)
-            ? now()->year
-            : ($availableYears->first() ?? now()->year));
+    $requestedYear = trim((string) $request->input('year', ''));
+    $selectedYear = $requestedYear;
 
-    if (strtolower($selectedYear) === 'all') {
+    if ($selectedYear === '') {
+        $selectedYear = (string) (
+            $availableYears->contains((int) now()->year)
+                ? now()->year
+                : ($availableYears->first() ?? now()->year)
+        );
+    }
+
+    if ($selectedYear === 'all' || $section === 'reports') {
         $selectedYear = '';
     }
 
-    /*
-     * Reports use Classification, User, Start Date, and End Date only.
-     * Do not silently apply the current-year filter when section=reports.
-     */
-    if (strtolower(trim((string) $section)) === 'reports') {
-        $selectedYear = '';
-    }
-
-    $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
-
-    /*
-     * Completion is now MANUAL ONLY.
-     *
-     * Once the new completion columns exist, IDdocstatus = 6 must no longer
-     * make a document Completed because the old workflow used that status for
-     * action/addressed records. Only the Mark as Completed button may set the
-     * document as completed.
-     *
-     * IDdocstatus = 6 is used only as a fallback on databases that have not yet
-     * installed the new completion columns.
-     */
-    $hasManualCompletionColumns = Schema::hasColumn('document', 'is_completed')
-        && Schema::hasColumn('document', 'completed_at');
-
-    $completionConditions = $hasManualCompletionColumns
-        ? [
-            'COALESCE(d.is_completed, 0) = 1',
-            'd.completed_at IS NOT NULL',
-        ]
-        : ['d.IDdocstatus = 6'];
-
-    $documentIsCompletedSql = '(' . implode(' OR ', $completionConditions) . ')';
-    $documentIsNotCompletedSql = 'NOT ' . $documentIsCompletedSql;
-    $completedFlagExpression = 'CASE WHEN ' . $documentIsCompletedSql . ' THEN 1 ELSE 0 END';
-    $completedAtExpression = Schema::hasColumn('document', 'completed_at')
-        ? 'd.completed_at'
-        : 'd.datecleared';
-    $completedByExpression = Schema::hasColumn('document', 'completed_by')
-        ? 'd.completed_by'
-        : 'NULL';
-
-    /*
-     * Multiple-assignment presentation fields.
-     *
-     * IDdoc remains numeric and continues to be used for every route,
-     * receive/action/transfer/return operation, attachment, remark, and history.
-     */
-    $hasMultipleAssignmentColumns =
-        Schema::hasColumn('document', 'document_group_id')
-        && Schema::hasColumn('document', 'assignment_suffix');
-
-    $displayDocumentNumberExpression = $hasMultipleAssignmentColumns
-        ? "CASE
-            WHEN d.document_group_id IS NOT NULL
-                AND NULLIF(TRIM(d.assignment_suffix), '') IS NOT NULL
-            THEN CONCAT(
-                CAST(d.document_group_id AS CHAR),
-                '-',
-                UPPER(TRIM(d.assignment_suffix))
-            )
-            ELSE CAST(d.IDdoc AS CHAR)
-        END"
-        : 'CAST(d.IDdoc AS CHAR)';
-
-    $documentGroupIdSelectExpression = $hasMultipleAssignmentColumns
-        ? 'd.document_group_id'
-        : 'NULL';
-
-    $assignmentSuffixSelectExpression = $hasMultipleAssignmentColumns
-        ? 'UPPER(NULLIF(TRIM(d.assignment_suffix), \'\'))'
-        : 'NULL';
-
-    $isMultipleAssignmentSelectExpression = $hasMultipleAssignmentColumns
-        ? "CASE
-            WHEN d.document_group_id IS NOT NULL
-                AND NULLIF(TRIM(d.assignment_suffix), '') IS NOT NULL
-            THEN 1
-            ELSE 0
-        END"
-        : '0';
-
-    $currentRights = (string) $this->currentUserRights();
-
-    /*
-     * Correct Role 2 visibility rule:
-     *
-     * Dashboard / main Documents list:
-     * - Role 2 must see ONLY documents currently tagged to their personnel.
-     *
-     * All Documents module only:
-     * - If the URL explicitly uses section=all-documents, Role 2/Role 3 can
-     *   view all documents regardless of tag.
-     * - Also supports filter=all-documents as fallback if an old sidebar/link
-     *   still sends section=documents.
-     *
-     * Returned card/tab:
-     * - Returned documents they returned can still appear in Returned, but not
-     *   in their normal dashboard list once tagged back to the encoder.
-     */
-    $normalizedSection = strtolower(trim((string) $section));
-    $normalizedFilter = strtolower(trim((string) ($filter ?? '')));
-    $normalizedScope = strtolower(trim((string) $request->input('scope', '')));
-
-    /*
-     * FORCE-ALL marker:
-     * The All Documents menu now sends scope=all too. This makes the backend
-     * impossible to confuse with the normal Dashboard /dts list.
-     */
-    $forceAllDocuments = in_array($normalizedScope, ['all', 'all-documents', 'all_docs', 'all-docs'], true)
+    $isAllDocumentsSection = in_array($section, ['all-documents', 'all-docs', 'all_documents'], true)
+        || in_array($scope, ['all', 'all-documents', 'all-docs', 'all_documents'], true)
         || $request->boolean('show_all')
         || $request->boolean('all_documents');
 
-    $isAllDocumentsSection = $forceAllDocuments
-        || in_array($normalizedSection, ['all-documents', 'all-docs', 'all_documents'], true)
-        || ($normalizedSection === 'documents' && in_array($normalizedFilter, ['all', 'all-documents', 'all-docs', 'all_documents'], true));
-    $isReportsSection = $normalizedSection === 'reports';
-    $isCompletedDocumentsSection = $normalizedSection === 'completed-docs'
-        || $normalizedFilter === 'completed';
-
-    $canViewAllDocumentsModule = in_array($currentRights, ['2', '3'], true);
-    $canViewCompletedDocumentsModule = in_array($currentRights, ['2', '3'], true);
-
-    $shouldLimitToTaggedDocuments = in_array($currentRights, ['2', '4'], true);
-
-    if ($isAllDocumentsSection && $canViewAllDocumentsModule) {
-        $shouldLimitToTaggedDocuments = false;
-    }
-
-    /*
-     * Completed visibility:
-     * - Role 3 sees the complete Completed registry, regardless of tag.
-     * - Role 2 sees only Completed documents currently tagged to their
-     *   mapped personnel record.
-     */
-
-    if ($isAllDocumentsSection && ! $canViewAllDocumentsModule) {
+    if ($isAllDocumentsSection && ! in_array($currentRights, ['2', '3'], true)) {
         abort(403);
     }
 
-    $viewerOfficeIds = $this->viewerAssignedOfficeIds();
-    $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
+    $hasAssignmentTable = Schema::hasTable('dts_document_assignments');
+    $hasDistributionAssignment = Schema::hasColumn('distribution', 'assignment_id');
+    $hasRemarkAssignment = Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn('dts_document_remarks', 'assignment_id');
 
-    $currentUserIdForScope = $this->currentUserId();
+    $hasManualCompletionColumns = Schema::hasColumn('document', 'is_completed')
+        && Schema::hasColumn('document', 'completed_at');
 
-    $applyTaggedDocumentScope = function (
-        $query,
-        string $documentAlias = 'd',
-        string $distributionAlias = 'dist',
-        bool $forceTaggedOnly = false
-    ) use (
-        $shouldLimitToTaggedDocuments,
-        $viewerOfficeIds,
-        $viewerPersonnelIds,
-        $currentUserIdForScope
-    ) {
-        if (! $forceTaggedOnly && ! $shouldLimitToTaggedDocuments) {
-            return $query;
-        }
-
-        $officeIds = collect($viewerOfficeIds)
-            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
-            ->map(fn ($id) => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
-
-        $personnelIds = collect($viewerPersonnelIds)
-            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
-            ->map(fn ($id) => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
-
-        /*
-         * Strict tagged-only rule:
-         * If the account has no mapped personnel ID, return no documents.
-         * Do not fallback to office, creator, or confirm user because the user
-         * requested that only documents tagged to them should appear.
-         */
-        if (empty($personnelIds)) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        return $query->where(function ($scope) use ($documentAlias, $distributionAlias, $personnelIds) {
-            $scope->whereIn($documentAlias . '.IDkeeper', $personnelIds);
-
-            if (Schema::hasColumn('distribution', 'idmapagency')) {
-                $scope->orWhereIn($distributionAlias . '.idmapagency', $personnelIds);
-            }
-        });
-    };
+    $legacyCompletionSql = $hasManualCompletionColumns
+        ? '(COALESCE(d.is_completed, 0) = 1 OR d.completed_at IS NOT NULL)'
+        : '(d.IDdocstatus = 6)';
 
     /*
-     * CURRENT TAG scope:
-     * If a latest distribution exists, distribution.idmapagency is the current
-     * tag and must take priority. document.IDkeeper is used only for documents
-     * that have no distribution row yet.
+     * A document-level completion flag belongs only to legacy/single workflows.
+     * Multiple assignments are completed independently through their own
+     * assignment-scoped Final Address action.
      */
-    $applyCurrentTaggedDocumentScope = function (
-        $query,
-        string $documentAlias = 'd',
-        string $distributionAlias = 'dist'
-    ) use ($viewerPersonnelIds) {
-        $personnelIds = collect($viewerPersonnelIds)
-            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
-            ->map(fn ($id) => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
-
-        if (empty($personnelIds)) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        if (! Schema::hasColumn('distribution', 'idmapagency')) {
-            return $query->whereIn($documentAlias . '.IDkeeper', $personnelIds);
-        }
-
-        return $query->where(function ($scope) use (
-            $documentAlias,
-            $distributionAlias,
-            $personnelIds
-        ) {
-            $scope
-                ->where(function ($currentTag) use ($distributionAlias, $personnelIds) {
-                    $currentTag
-                        ->whereNotNull($distributionAlias . '.IDdist')
-                        ->whereIn($distributionAlias . '.idmapagency', $personnelIds);
-                })
-                ->orWhere(function ($noDistributionFallback) use (
-                    $documentAlias,
-                    $distributionAlias,
-                    $personnelIds
-                ) {
-                    $noDistributionFallback
-                        ->whereNull($distributionAlias . '.IDdist')
-                        ->whereIn($documentAlias . '.IDkeeper', $personnelIds);
-                });
-        });
-    };
+    $workflowCompletionSql = '(assignment.id IS NULL AND ' . $legacyCompletionSql . ')';
+    $workflowNotCompletedSql = 'NOT ' . $workflowCompletionSql;
 
     $doctypeCodeColumn = 'dt.description';
 
@@ -354,69 +100,181 @@ public function index(Request $request)
         $doctypeCodeColumn = 'dt.code';
     }
 
-    $makeLatestDistribution = function () {
-        return DB::table('distribution as dx')
-            ->select([
-                'dx.IDdoc',
-                DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
-            ])
-            ->groupBy('dx.IDdoc');
-    };
-
-    $latestDistribution = $makeLatestDistribution();
-
-   
-    $latestReturnedDistribution = DB::table('distribution as rx')
-        ->select([
-            'rx.IDdoc',
-            DB::raw('MAX(CAST(rx.IDdist AS UNSIGNED)) as latest_returned_IDdist'),
-        ])
-        ->where(function ($query) use ($trueValues) {
-            $query->whereIn('rx.YNreturn', $trueValues)
-                ->orWhereNotNull('rx.returndate');
-        })
-        ->groupBy('rx.IDdoc');
-
-    $latestSelectedAction = DB::table('dts_document_remarks as selectedActionLatest')
-        ->joinSub($makeLatestDistribution(), 'selectedActionLatestDist', function ($join) {
-            $join->on('selectedActionLatestDist.IDdoc', '=', 'selectedActionLatest.IDdoc');
-        })
-        ->join('distribution as selectedActionCurrentDist', 'selectedActionCurrentDist.IDdist', '=', 'selectedActionLatestDist.latest_IDdist')
-        ->select([
-            'selectedActionLatest.IDdoc',
-            DB::raw('MAX(selectedActionLatest.id) as latest_selected_action_id'),
-        ])
-        /*
-         * A transfer or Return to Admin starts a NEW workflow cycle.
-         * Only a Final Address action saved on or after the current/latest
-         * distribution date may make the current cycle Addressed.
-         * Historical action_taken records remain in Action History but must not
-         * disable Receive or Select Action for the newly tagged recipient.
-         */
-        ->where('selectedActionLatest.action_type', 'action_taken')
-        ->whereColumn('selectedActionLatest.created_at', '>=', 'selectedActionCurrentDist.distdate')
-        ->groupBy('selectedActionLatest.IDdoc');
-
-    $selectedActionLabelExpression = Schema::hasColumn('dts_document_remarks', 'action_label')
+    $selectedActionLabelExpression = Schema::hasColumn(
+        'dts_document_remarks',
+        'action_label'
+    )
         ? "COALESCE(selectedActionRemark.action_label, selectedActionType.name, 'Select Action')"
         : "COALESCE(selectedActionType.name, 'Select Action')";
 
-    $excludeReturnedAwayFromRoleTwo = function ($query) use (
-        $currentRights,
-        $currentUserIdForScope,
-        $viewerPersonnelIds,
-        $trueValues
-    ) {
+    $makeAssignmentSource = function () use ($hasAssignmentTable) {
+        if ($hasAssignmentTable) {
+            return DB::table('dts_document_assignments')
+                ->select([
+                    'id',
+                    'IDdoc',
+                    'assignment_suffix',
+                    'idmapagency',
+                    'created_by',
+                    'created_at',
+                    'updated_at',
+                ]);
+        }
+
         /*
-         * Role 2 rule after Return:
-         * If this logged-in Role 2 user was the one who returned the document,
-         * and the return child distribution is already tagged to another
-         * personnel/encoder, do not show the document in this user's lists.
-         *
-         * The encoder will still see it because document.IDkeeper and the
-         * latest distribution idmapagency are updated to the encoder personnel.
+         * Keep a stable assignment alias even before the optional migration
+         * exists. The empty subquery makes every document behave as legacy.
          */
-        if ($currentRights !== '2' || empty($currentUserIdForScope)) {
+        return DB::table('document')
+            ->whereRaw('1 = 0')
+            ->selectRaw(
+                'NULL as id, IDdoc, NULL as assignment_suffix, NULL as idmapagency, '
+                . 'NULL as created_by, NULL as created_at, NULL as updated_at'
+            );
+    };
+
+    $makeLatestDistribution = function () use ($hasDistributionAssignment) {
+        $query = DB::table('distribution as dx')
+            ->select([
+                'dx.IDdoc',
+                DB::raw(
+                    $hasDistributionAssignment
+                        ? 'dx.assignment_id'
+                        : 'NULL as assignment_id'
+                ),
+                DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
+            ])
+            ->groupBy('dx.IDdoc');
+
+        if ($hasDistributionAssignment) {
+            $query->groupBy('dx.assignment_id');
+        }
+
+        return $query;
+    };
+
+    $makeLatestSelectedAction = function () use (
+        $makeLatestDistribution,
+        $hasRemarkAssignment
+    ) {
+        if (! Schema::hasTable('dts_document_remarks')) {
+            return DB::table('document')
+                ->whereRaw('1 = 0')
+                ->selectRaw(
+                    'IDdoc, NULL as assignment_id, NULL as latest_selected_action_id'
+                );
+        }
+
+        $remarkAssignmentExpression = $hasRemarkAssignment
+            ? 'selectedActionLatest.assignment_id'
+            : 'NULL';
+
+        $query = DB::table('dts_document_remarks as selectedActionLatest')
+            ->joinSub($makeLatestDistribution(), 'selectedActionLatestDist', function ($join) use ($remarkAssignmentExpression) {
+                $join->on('selectedActionLatestDist.IDdoc', '=', 'selectedActionLatest.IDdoc')
+                    ->whereRaw(
+                        'selectedActionLatestDist.assignment_id <=> '
+                        . $remarkAssignmentExpression
+                    );
+            })
+            ->join(
+                'distribution as selectedActionCurrentDist',
+                'selectedActionCurrentDist.IDdist',
+                '=',
+                'selectedActionLatestDist.latest_IDdist'
+            )
+            ->select([
+                'selectedActionLatest.IDdoc',
+                DB::raw($remarkAssignmentExpression . ' as assignment_id'),
+                DB::raw('MAX(selectedActionLatest.id) as latest_selected_action_id'),
+            ])
+            ->where('selectedActionLatest.action_type', 'action_taken')
+            ->whereColumn(
+                'selectedActionLatest.created_at',
+                '>=',
+                'selectedActionCurrentDist.distdate'
+            )
+            ->groupBy('selectedActionLatest.IDdoc');
+
+        if ($hasRemarkAssignment) {
+            $query->groupBy('selectedActionLatest.assignment_id');
+        }
+
+        return $query;
+    };
+
+    $buildWorkflowBase = function () use (
+        $makeAssignmentSource,
+        $makeLatestDistribution,
+        $makeLatestSelectedAction,
+        $hasDistributionAssignment
+    ) {
+        $query = DB::table('document as d')
+            ->leftJoinSub($makeAssignmentSource(), 'assignment', function ($join) {
+                $join->on('assignment.IDdoc', '=', 'd.IDdoc');
+            })
+            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
+            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
+            ->leftJoin('lu_office as forOffice', 'forOffice.ID', '=', 'd.IDfor')
+            ->leftJoinSub($makeLatestDistribution(), 'ld', function ($join) {
+                $join->on('ld.IDdoc', '=', 'd.IDdoc')
+                    ->whereRaw('ld.assignment_id <=> assignment.id');
+            })
+            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ld.latest_IDdist')
+            ->leftJoinSub($makeLatestSelectedAction(), 'lsa', function ($join) {
+                $join->on('lsa.IDdoc', '=', 'd.IDdoc')
+                    ->whereRaw('lsa.assignment_id <=> assignment.id');
+            })
+            ->leftJoin(
+                'dts_document_remarks as selectedActionRemark',
+                'selectedActionRemark.id',
+                '=',
+                'lsa.latest_selected_action_id'
+            )
+            ->leftJoin(
+                'dts_action_types as selectedActionType',
+                'selectedActionType.id',
+                '=',
+                'selectedActionRemark.action_type_id'
+            )
+            ->leftJoin('distribution as returnParent', function ($join) use ($hasDistributionAssignment) {
+                $join->on('returnParent.IDdist', '=', 'dist.IDparentdist')
+                    ->on('returnParent.IDdoc', '=', 'dist.IDdoc');
+
+                if ($hasDistributionAssignment) {
+                    $join->whereRaw(
+                        'returnParent.assignment_id <=> dist.assignment_id'
+                    );
+                }
+            })
+            ->leftJoin('username as returnUser', 'returnUser.ID', '=', 'dist.IDuser')
+            ->leftJoin(
+                'username as returnConfirmUser',
+                'returnConfirmUser.ID',
+                '=',
+                'returnParent.confirmuser'
+            )
+            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
+            ->leftJoin('lu_personnel as receiverPersonnel', function ($join) {
+                $join->on(
+                    'receiverPersonnel.ID',
+                    '=',
+                    DB::raw(
+                        'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper)'
+                    )
+                );
+            });
+
+        return $query;
+    };
+
+    $applyTaggedScope = function ($query, bool $force = false) use (
+        $currentRights,
+        $viewerPersonnelIds
+    ) {
+        $mustLimit = $force || in_array($currentRights, ['2', '4'], true);
+
+        if (! $mustLimit) {
             return $query;
         }
 
@@ -428,412 +286,479 @@ public function index(Request $request)
             ->all();
 
         if (empty($personnelIds)) {
-            return $query;
-        }
-
-        return $query->whereNotExists(function ($subQuery) use ($currentUserIdForScope, $personnelIds, $trueValues) {
-            $subQuery->select(DB::raw(1))
-                ->from('distribution as role2ReturnedParent')
-                ->join('distribution as role2ReturnedChild', function ($join) {
-                    $join->on('role2ReturnedChild.IDparentdist', '=', 'role2ReturnedParent.IDdist')
-                        ->on('role2ReturnedChild.IDdoc', '=', 'role2ReturnedParent.IDdoc');
-                })
-                ->whereColumn('role2ReturnedParent.IDdoc', 'd.IDdoc')
-                ->where('role2ReturnedChild.IDuser', $currentUserIdForScope)
-                ->where(function ($returnedQuery) use ($trueValues) {
-                    $returnedQuery->whereIn('role2ReturnedParent.YNreturn', $trueValues)
-                        ->orWhereNotNull('role2ReturnedParent.returndate');
-                })
-                ->where(function ($taggedQuery) use ($personnelIds) {
-                    $taggedQuery->whereNull('role2ReturnedChild.idmapagency')
-                        ->orWhereNotIn('role2ReturnedChild.idmapagency', $personnelIds);
-                });
-        });
-    };
-
-    $applyRoleTwoReturnedScope = function (
-        $query,
-        string $documentAlias = 'd',
-        string $distributionAlias = 'dist'
-    ) use (
-        $currentRights,
-        $currentUserIdForScope,
-        $viewerPersonnelIds,
-        $trueValues,
-        $applyTaggedDocumentScope
-    ) {
-        /*
-         * Returned card/tab rule:
-         * Role 2 should not see a returned-away document in the normal list,
-         * but the same document should still appear in the Returned card/tab
-         * if this user was the one who returned it.
-         */
-        if ($currentRights !== '2') {
-            return $applyTaggedDocumentScope($query, $documentAlias, $distributionAlias);
-        }
-
-        $personnelIds = collect($viewerPersonnelIds)
-            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id !== 0)
-            ->map(fn ($id) => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
-
-        if (empty($personnelIds) && empty($currentUserIdForScope)) {
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where(function ($scope) use (
-            $documentAlias,
-            $distributionAlias,
-            $personnelIds,
-            $currentUserIdForScope,
-            $trueValues
-        ) {
-            if (! empty($personnelIds)) {
-                $scope->whereIn($documentAlias . '.IDkeeper', $personnelIds);
+        return $query->where(function ($scope) use ($personnelIds) {
+            /*
+             * Multiple workflow:
+             * use the current distribution tag. The original assignment row is
+             * only a fallback before the first distribution exists.
+             */
+            $scope->where(function ($multiple) use ($personnelIds) {
+                $multiple
+                    ->whereNotNull('assignment.id')
+                    ->where(function ($tag) use ($personnelIds) {
+                        $tag
+                            ->where(function ($currentDistribution) use ($personnelIds) {
+                                $currentDistribution
+                                    ->whereNotNull('dist.IDdist')
+                                    ->whereIn('dist.idmapagency', $personnelIds);
+                            })
+                            ->orWhere(function ($noDistribution) use ($personnelIds) {
+                                $noDistribution
+                                    ->whereNull('dist.IDdist')
+                                    ->whereIn('assignment.idmapagency', $personnelIds);
+                            });
+                    });
+            });
 
-                if (Schema::hasColumn('distribution', 'idmapagency')) {
-                    $scope->orWhereIn($distributionAlias . '.idmapagency', $personnelIds);
-                }
-            }
-
-            if (! empty($currentUserIdForScope)) {
-                $scope->orWhereExists(function ($subQuery) use ($currentUserIdForScope, $trueValues) {
-                    $subQuery->select(DB::raw(1))
-                        ->from('distribution as role2ReturnedParent')
-                        ->join('distribution as role2ReturnedChild', function ($join) {
-                            $join->on('role2ReturnedChild.IDparentdist', '=', 'role2ReturnedParent.IDdist')
-                                ->on('role2ReturnedChild.IDdoc', '=', 'role2ReturnedParent.IDdoc');
-                        })
-                        ->whereColumn('role2ReturnedParent.IDdoc', 'd.IDdoc')
-                        ->where('role2ReturnedChild.IDuser', $currentUserIdForScope)
-                        ->where(function ($returnedQuery) use ($trueValues) {
-                            $returnedQuery->whereIn('role2ReturnedParent.YNreturn', $trueValues)
-                                ->orWhereNotNull('role2ReturnedParent.returndate');
-                        });
-                });
-            }
+            /*
+             * Legacy/single workflow:
+             * preserve the original IDkeeper fallback.
+             */
+            $scope->orWhere(function ($legacy) use ($personnelIds) {
+                $legacy
+                    ->whereNull('assignment.id')
+                    ->where(function ($tag) use ($personnelIds) {
+                        $tag
+                            ->where(function ($currentDistribution) use ($personnelIds) {
+                                $currentDistribution
+                                    ->whereNotNull('dist.IDdist')
+                                    ->whereIn('dist.idmapagency', $personnelIds);
+                            })
+                            ->orWhere(function ($noDistribution) use ($personnelIds) {
+                                $noDistribution
+                                    ->whereNull('dist.IDdist')
+                                    ->whereIn('d.IDkeeper', $personnelIds);
+                            });
+                    });
+            });
         });
     };
 
-    $documentsQuery = DB::table('document as d')
-        ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-        ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-        ->leftJoin('lu_office as forOffice', 'forOffice.ID', '=', 'd.IDfor')
-        ->leftJoinSub($latestDistribution, 'ld', function ($join) {
-            $join->on('ld.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ld.latest_IDdist')
-        ->leftJoinSub($latestSelectedAction, 'lsa', function ($join) {
-            $join->on('lsa.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('dts_document_remarks as selectedActionRemark', 'selectedActionRemark.id', '=', 'lsa.latest_selected_action_id')
-        ->leftJoin('dts_action_types as selectedActionType', 'selectedActionType.id', '=', 'selectedActionRemark.action_type_id')
-        ->leftJoinSub($latestReturnedDistribution, 'lrd', function ($join) {
-            $join->on('lrd.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as returnDist', 'returnDist.IDdist', '=', 'lrd.latest_returned_IDdist')
-        ->leftJoin('distribution as returnChildDist', function ($join) {
-            /*
-             * When a document is returned, returnDocument() marks the current
-             * distribution as returned, then creates a child distribution back
-             * to the encoder. Returned By uses the parent confirmuser first,
-             * then child IDuser only as fallback.
-             */
-            $join->on('returnChildDist.IDparentdist', '=', 'returnDist.IDdist')
-                ->on('returnChildDist.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('username as returnUser', 'returnUser.ID', '=', 'returnChildDist.IDuser')
-        ->leftJoin('username as returnConfirmUser', 'returnConfirmUser.ID', '=', 'returnDist.confirmuser')
-        ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
-        ->leftJoin('lu_personnel as receiverPersonnel', 'receiverPersonnel.ID', '=', 'd.IDkeeper')
-        ->select([
-            'd.IDdoc',
-            'd.IDdoc as document_no',
-            DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
-            DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
-            DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
-            DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
-            'd.classification',
-            'd.IDdoctype',
-            'd.entrydate',
-            'd.IDfor',
-            'd.IDfrom',
-            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_name' : 'NULL as to_name'),
-            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_name' : 'NULL as from_name'),
-            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as recipient_name' : 'NULL as recipient_name'),
-            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as sender_name' : 'NULL as sender_name'),
-            DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_person_name' : 'NULL as to_person_name'),
-            DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_person_name' : 'NULL as from_person_name'),
-            'd.subject',
-            'd.regarding',
-            'd.remarks',
-            'd.IDdocstatus',
-            'd.IDkeeper',
-            DB::raw($completedFlagExpression . ' as is_completed'),
-            DB::raw($completedAtExpression . ' as completed_at'),
-            DB::raw($completedByExpression . ' as completed_by'),
+    $applyNotPulled = function ($query) use ($trueValues) {
+        return $query->where(function ($condition) use ($trueValues) {
+            $condition->whereNull('dist.YNpulled')
+                ->orWhereNotIn('dist.YNpulled', $trueValues);
+        });
+    };
 
-            DB::raw($doctypeCodeColumn . ' as code'),
-            'dt.description as doctype',
+    $applyNotReturned = function ($query) use ($trueValues) {
+        return $query->where(function ($condition) use ($trueValues) {
+            $condition->whereNull('dist.YNreturn')
+                ->orWhereNotIn('dist.YNreturn', $trueValues);
+        });
+    };
 
-            'fromOffice.officename as from_office',
-            'fromOffice.abbrev as from_office_abbrev',
-            'forOffice.officename as for_office',
-            'distOffice.officename as current_office',
-            'receiverPersonnel.name as receiver_personnel',
-            'receiverPersonnel.name as to_personnel',
+    $applyReturnChild = function ($query) use ($trueValues) {
+        return $query
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.IDparentdist')
+            ->whereNotNull('returnParent.IDdist')
+            ->where(function ($returned) use ($trueValues) {
+                $returned->whereIn('returnParent.YNreturn', $trueValues)
+                    ->orWhereNotNull('returnParent.returndate');
+            });
+    };
 
-            'dist.IDdist',
-            'dist.IDparentdist as distribution_parent_id',
-            'dist.IDoffice as distribution_office_id',
-            'dist.distdate',
-            'dist.distdate as date_sent',
-            'dist.distdate as distribution_date',
-            'dist.confirmdate',
-            'dist.returndate',
-            DB::raw('COALESCE(returnDist.returndate, dist.returndate) as return_date'),
-            'returnDist.IDdist as return_distribution_id',
-            DB::raw('COALESCE(returnDist.confirmuser, returnChildDist.IDuser) as returned_by'),
-            'returnChildDist.idmapagency as returned_to_personnel_id',
-            DB::raw("COALESCE(NULLIF(TRIM(returnConfirmUser.name), ''), NULLIF(TRIM(returnConfirmUser.loginname), ''), NULLIF(TRIM(returnUser.name), ''), NULLIF(TRIM(returnUser.loginname), ''), CONCAT('Account #', COALESCE(returnDist.confirmuser, returnChildDist.IDuser))) as returned_by_name"),
-            'dist.idmapagency as distribution_personnel_id',
-            'dist.YNreturn',
-            'dist.YNpulled',
-            'dist.remarks as distribution_remarks',
+    $applyNoReturnChild = function ($query) use ($trueValues) {
+        return $query->where(function ($notReturnChild) use ($trueValues) {
+            $notReturnChild
+                ->whereNull('returnParent.IDdist')
+                ->orWhere(function ($normalParent) use ($trueValues) {
+                    $normalParent
+                        ->whereNull('returnParent.returndate')
+                        ->where(function ($notReturned) use ($trueValues) {
+                            $notReturned->whereNull('returnParent.YNreturn')
+                                ->orWhereNotIn('returnParent.YNreturn', $trueValues);
+                        });
+                });
+        });
+    };
 
-            'selectedActionRemark.id as selected_action_id',
-            'selectedActionRemark.action_type as action_type',
-            'selectedActionRemark.action_type_id as action_type_id',
-            DB::raw('CASE WHEN selectedActionRemark.id IS NULL THEN 0 ELSE 1 END as has_selected_action'),
-            DB::raw($selectedActionLabelExpression . ' as selected_action'),
-            DB::raw($selectedActionLabelExpression . ' as action_label'),
-            'selectedActionRemark.remarks as selected_action_remarks',
-            'selectedActionRemark.created_at as selected_action_date',
-        ]);
+    $applyStatusFilter = function ($query, string $status) use (
+        $applyNotPulled,
+        $applyNotReturned,
+        $applyReturnChild,
+        $applyNoReturnChild,
+        $workflowCompletionSql,
+        $workflowNotCompletedSql,
+        $trueValues
+    ) {
+        if ($status === 'returned') {
+            $applyReturnChild($query);
+            $query->whereNull('dist.confirmdate');
+            $applyNotPulled($query);
 
-    if ($isAllDocumentsSection) {
-        /*
-         * All Documents remains the full registry for the roles allowed
-         * to open that module.
-         */
-    } elseif ($isReportsSection) {
-        /*
-         * Reports must start from the complete document registry.
-         *
-         * - All Users: no personnel restriction is applied.
-         * - Specific User: the report_user filter below limits the result
-         *   to that selected personnel.
-         *
-         * Do not apply the logged-in user's normal tagged-document scope here,
-         * otherwise "All Users" would incorrectly show only their own records.
-         */
-    } elseif ($isCompletedDocumentsSection) {
-        /*
-         * Completed:
-         * - Role 3 sees ALL manually completed documents.
-         * - Role 2 sees only manually completed documents currently tagged
-         *   to their personnel record.
-         */
-        if ($currentRights === '2') {
-            $applyCurrentTaggedDocumentScope($documentsQuery, 'd', 'dist');
+            return $query;
         }
-    } elseif ($currentRights === '2' && $filter === 'returned') {
-        $applyRoleTwoReturnedScope($documentsQuery, 'd', 'dist');
-    } else {
-        $applyTaggedDocumentScope($documentsQuery, 'd', 'dist');
-        $excludeReturnedAwayFromRoleTwo($documentsQuery);
+
+        if ($status === 'for_receiving') {
+            $query
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.distdate')
+                ->whereNull('dist.confirmdate')
+                ->whereRaw($workflowNotCompletedSql);
+            $applyNotReturned($query);
+            $applyNotPulled($query);
+            $applyNoReturnChild($query);
+
+            return $query;
+        }
+
+        if ($status === 'received') {
+            $query
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.confirmdate')
+                ->whereNull('selectedActionRemark.id')
+                ->whereRaw($workflowNotCompletedSql);
+            $applyNotReturned($query);
+            $applyNotPulled($query);
+
+            return $query;
+        }
+
+        if ($status === 'addressed') {
+            $query
+                ->whereNotNull('dist.IDdist')
+                ->whereNotNull('dist.confirmdate')
+                ->where(function ($addressed) use ($workflowCompletionSql) {
+                    $addressed->whereNotNull('selectedActionRemark.id')
+                        ->orWhereRaw($workflowCompletionSql);
+                });
+            $applyNotReturned($query);
+            $applyNotPulled($query);
+
+            return $query;
+        }
+
+        if ($status === 'pulled') {
+            return $query->whereIn('dist.YNpulled', $trueValues);
+        }
+
+        if ($status === 'pending') {
+            return $query->whereNull('dist.IDdist');
+        }
+
+        return $query;
+    };
+
+    /*
+     * Current multiple-tagging architecture reads A/B/C from
+     * dts_document_assignments. The old document_group_id and
+     * document.assignment_suffix columns are optional legacy columns and must
+     * never be referenced when they are absent from the active database.
+     */
+    $hasLegacyDocumentAssignmentColumns =
+        Schema::hasColumn('document', 'document_group_id')
+        && Schema::hasColumn('document', 'assignment_suffix');
+
+    $legacyDocumentAssignmentDisplayWhen = $hasLegacyDocumentAssignmentColumns
+        ? "WHEN d.document_group_id IS NOT NULL
+            AND NULLIF(TRIM(d.assignment_suffix), '') IS NOT NULL
+          THEN CONCAT(
+            CAST(d.document_group_id AS CHAR),
+            '-',
+            UPPER(TRIM(d.assignment_suffix))
+          )"
+        : '';
+
+    $displayDocumentNumberExpression = "CASE
+        WHEN assignment.id IS NOT NULL
+            AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
+        THEN CONCAT(
+            CAST(d.IDdoc AS CHAR),
+            '-',
+            UPPER(TRIM(assignment.assignment_suffix))
+        )
+        {$legacyDocumentAssignmentDisplayWhen}
+        ELSE CAST(d.IDdoc AS CHAR)
+    END";
+
+    $workflowStatusExpression = "CASE
+        WHEN LOWER(COALESCE(CAST(dist.YNpulled AS CHAR), ''))
+            IN ('true', 'y', '1')
+            THEN 'Pulled Out'
+        WHEN (
+            returnParent.IDdist IS NOT NULL
+            AND (
+                LOWER(COALESCE(CAST(returnParent.YNreturn AS CHAR), ''))
+                    IN ('true', 'y', '1')
+                OR returnParent.returndate IS NOT NULL
+            )
+            AND dist.confirmdate IS NULL
+        )
+            THEN 'Returned'
+        WHEN (
+            selectedActionRemark.id IS NOT NULL
+            OR {$workflowCompletionSql}
+        )
+            AND dist.confirmdate IS NOT NULL
+            THEN 'Addressed'
+        WHEN dist.confirmdate IS NOT NULL
+            THEN 'Received'
+        WHEN dist.distdate IS NOT NULL
+            THEN 'For Receiving'
+        WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
+            THEN 'Pending 07'
+        ELSE 'Pending'
+    END";
+
+    $selectColumns = [
+        'd.IDdoc',
+        'd.IDdoc as document_no',
+        DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
+        'assignment.id as assignment_id',
+        'assignment.IDdoc as assignment_document_id',
+        DB::raw("UPPER(NULLIF(TRIM(assignment.assignment_suffix), '')) as assignment_suffix"),
+        DB::raw('CASE WHEN assignment.id IS NULL THEN 0 ELSE 1 END as is_multiple_assignment'),
+        DB::raw(
+            $hasAssignmentTable
+                ? '(SELECT COUNT(*) FROM dts_document_assignments assignmentCount WHERE assignmentCount.IDdoc = d.IDdoc) as assignment_count'
+                : '1 as assignment_count'
+        ),
+
+        'd.classification',
+        'd.IDdoctype',
+        'd.entrydate',
+        'd.IDfor',
+        'd.IDfrom',
+        DB::raw(Schema::hasColumn('document', 'to_name') ? 'd.to_name as to_name' : 'NULL as to_name'),
+        DB::raw(Schema::hasColumn('document', 'from_name') ? 'd.from_name as from_name' : 'NULL as from_name'),
+        'd.subject',
+        'd.regarding',
+        'd.remarks',
+        'd.IDdocstatus',
+        DB::raw('COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) as IDkeeper'),
+        DB::raw('CASE WHEN ' . $workflowCompletionSql . ' THEN 1 ELSE 0 END as is_completed'),
+        DB::raw(
+            Schema::hasColumn('document', 'completed_at')
+                ? 'CASE WHEN assignment.id IS NULL THEN d.completed_at ELSE NULL END as completed_at'
+                : 'CASE WHEN assignment.id IS NULL THEN d.datecleared ELSE NULL END as completed_at'
+        ),
+
+        DB::raw($doctypeCodeColumn . ' as code'),
+        'dt.description as doctype',
+        'fromOffice.officename as from_office',
+        'fromOffice.abbrev as from_office_abbrev',
+        'forOffice.officename as for_office',
+        'distOffice.officename as current_office',
+        'receiverPersonnel.name as receiver_personnel',
+        'receiverPersonnel.name as to_personnel',
+        'receiverPersonnel.name as staff_concern',
+        'receiverPersonnel.name as personnel_name',
+
+        'dist.IDdist',
+        DB::raw(
+            $hasDistributionAssignment
+                ? 'dist.assignment_id as distribution_assignment_id'
+                : 'NULL as distribution_assignment_id'
+        ),
+        'dist.IDparentdist as distribution_parent_id',
+        'dist.IDoffice as distribution_office_id',
+        'dist.distdate',
+        'dist.distdate as date_sent',
+        'dist.distdate as distribution_date',
+        'dist.confirmdate',
+        'dist.returndate',
+        'dist.idmapagency as distribution_personnel_id',
+        'dist.YNreturn',
+        'dist.YNpulled',
+        'dist.remarks as distribution_remarks',
+
+        'returnParent.IDdist as return_distribution_id',
+        'returnParent.returndate as return_date',
+        DB::raw('COALESCE(returnParent.confirmuser, dist.IDuser) as returned_by'),
+        'dist.idmapagency as returned_to_personnel_id',
+        DB::raw("COALESCE(
+            NULLIF(TRIM(returnConfirmUser.name), ''),
+            NULLIF(TRIM(returnConfirmUser.loginname), ''),
+            NULLIF(TRIM(returnUser.name), ''),
+            NULLIF(TRIM(returnUser.loginname), ''),
+            CONCAT('Account #', COALESCE(returnParent.confirmuser, dist.IDuser))
+        ) as returned_by_name"),
+
+        'selectedActionRemark.id as selected_action_id',
+        'selectedActionRemark.action_type as action_type',
+        'selectedActionRemark.action_type_id as action_type_id',
+        DB::raw('CASE WHEN selectedActionRemark.id IS NULL THEN 0 ELSE 1 END as has_selected_action'),
+        DB::raw($selectedActionLabelExpression . ' as selected_action'),
+        DB::raw($selectedActionLabelExpression . ' as action_label'),
+        'selectedActionRemark.remarks as selected_action_remarks',
+        'selectedActionRemark.created_at as selected_action_date',
+        DB::raw($workflowStatusExpression . ' as workflow_status'),
+    ];
+
+    $applyCommonYear = function ($query) use ($selectedYear) {
+        if ($selectedYear !== '') {
+            $query->whereYear('d.entrydate', (int) $selectedYear);
+        }
+
+        return $query;
+    };
+
+    /*
+     * Stats use one row per assignment workflow. A legacy document contributes
+     * one row; a document tagged to A/B/C contributes three independent rows.
+     */
+    $statsBase = $buildWorkflowBase();
+    $applyCommonYear($statsBase);
+
+    if (! $isAllDocumentsSection && $section !== 'reports') {
+        $applyTaggedScope($statsBase);
     }
 
-    if ($selectedYear !== '') {
-        $documentsQuery->whereYear('d.entrydate', (int) $selectedYear);
+    $countStatus = function ($base, string $status) use ($applyStatusFilter) {
+        $query = clone $base;
+        $applyStatusFilter($query, $status);
+
+        return $query->count();
+    };
+
+    $stats = [
+        'total' => (clone $statsBase)->count(),
+        'for_receiving' => $countStatus($statsBase, 'for_receiving'),
+        'received' => $countStatus($statsBase, 'received'),
+        'for_action' => $countStatus($statsBase, 'received'),
+        'addressed' => $countStatus($statsBase, 'addressed'),
+        'in_progress' => $countStatus($statsBase, 'addressed'),
+        'completed' => 0,
+        'returned' => $currentRights === '3'
+            ? $countStatus($statsBase, 'returned')
+            : 0,
+        'pending_docs' => $countStatus($statsBase, 'pending'),
+        'pending_docs_07' => (clone $statsBase)
+            ->where('d.IDdocstatus', 7)
+            ->count(),
+    ];
+
+    $documentsQuery = $buildWorkflowBase();
+
+    if (! $isAllDocumentsSection && $section !== 'reports') {
+        $applyTaggedScope($documentsQuery);
+    }
+
+    $applyCommonYear($documentsQuery);
+
+    if ($section === 'reports') {
+        if ($request->filled('report_classification')) {
+            $documentsQuery->where(
+                'd.classification',
+                $request->input('report_classification')
+            );
+        }
+
+        $reportUser = trim((string) $request->input('report_user', ''));
+
+        if ($reportUser !== '' && strtolower($reportUser) !== 'all') {
+            $documentsQuery->whereRaw(
+                'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) = ?',
+                [(int) $reportUser]
+            );
+        }
+
+        if ($request->filled('start_date')) {
+            $documentsQuery->whereDate(
+                'd.entrydate',
+                '>=',
+                $request->input('start_date')
+            );
+        }
+
+        if ($request->filled('end_date')) {
+            $documentsQuery->whereDate(
+                'd.entrydate',
+                '<=',
+                $request->input('end_date')
+            );
+        }
+    }
+
+    if ($section === 'received-docs') {
+        $documentsQuery->where('d.classification', 'False');
+        $applyStatusFilter($documentsQuery, 'received');
+
+        if ($request->filled('keeper')) {
+            $documentsQuery->whereRaw(
+                'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) = ?',
+                [(int) $request->input('keeper')]
+            );
+        }
+
+        if ($request->filled('doc_type')) {
+            $documentsQuery->where(
+                'd.IDdoctype',
+                $request->input('doc_type')
+            );
+        }
+    } elseif ($section === 'pending-docs') {
+        $applyStatusFilter($documentsQuery, 'for_receiving');
+    } elseif ($section === 'pending-docs-07') {
+        $applyStatusFilter($documentsQuery, 'for_receiving');
+        $documentsQuery->where('d.IDdocstatus', 7);
+    } elseif ($section === 'sent-docs') {
+        $documentsQuery->whereNotNull('dist.distdate');
+        $applyNotPulled($documentsQuery);
+    } elseif ($section === 'pulled-out-docs') {
+        $applyStatusFilter($documentsQuery, 'pulled');
+    }
+
+    if ($filter === 'for-receiving') {
+        $applyStatusFilter($documentsQuery, 'for_receiving');
+    } elseif (in_array($filter, ['received', 'collab-received', 'for-action'], true)) {
+        $applyStatusFilter($documentsQuery, 'received');
+    } elseif (in_array($filter, ['addressed', 'in-progress', 'completed'], true)) {
+        $applyStatusFilter($documentsQuery, 'addressed');
+    } elseif ($filter === 'returned') {
+        if ($currentRights !== '3') {
+            $documentsQuery->whereRaw('1 = 0');
+        } else {
+            $applyStatusFilter($documentsQuery, 'returned');
+        }
+    } elseif ($filter === '15days') {
+        $documentsQuery
+            ->whereNotNull('d.entrydate')
+            ->whereDate(
+                'd.entrydate',
+                '<=',
+                now()->subDays(15)->toDateString()
+            );
     }
 
     if ($search !== '') {
         $searchLike = '%' . $search . '%';
         $lowerSearchLike = '%' . strtolower($search) . '%';
 
-        /*
-         * Search must follow only what the logged-in viewer can actually see
-         * in the index table.
-         *
-         * Role 2:
-         * - DOC ID
-         * - From (Agency)
-         * - From agency abbreviation
-         * - Subject
-         * - Status
-         * - Date Sent
-         *
-         * Role 3 and other roles whose table displays To:
-         * - DOC ID
-         * - the exact To value displayed by documentToDisplay()
-         * - Subject
-         * - Status
-         * - Date Sent
-         *
-         * Do not search hidden database fields such as remarks, regarding,
-         * document type, classification, action details, return history,
-         * hidden To/From values, or non-displayed fallback office values.
-         */
-
-        /*
-         * This SQL expression follows the exact frontend priority used by
-         * documentToDisplay():
-         *
-         * receiver personnel -> current distribution office -> original To office
-         *
-         * COALESCE is important. It prevents a hidden fallback office from
-         * matching when a receiver personnel name is already the visible value.
-         */
-        $visibleToExpression = "
-            COALESCE(
-                NULLIF(TRIM(receiverPersonnel.name), ''),
-                NULLIF(TRIM(distOffice.officename), ''),
-                NULLIF(TRIM(forOffice.officename), ''),
-                '-'
-            )
-        ";
-
-        /*
-         * Date Sent follows the frontend display:
-         * dist.date_sent / distribution_date / distdate, then entrydate.
-         */
-        $visibleDateSentExpression = 'COALESCE(dist.distdate, d.entrydate)';
-
-        /*
-         * Build the same status shown by the frontend after the query result
-         * is transformed. Searching a status therefore matches only the label
-         * that the current viewer actually sees.
-         */
-        $roleTwoPendingReturnCondition = $currentRights === '2'
-            ? "
-                (
-                    dist.IDparentdist IS NOT NULL
-                    AND returnDist.IDdist IS NOT NULL
-                    AND CAST(dist.IDparentdist AS CHAR) = CAST(returnDist.IDdist AS CHAR)
-                    AND dist.confirmdate IS NULL
-                    AND COALESCE(returnDist.confirmuser, returnChildDist.IDuser) = "
-                    . (int) ($currentUserIdForScope ?? 0) .
-                "
-                )
-            "
-            : '0 = 1';
-
-        $visibleWorkflowStatusExpression = "
-            CASE
-                WHEN LOWER(COALESCE(CAST(dist.YNpulled AS CHAR), '')) IN ('true', 'y', '1')
-                    THEN 'Pulled Out'
-
-                WHEN {$roleTwoPendingReturnCondition}
-                    THEN 'Returned'
-
-                WHEN (
-                    LOWER(COALESCE(CAST(dist.YNreturn AS CHAR), '')) IN ('true', 'y', '1')
-                    OR dist.returndate IS NOT NULL
-                )
-                    THEN 'Returned'
-
-                WHEN (
-                    {$documentIsCompletedSql}
-                    OR (
-                        selectedActionRemark.id IS NOT NULL
-                        AND dist.confirmdate IS NOT NULL
-                    )
-                )
-                    THEN 'Addressed'
-
-                WHEN dist.confirmdate IS NOT NULL
-                    THEN 'Received'
-
-                WHEN dist.distdate IS NOT NULL
-                    THEN 'For Receiving'
-
-                WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
-                    THEN 'Pending 07'
-
-                ELSE 'Pending'
-            END
-        ";
-
         $documentsQuery->where(function ($query) use (
             $searchLike,
             $lowerSearchLike,
-            $currentRights,
-            $visibleToExpression,
-            $visibleDateSentExpression,
-            $visibleWorkflowStatusExpression,
-            $displayDocumentNumberExpression
+            $displayDocumentNumberExpression,
+            $workflowStatusExpression
         ) {
-            /*
-             * Common visible columns for all viewers.
-             */
             $query
                 ->whereRaw(
                     '(' . $displayDocumentNumberExpression . ') LIKE ?',
                     [$searchLike]
                 )
                 ->orWhere('d.subject', 'like', $searchLike)
+                ->orWhere('d.regarding', 'like', $searchLike)
+                ->orWhere('fromOffice.officename', 'like', $searchLike)
+                ->orWhere('fromOffice.abbrev', 'like', $searchLike)
+                ->orWhere('forOffice.officename', 'like', $searchLike)
+                ->orWhere('receiverPersonnel.name', 'like', $searchLike)
                 ->orWhereRaw(
-                    'LOWER(' . $visibleWorkflowStatusExpression . ') LIKE ?',
+                    'LOWER(' . $workflowStatusExpression . ') LIKE ?',
                     [$lowerSearchLike]
                 )
-
-                /*
-                 * Search the Date Sent exactly as displayed, supporting the
-                 * common date formats users may type.
-                 */
                 ->orWhereRaw(
-                    $visibleDateSentExpression . ' LIKE ?',
+                    "DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%M %e, %Y') LIKE ?",
                     [$searchLike]
                 )
                 ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%Y-%m-%d %H:%i:%s') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%b %e, %Y, %l:%i %p') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%M %e, %Y, %l:%i %p') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%b %e, %Y') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%M %e, %Y') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%m/%d/%Y') LIKE ?",
-                    [$searchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT({$visibleDateSentExpression}, '%d/%m/%Y') LIKE ?",
+                    "DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%Y-%m-%d') LIKE ?",
                     [$searchLike]
                 );
-
-            if ($currentRights === '2') {
-                /*
-                 * Role 2 sees From (Agency) and its abbreviation.
-                 */
-                $query
-                    ->orWhere('fromOffice.officename', 'like', $searchLike)
-                    ->orWhere('fromOffice.abbrev', 'like', $searchLike);
-            } else {
-                /*
-                 * Role 3 and other non-Role-2 viewers see To.
-                 * Search only the first non-empty value that is displayed.
-                 */
-                $query->orWhereRaw(
-                    $visibleToExpression . ' LIKE ?',
-                    [$searchLike]
-                );
-            }
         });
     }
 
@@ -847,1143 +772,60 @@ public function index(Request $request)
     ];
 
     if ($section === 'reports') {
-        if ($request->filled('report_classification')) {
-            $documentsQuery->where('d.classification', $request->input('report_classification'));
-        }
+        $reportBase = clone $documentsQuery;
 
-        $reportUser = trim((string) $request->input('report_user', ''));
+        $reportSummary['total'] = (clone $reportBase)->count();
+        $reportSummary['for_receiving'] = $countStatus(
+            $reportBase,
+            'for_receiving'
+        );
+        $reportSummary['received'] = $countStatus(
+            $reportBase,
+            'received'
+        );
+        $reportSummary['addressed'] = $countStatus(
+            $reportBase,
+            'addressed'
+        );
+        $reportSummary['returned'] = $currentRights === '2'
+            ? 0
+            : $countStatus($reportBase, 'returned');
 
-        if ($reportUser !== '' && strtolower($reportUser) !== 'all') {
-            /*
-             * A specific User filters either the document's staff concern/
-             * current keeper or the latest distribution's tagged personnel.
-             *
-             * Empty or "all" means All Users and applies no user restriction.
-             */
-            $documentsQuery->where(function ($query) use ($reportUser) {
-                $query->where('d.IDkeeper', $reportUser)
-                    ->orWhere('dist.idmapagency', $reportUser);
-            });
-        }
-
-        if ($request->filled('start_date')) {
-            $documentsQuery->whereDate('d.entrydate', '>=', $request->input('start_date'));
-        }
-
-        if ($request->filled('end_date')) {
-            $documentsQuery->whereDate('d.entrydate', '<=', $request->input('end_date'));
-        }
-
-        /*
-         * REPORT SUMMARY
-         *
-         * These counts are cloned from the SAME filtered report query, so they
-         * always match the selected classification, user, and date range.
-         * The states are mutually exclusive:
-         * - Returned: pending Return to Admin child distribution
-         * - For Receiving: unreceived normal distribution
-         * - Received: received with no current-cycle Final Address action
-         * - Addressed: received with a current-cycle Final Address action
-         * - Other: pending/unrouted/pulled-out records not in the four core states
-         */
-        $reportBaseQuery = clone $documentsQuery;
-
-        $reportSummary['total'] = (clone $reportBaseQuery)
-            ->distinct()
-            ->count('d.IDdoc');
-
-        $reportSummary['returned'] = (clone $reportBaseQuery)
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.IDparentdist')
-            ->whereNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->whereExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as reportReturnParent')
-                    ->whereColumn('reportReturnParent.IDdist', 'dist.IDparentdist')
-                    ->whereColumn('reportReturnParent.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('reportReturnParent.YNreturn', $trueValues)
-                            ->orWhereNotNull('reportReturnParent.returndate');
-                    });
-            })
-            ->distinct()
-            ->count('d.IDdoc');
-
-        $reportSummary['for_receiving'] = (clone $reportBaseQuery)
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNull('selectedActionRemark.id')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->whereNotExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as reportForReceivingReturnParent')
-                    ->whereColumn('reportForReceivingReturnParent.IDdist', 'dist.IDparentdist')
-                    ->whereColumn('reportForReceivingReturnParent.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('reportForReceivingReturnParent.YNreturn', $trueValues)
-                            ->orWhereNotNull('reportForReceivingReturnParent.returndate');
-                    });
-            })
-            ->distinct()
-            ->count('d.IDdoc');
-
-        $reportSummary['received'] = (clone $reportBaseQuery)
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNull('selectedActionRemark.id')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->distinct()
-            ->count('d.IDdoc');
-
-        $reportSummary['addressed'] = (clone $reportBaseQuery)
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($documentIsCompletedSql) {
-                $query->whereNotNull('selectedActionRemark.id')
-                    ->orWhereRaw($documentIsCompletedSql);
-            })
-            ->distinct()
-            ->count('d.IDdoc');
-
-        $coreReportCount = $reportSummary['for_receiving']
+        $coreCount = $reportSummary['for_receiving']
             + $reportSummary['received']
             + $reportSummary['addressed']
             + $reportSummary['returned'];
 
         $reportSummary['other'] = max(
-            $reportSummary['total'] - $coreReportCount,
+            $reportSummary['total'] - $coreCount,
             0
         );
     }
 
-    if ($section === 'incoming' && $filter === '') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-    }
-
-    if ($section === 'received-docs') {
-        $documentsQuery
-            ->where('d.classification', 'False')
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-
-        if ($request->filled('keeper')) {
-            $documentsQuery->where('d.IDkeeper', $request->input('keeper'));
-        }
-
-        if ($request->filled('doc_type')) {
-            $documentsQuery->where('d.IDdoctype', $request->input('doc_type'));
-        }
-    }
-
-    if ($section === 'pending-docs') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-    }
-
-    if ($section === 'pending-docs-07') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNull('dist.confirmdate')
-            ->where('d.IDdocstatus', 7)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-    }
-
-    if ($section === 'sent-docs') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-    }
-
-    if ($section === 'pulled-out-docs') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereIn('dist.YNpulled', $trueValues);
-    }
-
-    if ($filter === 'for-receiving') {
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNull('dist.confirmdate')
-            ->whereNotExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as forReceivingReturnParent')
-                    ->whereColumn('forReceivingReturnParent.IDdist', 'dist.IDparentdist')
-                    ->whereColumn('forReceivingReturnParent.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('forReceivingReturnParent.YNreturn', $trueValues)
-                            ->orWhereNotNull('forReceivingReturnParent.returndate');
-                    });
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-    }
-
-    if (in_array($filter, ['collab-received', 'received', 'for-action'], true)) {
-        /*
-         * Received = document was received, has no saved Select Action yet,
-         * and has not been manually marked as Completed.
-         *
-         * The old "for-action" filter is still accepted for backward-compatible
-         * links, but it now follows the same Received rule.
-         */
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-
-        if (Schema::hasTable('dts_document_remarks')) {
-            $documentsQuery->whereNotExists(function ($query) {
-                $query->select(DB::raw(1))
-                    ->from('dts_document_remarks as receivedNoActionRemarks')
-                    ->whereColumn('receivedNoActionRemarks.IDdoc', 'd.IDdoc')
-                    ->where('receivedNoActionRemarks.action_type', 'action_taken')
-                    ->whereColumn('receivedNoActionRemarks.created_at', '>=', 'dist.distdate');
-            });
-        }
-    }
-
-    if (
-        in_array($filter, ['in-progress', 'addressed', 'completed'], true)
-        || in_array($section, ['addressed-docs', 'completed-docs'], true)
-    ) {
-        /*
-         * Addressed is the final handled state.
-         *
-         * A document is Addressed when it has a saved Address action. Old
-         * manually completed records are also shown here for backward
-         * compatibility, but the Completed card/status is no longer used.
-         */
-        $documentsQuery
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($documentIsCompletedSql) {
-                if (Schema::hasTable('dts_document_remarks')) {
-                    $query->whereExists(function ($actionQuery) {
-                        $actionQuery->select(DB::raw(1))
-                            ->from('dts_document_remarks as addressedRemarks')
-                            ->whereColumn('addressedRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedRemarks.action_type', 'action_taken')
-                            ->whereColumn('addressedRemarks.created_at', '>=', 'dist.distdate');
-                    });
-                } else {
-                    $query->whereRaw('1 = 0');
-                }
-
-                $query->orWhereRaw($documentIsCompletedSql);
-            });
-    }
-
-    if ($filter === 'returned') {
-        /*
-         * Returned is a CURRENT pending state, visible only to Role 3.
-         *
-         * returnDocument() marks the old/parent distribution as returned and
-         * creates a new child distribution for the admin/encoder. The document
-         * stays in Returned only while that latest child distribution has not
-         * yet been received. After Receive it moves to Received; after a new
-         * Final Address action it moves to Addressed.
-         */
-        if ($currentRights !== '3') {
-            $documentsQuery->whereRaw('1 = 0');
-        } else {
-            $documentsQuery
-                ->whereNotNull('dist.IDdist')
-                ->whereNotNull('dist.IDparentdist')
-                ->whereNull('dist.confirmdate')
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNreturn')
-                        ->orWhereNotIn('dist.YNreturn', $trueValues);
-                })
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNpulled')
-                        ->orWhereNotIn('dist.YNpulled', $trueValues);
-                })
-                ->whereExists(function ($query) use ($trueValues) {
-                    $query->select(DB::raw(1))
-                        ->from('distribution as returnedFilterParent')
-                        ->leftJoin('username as returnedFilterUser', function ($join) {
-                            $join->on(
-                                'returnedFilterUser.ID',
-                                '=',
-                                DB::raw('COALESCE(returnedFilterParent.confirmuser, dist.IDuser)')
-                            );
-                        })
-                        ->whereColumn('returnedFilterParent.IDdist', 'dist.IDparentdist')
-                        ->whereColumn('returnedFilterParent.IDdoc', 'd.IDdoc')
-                        ->where('returnedFilterUser.rights', '2')
-                        ->where(function ($returnedQuery) use ($trueValues) {
-                            $returnedQuery->whereIn('returnedFilterParent.YNreturn', $trueValues)
-                                ->orWhereNotNull('returnedFilterParent.returndate');
-                        });
-                });
-        }
-    }
-
-    if ($filter === '15days') {
-        $documentsQuery
-            ->whereNotNull('d.entrydate')
-            ->whereDate('d.entrydate', '<=', now()->subDays(15)->toDateString());
-    }
-
-    /*
-     * These expressions mirror the values visible in the Vue tables.
-     */
-    $visibleToSortExpression = "
-        COALESCE(
-            NULLIF(TRIM(receiverPersonnel.name), ''),
-            NULLIF(TRIM(distOffice.officename), ''),
-            NULLIF(TRIM(forOffice.officename), ''),
-            '-'
-        )
-    ";
-
-    $visibleAgencySortExpression = $currentRights === '2'
-        ? "COALESCE(NULLIF(TRIM(fromOffice.officename), ''), '-')"
-        : $visibleToSortExpression;
-
-    $visibleStatusSortExpression = "
-        CASE
-            WHEN LOWER(COALESCE(CAST(dist.YNpulled AS CHAR), ''))
-                IN ('true', 'y', '1')
-                THEN 'Pulled Out'
-
-            WHEN (
-                LOWER(COALESCE(CAST(dist.YNreturn AS CHAR), ''))
-                    IN ('true', 'y', '1')
-                OR dist.returndate IS NOT NULL
-            )
-                THEN 'Returned'
-
-            WHEN (
-                {$documentIsCompletedSql}
-                OR (
-                    selectedActionRemark.id IS NOT NULL
-                    AND dist.confirmdate IS NOT NULL
-                )
-            )
-                THEN 'Addressed'
-
-            WHEN dist.confirmdate IS NOT NULL
-                THEN 'Received'
-
-            WHEN dist.distdate IS NOT NULL
-                THEN 'For Receiving'
-
-            WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
-                THEN 'Pending 07'
-
-            ELSE 'Pending'
-        END
-    ";
-
-    $sortExpressions = [
-        'doc_id' => 'CAST(d.IDdoc AS UNSIGNED)',
-        'agency' => $visibleAgencySortExpression,
-        'to' => $visibleToSortExpression,
-        'from' => "COALESCE(NULLIF(TRIM(fromOffice.officename), ''), '-')",
-        'type' => $doctypeCodeColumn,
-        'subject' => "COALESCE(NULLIF(TRIM(d.subject), ''), '-')",
-        'regarding' => "COALESCE(NULLIF(TRIM(d.regarding), ''), '-')",
-        'status' => $visibleStatusSortExpression,
-        'date_sent' => 'COALESCE(dist.distdate, d.entrydate)',
-        'distribution_date' => 'dist.distdate',
-        'return_date' => 'COALESCE(returnDist.returndate, dist.returndate)',
-    ];
-
-    $selectedSortExpression = $sortExpressions[$sortBy]
-        ?? $sortExpressions['doc_id'];
-
-    $documentsQuery->orderByRaw(
-        $selectedSortExpression . ' ' . strtoupper($sortDirection)
-    );
-
-    /*
-     * Keep equal values stable and predictable.
-     */
-    if ($sortBy !== 'doc_id') {
-        $documentsQuery->orderByDesc('d.IDdoc');
-    }
-
     $documents = $documentsQuery
+        ->select($selectColumns)
+        ->orderByDesc('d.IDdoc')
+        ->orderByRaw("COALESCE(assignment.assignment_suffix, '') ASC")
         ->paginate($perPage)
         ->appends($request->query());
 
-    if (isset($documents) && method_exists($documents, 'getCollection')) {
-        $documents->getCollection()->transform(function ($doc) use (
-            $trueValues,
-            $currentRights,
-            $currentUserIdForScope
-        ) {
-            /*
-             * Return to Admin creates a fresh child distribution.
-             *
-             * Role 2 (the returner) sees the pending item as Returned.
-             * Role 3/Admin (the new current recipient) sees the same pending
-             * item as For Receiving, so the Receive action remains available.
-             */
-            $isCurrentReturnChild = ! empty($doc->distribution_parent_id)
-                && ! empty($doc->return_distribution_id)
-                && (string) $doc->distribution_parent_id === (string) $doc->return_distribution_id;
-
-            $isPendingReturnToAdmin = $isCurrentReturnChild
-                && empty($doc->confirmdate);
-
-            $wasReturnedByCurrentRoleTwo = $currentRights === '2'
-                && ! empty($currentUserIdForScope)
-                && (string) ($doc->returned_by ?? '') === (string) $currentUserIdForScope;
-
-            $isLatestRowReturned = in_array(
-                (string) ($doc->YNreturn ?? ''),
-                array_map('strval', $trueValues),
-                true
-            ) || ! empty($doc->returndate);
-
-            $isPulled = in_array(
-                (string) ($doc->YNpulled ?? ''),
-                array_map('strval', $trueValues),
-                true
-            );
-
-            /*
-             * selectedActionRemark is already limited to the current/latest
-             * distribution cycle by $latestSelectedAction above.
-             */
-            $hasSelectedAction = ! empty($doc->has_selected_action)
-                || ! empty($doc->selected_action_id)
-                || ! empty($doc->selected_action_date)
-                || ((string) ($doc->action_type ?? '') === 'action_taken');
-
-            $doc->has_selected_action = $hasSelectedAction ? 1 : 0;
-
-            $isCompleted = ! empty($doc->is_completed)
-                || ! empty($doc->completed_at);
-
-            if ($isPulled) {
-                $doc->workflow_status = 'Pulled Out';
-            } elseif ($isPendingReturnToAdmin && $wasReturnedByCurrentRoleTwo) {
-                /* Role 2 perspective after clicking Return to Admin. */
-                $doc->workflow_status = 'Returned';
-            } elseif ($isLatestRowReturned) {
-                /* Legacy fallback when no return-child distribution exists. */
-                $doc->workflow_status = 'Returned';
-            } elseif ($isCompleted || ($hasSelectedAction && ! empty($doc->confirmdate))) {
-                $doc->workflow_status = 'Addressed';
-            } elseif (! empty($doc->confirmdate)) {
-                /* Role 3/Admin after receiving the returned document. */
-                $doc->workflow_status = 'Received';
-            } elseif (! empty($doc->distdate)) {
-                /* Role 3/Admin before receiving the returned document. */
-                $doc->workflow_status = 'For Receiving';
-            } elseif ((int) ($doc->IDdocstatus ?? 0) === 7) {
-                $doc->workflow_status = 'Pending 07';
-            } else {
-                $doc->workflow_status = 'Pending';
-            }
-
-            return $doc;
-        });
-    }
-
-    $statsLatestDistribution = DB::table('distribution as dx')
-        ->select([
-            'dx.IDdoc',
-            DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
-        ])
-        ->groupBy('dx.IDdoc');
-
-    $makeStatsBaseQuery = function () use ($statsLatestDistribution, $selectedYear, $applyTaggedDocumentScope, $excludeReturnedAwayFromRoleTwo, $isAllDocumentsSection) {
-        $query = DB::table('document as d')
-            ->leftJoinSub($statsLatestDistribution, 'ldStats', function ($join) {
-                $join->on('ldStats.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ldStats.latest_IDdist')
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
-            });
-
-        if (! $isAllDocumentsSection) {
-            $applyTaggedDocumentScope($query, 'd', 'dist');
-            $excludeReturnedAwayFromRoleTwo($query);
-        }
-
-        return $query;
-    };
-
-    $makeReturnedStatsBaseQuery = function () use ($statsLatestDistribution, $selectedYear, $applyRoleTwoReturnedScope, $isAllDocumentsSection) {
+    $documents->getCollection()->transform(function ($doc) {
         /*
-         * Returned count/card:
-         * Use a special scope so Role 2 still sees the returned count for
-         * documents they returned, even if those documents are now tagged back
-         * to the encoder and hidden from their normal document list.
+         * Keep all display aliases expected by the existing Index.vue.
          */
-        $query = DB::table('document as d')
-            ->leftJoinSub($statsLatestDistribution, 'ldStats', function ($join) {
-                $join->on('ldStats.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ldStats.latest_IDdist')
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
-            });
+        $doc->status = $doc->workflow_status;
+        $doc->status_label = $doc->workflow_status;
+        $doc->current_status = $doc->workflow_status;
+        $doc->tracking_no = $doc->display_document_no;
+        $doc->document_no = $doc->display_document_no;
+        $doc->to_office = $doc->for_office;
+        $doc->to_personnel = $doc->receiver_personnel;
 
-        if (! $isAllDocumentsSection) {
-            $applyRoleTwoReturnedScope($query, 'd', 'dist');
-        }
-
-        return $query;
-    };
-
-    $makeCompletedStatsBaseQuery = function () use ($statsLatestDistribution, $selectedYear, $applyCurrentTaggedDocumentScope, $currentRights) {
-        $query = DB::table('document as d')
-            ->leftJoinSub($statsLatestDistribution, 'ldCompletedStats', function ($join) {
-                $join->on('ldCompletedStats.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'ldCompletedStats.latest_IDdist')
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
-            });
-
-        /*
-         * Role 3 counts ALL manually completed documents.
-         * Role 2 counts only manually completed documents currently tagged
-         * to their mapped personnel record.
-         */
-        if ($currentRights === '2') {
-            $applyCurrentTaggedDocumentScope($query, 'd', 'dist');
-        }
-
-        return $query;
-    };
-
-    $stats = [
-        'total' => (clone $makeStatsBaseQuery())
-            ->distinct()
-            ->count('d.IDdoc'),
-       
-        'for_receiving' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->whereNotExists(function ($query) use ($trueValues) {
-                $query->select(DB::raw(1))
-                    ->from('distribution as forReceivingStatsReturnParent')
-                    ->whereColumn('forReceivingStatsReturnParent.IDdist', 'dist.IDparentdist')
-                    ->whereColumn('forReceivingStatsReturnParent.IDdoc', 'd.IDdoc')
-                    ->where(function ($returnedQuery) use ($trueValues) {
-                        $returnedQuery->whereIn('forReceivingStatsReturnParent.YNreturn', $trueValues)
-                            ->orWhereNotNull('forReceivingStatsReturnParent.returndate');
-                    });
-            })
-            ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        /*
-         * Received = received, no Select Action yet, and not completed.
-         */
-        'received' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->when(Schema::hasTable('dts_document_remarks'), function ($query) {
-                $query->whereNotExists(function ($subQuery) {
-                    $subQuery->select(DB::raw(1))
-                        ->from('dts_document_remarks as receivedStatsRemarks')
-                        ->whereColumn('receivedStatsRemarks.IDdoc', 'd.IDdoc')
-                        ->where('receivedStatsRemarks.action_type', 'action_taken')
-                        ->whereColumn('receivedStatsRemarks.created_at', '>=', 'dist.distdate');
-                });
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        /*
-         * Legacy compatibility key: same rule as Received.
-         */
-        'for_action' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($documentIsNotCompletedSql)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->when(Schema::hasTable('dts_document_remarks'), function ($query) {
-                $query->whereNotExists(function ($subQuery) {
-                    $subQuery->select(DB::raw(1))
-                        ->from('dts_document_remarks as forActionStatsRemarks')
-                        ->whereColumn('forActionStatsRemarks.IDdoc', 'd.IDdoc')
-                        ->where('forActionStatsRemarks.action_type', 'action_taken')
-                        ->whereColumn('forActionStatsRemarks.created_at', '>=', 'dist.distdate');
-                });
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        /*
-         * Addressed = received and handled using the Address action.
-         * Legacy manually completed records are included as Addressed.
-         */
-        'addressed' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($documentIsCompletedSql) {
-                if (Schema::hasTable('dts_document_remarks')) {
-                    $query->whereExists(function ($actionQuery) {
-                        $actionQuery->select(DB::raw(1))
-                            ->from('dts_document_remarks as addressedStatsRemarks')
-                            ->whereColumn('addressedStatsRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedStatsRemarks.action_type', 'action_taken')
-                            ->whereColumn('addressedStatsRemarks.created_at', '>=', 'dist.distdate');
-                    });
-                } else {
-                    $query->whereRaw('1 = 0');
-                }
-
-                $query->orWhereRaw($documentIsCompletedSql);
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        /* Backward-compatible key for old frontend builds. */
-        'in_progress' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($documentIsCompletedSql) {
-                if (Schema::hasTable('dts_document_remarks')) {
-                    $query->whereExists(function ($actionQuery) {
-                        $actionQuery->select(DB::raw(1))
-                            ->from('dts_document_remarks as addressedCompatRemarks')
-                            ->whereColumn('addressedCompatRemarks.IDdoc', 'd.IDdoc')
-                            ->where('addressedCompatRemarks.action_type', 'action_taken')
-                            ->whereColumn('addressedCompatRemarks.created_at', '>=', 'dist.distdate');
-                    });
-                } else {
-                    $query->whereRaw('1 = 0');
-                }
-
-                $query->orWhereRaw($documentIsCompletedSql);
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        /* Deprecated in the revised workflow. */
-        'completed' => 0,
-
-        'returned' => $currentRights === '3'
-            ? (clone $makeReturnedStatsBaseQuery())
-                ->whereNotNull('dist.IDdist')
-                ->whereNotNull('dist.IDparentdist')
-                ->whereNull('dist.confirmdate')
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNreturn')
-                        ->orWhereNotIn('dist.YNreturn', $trueValues);
-                })
-                ->where(function ($query) use ($trueValues) {
-                    $query->whereNull('dist.YNpulled')
-                        ->orWhereNotIn('dist.YNpulled', $trueValues);
-                })
-                ->whereExists(function ($query) use ($trueValues) {
-                    $query->select(DB::raw(1))
-                        ->from('distribution as returnedStatsParent')
-                        ->leftJoin('username as returnedStatsUser', function ($join) {
-                            $join->on(
-                                'returnedStatsUser.ID',
-                                '=',
-                                DB::raw('COALESCE(returnedStatsParent.confirmuser, dist.IDuser)')
-                            );
-                        })
-                        ->whereColumn('returnedStatsParent.IDdist', 'dist.IDparentdist')
-                        ->whereColumn('returnedStatsParent.IDdoc', 'd.IDdoc')
-                        ->where('returnedStatsUser.rights', '2')
-                        ->where(function ($returnedQuery) use ($trueValues) {
-                            $returnedQuery->whereIn('returnedStatsParent.YNreturn', $trueValues)
-                                ->orWhereNotNull('returnedStatsParent.returndate');
-                        });
-                })
-                ->distinct()
-                ->count('d.IDdoc')
-            : 0,
-
-
-        'pending_docs' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'pending_docs_07' => (clone $makeStatsBaseQuery())
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->where('d.IDdocstatus', 7)
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->distinct()
-            ->count('d.IDdoc'),
-    ];
-    $viewerNotifications = collect();
-    $creatorReceivedNotifications = collect();
-
-    /*
-     * GLOBAL tagged notification rule:
-     * If a document is tagged to ANY logged-in user's personnel record,
-     * that user should receive the notification.
-     *
-     * document.IDkeeper and distribution.idmapagency are personnel IDs,
-     * NOT username.ID. This is why we always use $viewerPersonnelIds.
-     */
-    if (! empty($viewerPersonnelIds)) {
-        $viewerNotificationsQuery = DB::table('document as d')
-            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-            ->leftJoinSub($makeLatestDistribution(), 'viewerLd', function ($join) {
-                $join->on('viewerLd.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'viewerLd.latest_IDdist')
-            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($viewerPersonnelIds) {
-                $query->whereIn('d.IDkeeper', $viewerPersonnelIds);
-
-                if (Schema::hasColumn('distribution', 'idmapagency')) {
-                    $query->orWhereIn('dist.idmapagency', $viewerPersonnelIds);
-                }
-            })
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
-            });
-
-        $viewerNotifications = $viewerNotificationsQuery
-            ->select([
-                DB::raw("'for_receiving' as notification_type"),
-                'd.IDdoc',
-                'd.IDdoc as document_no',
-                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
-                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
-                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
-                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
-                'd.subject',
-                'd.entrydate',
-                DB::raw($doctypeCodeColumn . ' as code'),
-                'dt.description as doctype',
-                'fromOffice.officename as from_office',
-                'distOffice.officename as transferred_to',
-                'dist.distdate as transfer_date',
-                DB::raw('DATE_ADD(dist.distdate, INTERVAL 7 DAY) as due_date'),
-            ])
-            ->orderBy('dist.distdate')
-            ->limit(50)
-            ->get()
-            ->map(function ($doc) {
-                $transferDate = $doc->transfer_date ? Carbon::parse($doc->transfer_date) : null;
-                $dueDate = $transferDate ? $transferDate->copy()->addDays(7) : null;
-
-                return [
-                    'notification_type' => 'for_receiving',
-                    'IDdoc' => $doc->IDdoc,
-                    'document_no' => $doc->document_no,
-                    'display_document_no' => $doc->display_document_no,
-                    'document_group_id' => $doc->document_group_id,
-                    'assignment_suffix' => $doc->assignment_suffix,
-                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
-                    'subject' => $doc->subject,
-                    'entrydate' => $doc->entrydate,
-                    'code' => $doc->code,
-                    'doctype' => $doc->doctype,
-                    'from_office' => $doc->from_office,
-                    'transferred_to' => $doc->transferred_to,
-                    'transfer_date' => $doc->transfer_date,
-                    'due_date' => $dueDate ? $dueDate->format('Y-m-d H:i:s') : null,
-                    'days_since_transfer' => $transferDate ? $transferDate->diffInDays(now()) : 0,
-                    'is_overdue' => $dueDate ? now()->greaterThanOrEqualTo($dueDate) : false,
-                ];
-            })
-            ->values();
-    }
-
-
-    $currentUserId = $this->currentUserId();
-
-    /*
-     * AUTOMATIC 3-DAY FOR RECEIVING / RECEIVED REMINDER
-     *
-     * This list is separate from the notification bell. The red modal appears
-     * for a currently tagged document that remains unresolved for at least
-     * three full days.
-     *
-     * Rules:
-     * - For Receiving starts counting from distribution.distdate.
-     * - Received starts counting from distribution.confirmdate.
-     * - action_saved does not resolve the reminder.
-     * - Only the final action_taken / Close Action resolves it as Addressed.
-     * - Addressed, Returned, Pulled Out, and completed legacy records are excluded.
-     */
-    if (! empty($viewerPersonnelIds)) {
-        $latestActionForReminder = Schema::hasTable('dts_document_remarks')
-            ? DB::table('dts_document_remarks as reminderAction')
-                ->select([
-                    'reminderAction.IDdoc',
-                    DB::raw('MAX(reminderAction.created_at) as latest_action_at'),
-                ])
-                ->where('reminderAction.action_type', 'action_taken')
-                ->groupBy('reminderAction.IDdoc')
-            : null;
-
-        $reminderQuery = DB::table('document as d')
-            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-            ->leftJoinSub($makeLatestDistribution(), 'reminderLd', function ($join) {
-                $join->on('reminderLd.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'reminderLd.latest_IDdist')
-            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice');
-
-        if ($latestActionForReminder) {
-            $reminderQuery->leftJoinSub($latestActionForReminder, 'reminderActionLatest', function ($join) {
-                $join->on('reminderActionLatest.IDdoc', '=', 'd.IDdoc');
-            });
-        }
-
-        $reminderQuery
-            ->whereNotNull('dist.IDdist')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            });
-
-        /* Current/latest tag only. */
-        if (Schema::hasColumn('distribution', 'idmapagency')) {
-            $reminderQuery->whereIn('dist.idmapagency', $viewerPersonnelIds);
-        } else {
-            $reminderQuery->whereIn('d.IDkeeper', $viewerPersonnelIds);
-        }
-
-        /* Completed documents must never produce an unresolved reminder. */
-        if (Schema::hasColumn('document', 'is_completed')) {
-            $reminderQuery->where(function ($query) {
-                $query->whereNull('d.is_completed')
-                    ->orWhere('d.is_completed', 0);
-            });
-        }
-
-        if (Schema::hasColumn('document', 'completed_at')) {
-            $reminderQuery->whereNull('d.completed_at');
-        } elseif (! Schema::hasColumn('document', 'is_completed')) {
-            $reminderQuery->where(function ($query) {
-                $query->whereNull('d.IDdocstatus')
-                    ->orWhere('d.IDdocstatus', '<>', 6);
-            });
-        }
-
-        /*
-         * Red prompt rule:
-         * - For Receiving: three full days from distdate without confirmdate.
-         * - Received: three full days from confirmdate without Close Action.
-         * A saved/open action does not stop the prompt; only action_taken does.
-         */
-        $reminderQuery->where(function ($statusQuery) {
-            $statusQuery
-                ->where(function ($forReceivingQuery) {
-                    $forReceivingQuery
-                        ->whereNotNull('dist.distdate')
-                        ->whereNull('dist.confirmdate')
-                        ->where('dist.distdate', '<=', now()->subDays(3));
-                })
-                ->orWhere(function ($receivedQuery) {
-                    $receivedQuery
-                        ->whereNotNull('dist.confirmdate')
-                        ->where('dist.confirmdate', '<=', now()->subDays(3));
-                });
-        });
-
-        if ($latestActionForReminder) {
-            $reminderQuery->where(function ($query) {
-                $query->whereNull('reminderActionLatest.latest_action_at')
-                    ->orWhereColumn('reminderActionLatest.latest_action_at', '<', 'dist.distdate');
-            });
-        }
-
-        $statusExpression = "CASE WHEN dist.confirmdate IS NULL THEN 'For Receiving' ELSE 'Received' END";
-        $statusStartedAtExpression = 'CASE WHEN dist.confirmdate IS NULL THEN dist.distdate ELSE dist.confirmdate END';
-
-        $automaticStatusReminders = $reminderQuery
-            ->select([
-                'd.IDdoc',
-                'd.IDdoc as document_no',
-                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
-                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
-                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
-                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
-                'd.subject',
-                'd.entrydate',
-                DB::raw($doctypeCodeColumn . ' as code'),
-                'dt.description as doctype',
-                'fromOffice.officename as from_office',
-                'distOffice.officename as current_office',
-                'dist.distdate as transfer_date',
-                'dist.confirmdate as received_date',
-                DB::raw($statusExpression . ' as current_status'),
-                DB::raw($statusStartedAtExpression . ' as status_started_at'),
-            ])
-            ->orderByRaw($statusStartedAtExpression . ' ASC')
-            ->limit(50)
-            ->get()
-            ->map(function ($doc) {
-                $statusStartedAt = $doc->status_started_at
-                    ? Carbon::parse($doc->status_started_at)
-                    : null;
-
-                return [
-                    'notification_type' => 'automatic_status_reminder',
-                    'IDdoc' => $doc->IDdoc,
-                    'document_no' => $doc->document_no,
-                    'display_document_no' => $doc->display_document_no,
-                    'document_group_id' => $doc->document_group_id,
-                    'assignment_suffix' => $doc->assignment_suffix,
-                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
-                    'subject' => $doc->subject,
-                    'entrydate' => $doc->entrydate,
-                    'code' => $doc->code,
-                    'doctype' => $doc->doctype,
-                    'from_office' => $doc->from_office,
-                    'current_office' => $doc->current_office,
-                    'current_status' => $doc->current_status,
-                    'status_started_at' => $doc->status_started_at,
-                    'days_pending' => $statusStartedAt
-                        ? (int) floor($statusStartedAt->diffInDays(now()))
-                        : 0,
-                ];
-            })
-            ->values();
-    }
-
-    if ($currentUserId) {
-        $creatorReceivedNotifications = DB::table('document as d')
-            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-            ->leftJoinSub($makeLatestDistribution(), 'creatorLd', function ($join) {
-                $join->on('creatorLd.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'creatorLd.latest_IDdist')
-            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
-            ->leftJoin('username as receiveUser', 'receiveUser.ID', '=', 'dist.confirmuser')
-            ->where('d.IDuser', $currentUserId)
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
-            })
-            ->select([
-                'd.IDdoc',
-                'd.IDdoc as document_no',
-                DB::raw($displayDocumentNumberExpression . ' as display_document_no'),
-                DB::raw($documentGroupIdSelectExpression . ' as document_group_id'),
-                DB::raw($assignmentSuffixSelectExpression . ' as assignment_suffix'),
-                DB::raw($isMultipleAssignmentSelectExpression . ' as is_multiple_assignment'),
-                'd.subject',
-                'd.entrydate',
-                DB::raw($doctypeCodeColumn . ' as code'),
-                'dt.description as doctype',
-                'fromOffice.officename as from_office',
-                'distOffice.officename as received_office',
-                'dist.distdate as transfer_date',
-                'dist.confirmdate as received_date',
-                DB::raw("COALESCE(NULLIF(TRIM(receiveUser.name), ''), NULLIF(TRIM(receiveUser.loginname), ''), CONCAT('Account #', receiveUser.ID)) as received_by"),
-            ])
-            ->orderByDesc('dist.confirmdate')
-            ->limit(20)
-            ->get()
-            ->map(function ($doc) {
-                return [
-                    'notification_type' => 'received_by_addressee',
-                    'IDdoc' => $doc->IDdoc,
-                    'document_no' => $doc->document_no,
-                    'display_document_no' => $doc->display_document_no,
-                    'document_group_id' => $doc->document_group_id,
-                    'assignment_suffix' => $doc->assignment_suffix,
-                    'is_multiple_assignment' => (bool) $doc->is_multiple_assignment,
-                    'subject' => $doc->subject,
-                    'entrydate' => $doc->entrydate,
-                    'code' => $doc->code,
-                    'doctype' => $doc->doctype,
-                    'from_office' => $doc->from_office,
-                    'transferred_to' => $doc->received_office,
-                    'received_office' => $doc->received_office,
-                    'transfer_date' => $doc->transfer_date,
-                    'received_date' => $doc->received_date,
-                    'received_by' => $doc->received_by,
-                    'is_overdue' => false,
-                ];
-            })
-            ->values();
-    }
+        return $doc;
+    });
 
     $officesForDropdown = Schema::hasTable('lu_office')
         ? DB::table('lu_office')
-            ->select([
-                'ID',
-                'officename',
-                'abbrev',
-                'IDsucs',
-            ])
-            ->when(Schema::hasColumn('lu_office', 'IDsucs'), function ($query) {
-                $query->whereNotNull('IDsucs')
-                    ->where('IDsucs', '<>', 0);
-            })
             ->whereNotNull('officename')
             ->whereRaw("TRIM(officename) != ''")
             ->whereRaw("TRIM(officename) != '-'")
@@ -1994,16 +836,16 @@ public function index(Request $request)
     $staffConcernsForDropdown = Schema::hasTable('lu_personnel')
         ? DB::table('lu_personnel as p')
             ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
+            ->whereNotNull('p.name')
+            ->whereRaw("TRIM(p.name) != ''")
+            ->whereRaw("TRIM(p.name) != '-'")
+            ->orderBy('p.name')
             ->select([
                 'p.ID',
                 'p.name',
                 'p.IDoffice',
                 'o.officename as office_name',
             ])
-            ->whereNotNull('p.name')
-            ->whereRaw("TRIM(p.name) != ''")
-            ->whereRaw("TRIM(p.name) != '-'")
-            ->orderBy('p.name')
             ->get()
         : collect();
 
@@ -2014,8 +856,6 @@ public function index(Request $request)
         'filters' => [
             'search' => $search,
             'per_page' => $perPage,
-            'sort_by' => $sortBy,
-            'sort_direction' => $sortDirection,
             'section' => $section,
             'filter' => $filter,
             'scope' => $request->input('scope'),
@@ -2036,31 +876,13 @@ public function index(Request $request)
             ['name' => 'Outgoing', 'value' => 'True'],
         ],
         'attachments' => Schema::hasTable('lu_attachment')
-            ? DB::table('lu_attachment')
-                ->when(Schema::hasColumn('lu_attachment', 'description'), function ($query) {
-                    $query->orderBy('description');
-                })
-                ->when(! Schema::hasColumn('lu_attachment', 'description') && Schema::hasColumn('lu_attachment', 'name'), function ($query) {
-                    $query->orderBy('name');
-                })
-                ->when(! Schema::hasColumn('lu_attachment', 'description') && ! Schema::hasColumn('lu_attachment', 'name') && Schema::hasColumn('lu_attachment', 'ID'), function ($query) {
-                    $query->orderBy('ID');
-                })
-                ->get()
+            ? DB::table('lu_attachment')->get()
             : [],
         'staffConcerns' => $staffConcernsForDropdown,
         ...$this->dtsNotificationProps(),
-
-        /*
-         * IMPORTANT:
-         * index() builds the real 3-day reminder collection above.
-         * dtsNotificationProps() currently returns an empty reminder collection,
-         * so this explicit value must come AFTER the spread to avoid being
-         * overwritten with an empty array.
-         */
-        'automaticStatusReminders' => $automaticStatusReminders,
     ]);
 }
+
 
 
     public function create()
@@ -2074,57 +896,55 @@ public function index(Request $request)
             'transactions' => DtsTransaction::orderBy('name')->get(),
         ]);
     }
-
-  public function store(Request $request)
+public function store(Request $request)
 {
     $this->ensureCanManageDts();
 
-    $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
+    $maxPdfKilobytes = 512000;
 
-    /*
-     * The updated modal supports both modes:
-     *
-     * SINGLE MODE
-     * - staff_concern_id contains one personnel ID.
-     * - The original one-document workflow is preserved.
-     *
-     * MULTIPLE MODE
-     * - staff_concern_ids contains two or more personnel IDs.
-     * - One independent document row is created for every selected personnel.
-     * - Each row therefore keeps its own distribution, status, actions,
-     *   remarks, notifications, attachments, and history.
-     */
-    $requestedStaffIds = collect($request->input('staff_concern_ids', []))
-        ->filter(fn ($id) => $id !== null && $id !== '')
-        ->map(fn ($id) => (int) $id)
-        ->filter(fn ($id) => $id > 0)
-        ->unique()
-        ->values();
+    $staffIds = $request->input('staff_concern_ids', []);
 
-    $singleStaffId = $request->input(
-        'staff_concern_id',
-        $request->input('IDkeeper')
-    );
-
-    if ($requestedStaffIds->isEmpty() && $singleStaffId !== null && $singleStaffId !== '') {
-        $requestedStaffIds = collect([(int) $singleStaffId]);
+    if (! is_array($staffIds)) {
+        $staffIds = [$staffIds];
     }
 
-    $isMultipleAssignment = $requestedStaffIds->count() > 1;
+    if (empty(array_filter($staffIds)) && $request->filled('staff_concern_id')) {
+        $staffIds = [$request->input('staff_concern_id')];
+    }
+
+    if (empty(array_filter($staffIds)) && $request->filled('IDkeeper')) {
+        $staffIds = [$request->input('IDkeeper')];
+    }
+
+    $staffIds = collect($staffIds)
+        ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id > 0)
+        ->map(fn ($id) => (int) $id)
+        ->unique()
+        ->values()
+        ->all();
 
     $request->merge([
-        'classification' => $request->input('classification_id', $request->input('classification')),
-        'IDdoctype' => $request->input('type_id', $request->input('IDdoctype')),
-        'IDfrom' => $request->input('from_office_id', $request->input('IDfrom')),
-        'IDfor' => $request->input('to_office_id', $request->input('IDfor')),
-
+        'classification' => $request->input(
+            'classification_id',
+            $request->input('classification')
+        ),
+        'IDdoctype' => $request->input(
+            'type_id',
+            $request->input('IDdoctype')
+        ),
+        'IDfrom' => $request->input(
+            'from_office_id',
+            $request->input('IDfrom')
+        ),
+        'IDfor' => $request->input(
+            'to_office_id',
+            $request->input('IDfor')
+        ),
+        'IDkeepers' => $staffIds,
         /*
-         * Preserve the original field only for the original single workflow.
-         * Multiple entries receive their individual IDkeeper inside the loop.
+         * Keep the legacy field populated for old validation/error rendering.
          */
-        'IDkeeper' => $isMultipleAssignment
-            ? null
-            : $requestedStaffIds->first(),
+        'IDkeeper' => $staffIds[0] ?? null,
     ]);
 
     $validated = $request->validate([
@@ -2136,11 +956,9 @@ public function index(Request $request)
         'to_name' => ['nullable', 'string', 'max:255'],
         'from_name' => ['nullable', 'string', 'max:255'],
         'IDdocstatus' => ['nullable', 'integer', 'exists:lu_docstatus,ID'],
-        'IDkeeper' => ['nullable', 'integer', 'exists:lu_personnel,ID'],
 
-        /* Multiple-select payload from AddDocumentModal. */
-        'staff_concern_ids' => ['nullable', 'array', 'max:20'],
-        'staff_concern_ids.*' => [
+        'IDkeepers' => ['required', 'array', 'min:1'],
+        'IDkeepers.*' => [
             'required',
             'integer',
             'distinct',
@@ -2165,48 +983,45 @@ public function index(Request $request)
             'mimetypes:application/pdf',
             "max:{$maxPdfKilobytes}",
         ],
+    ], [
+        'IDkeepers.required' => 'Select at least one Staff Concern.',
+        'IDkeepers.min' => 'Select at least one Staff Concern.',
+        'IDkeepers.*.exists' => 'One of the selected staff records was not found.',
     ]);
 
-    /*
-     * Rebuild the final validated list. This also supports older clients that
-     * still submit only staff_concern_id / IDkeeper.
-     */
-    $staffIds = collect($validated['staff_concern_ids'] ?? [])
-        ->filter(fn ($id) => $id !== null && $id !== '')
+    $staffIds = collect($validated['IDkeepers'])
         ->map(fn ($id) => (int) $id)
-        ->filter(fn ($id) => $id > 0)
         ->unique()
         ->values();
 
-    if ($staffIds->isEmpty() && ! empty($validated['IDkeeper'])) {
-        $staffIds = collect([(int) $validated['IDkeeper']]);
-    }
-
-    if ($staffIds->isEmpty()) {
-        return back()
-            ->withErrors([
-                'staff_concern_ids' => 'Select at least one Staff Concern.',
-            ])
-            ->withInput();
-    }
-
     $isMultipleAssignment = $staffIds->count() > 1;
 
-    /*
-     * Multiple entries need these two nullable columns so every independent
-     * numeric IDdoc can still display one shared reference such as:
-     * DTS-184782-A, DTS-184782-B, DTS-184782-C.
-     */
     if (
         $isMultipleAssignment
         && (
-            ! Schema::hasColumn('document', 'document_group_id')
-            || ! Schema::hasColumn('document', 'assignment_suffix')
+            ! Schema::hasTable('dts_document_assignments')
+            || ! Schema::hasColumn('distribution', 'assignment_id')
+            || ! Schema::hasColumn('dts_document_remarks', 'assignment_id')
+            || ! Schema::hasColumn('docs_transactions', 'assignment_id')
         )
     ) {
         return back()
             ->withErrors([
-                'staff_concern_ids' => 'Multiple assignment database columns are missing. Run the provided migration first.',
+                'staff_concern_ids' => 'The multiple-assignment database migration is not installed.',
+            ])
+            ->withInput();
+    }
+
+    $personnelRows = DB::table('lu_personnel')
+        ->whereIn('ID', $staffIds->all())
+        ->select(['ID', 'name', 'IDoffice'])
+        ->get()
+        ->keyBy(fn ($personnel) => (int) $personnel->ID);
+
+    if ($personnelRows->count() !== $staffIds->count()) {
+        return back()
+            ->withErrors([
+                'staff_concern_ids' => 'One or more selected staff records could not be loaded.',
             ])
             ->withInput();
     }
@@ -2215,9 +1030,9 @@ public function index(Request $request)
 
     if ($request->filled(['entry_month', 'entry_day', 'entry_year'])) {
         try {
-            $month = str_pad($request->entry_month, 2, '0', STR_PAD_LEFT);
-            $day = str_pad($request->entry_day, 2, '0', STR_PAD_LEFT);
-            $year = $request->entry_year;
+            $month = str_pad((string) $request->entry_month, 2, '0', STR_PAD_LEFT);
+            $day = str_pad((string) $request->entry_day, 2, '0', STR_PAD_LEFT);
+            $year = (string) $request->entry_year;
 
             if (strlen($year) === 2) {
                 $year = '20' . $year;
@@ -2227,8 +1042,12 @@ public function index(Request $request)
                 'Y-m-d H:i:s',
                 "{$year}-{$month}-{$day} " . now()->format('H:i:s')
             )->format('Y-m-d H:i:s');
-        } catch (\Throwable $e) {
-            $entryDate = now()->format('Y-m-d H:i:s');
+        } catch (\Throwable $exception) {
+            return back()
+                ->withErrors([
+                    'entry_date' => 'The entry date is invalid.',
+                ])
+                ->withInput();
         }
     }
 
@@ -2241,54 +1060,6 @@ public function index(Request $request)
             ->value('ID')
         ?? 1;
 
-    /*
-     * Confirm all selected personnel in one query. Validation already checks
-     * existence, while this provides a friendly error if records change
-     * between validation and insertion.
-     */
-    $selectedPersonnel = DB::table('lu_personnel')
-        ->whereIn('ID', $staffIds->all())
-        ->select(['ID', 'name', 'IDoffice'])
-        ->get()
-        ->keyBy(fn ($personnel) => (int) $personnel->ID);
-
-    if ($selectedPersonnel->count() !== $staffIds->count()) {
-        return back()
-            ->withErrors([
-                'staff_concern_ids' => 'One or more selected Staff Concern records were not found.',
-            ])
-            ->withInput();
-    }
-
-    /*
-     * Keep the A/B/C assignment order identical to the modal preview.
-     * The multi-select dropdown displays selected staff alphabetically.
-     */
-    $staffIds = $staffIds
-        ->sortBy(function ($staffId) use ($selectedPersonnel) {
-            $name = (string) ($selectedPersonnel->get((int) $staffId)->name ?? '');
-
-            return mb_strtolower(trim($name));
-        })
-        ->values();
-
-    /* Convert 1, 2, 3 ... to A, B, C ... Z, AA, AB. */
-    $makeAssignmentSuffix = function (int $number): string {
-        $suffix = '';
-
-        while ($number > 0) {
-            $number--;
-            $suffix = chr(65 + ($number % 26)) . $suffix;
-            $number = intdiv($number, 26);
-        }
-
-        return $suffix;
-    };
-
-    /*
-     * Keep the current concurrency-safe manual ID allocation.
-     * Only one Add Document request may allocate IDs at a time.
-     */
     $creationLockName = 'dts_create_document';
     $lockResult = DB::selectOne(
         'SELECT GET_LOCK(?, 20) AS acquired',
@@ -2304,96 +1075,119 @@ public function index(Request $request)
     }
 
     try {
-        /*
-         * ORIGINAL SINGLE MODE
-         *
-         * This block intentionally preserves the existing one-document process.
-         * No group ID and no A/B/C suffix are written when only one staff is
-         * selected.
-         */
-        if (! $isMultipleAssignment) {
-            $validated['IDkeeper'] = (int) $staffIds->first();
+        $result = DB::transaction(function () use (
+            $request,
+            $validated,
+            $entryDate,
+            $defaultDocStatusId,
+            $staffIds,
+            $personnelRows,
+            $isMultipleAssignment
+        ) {
+            $lastDocumentId = DB::table('document')
+                ->orderByDesc('IDdoc')
+                ->lockForUpdate()
+                ->value('IDdoc');
 
-            $document = DB::transaction(function () use (
-                $request,
-                $validated,
-                $entryDate,
-                $defaultDocStatusId
-            ) {
-                $lastDocumentId = DB::table('document')
-                    ->orderByDesc('IDdoc')
-                    ->lockForUpdate()
-                    ->value('IDdoc');
+            $lastDistributionId = DB::table('distribution')
+                ->orderByDesc('IDdist')
+                ->lockForUpdate()
+                ->value('IDdist');
 
-                $lastDistributionId = DtsDistribution::query()
-                    ->orderByDesc('IDdist')
-                    ->lockForUpdate()
-                    ->value('IDdist');
+            $lastDocTransactionId = DB::table('docs_transactions')
+                ->orderByDesc('ID')
+                ->lockForUpdate()
+                ->value('ID');
 
-                $lastDocTransactionId = DtsDocTransaction::query()
-                    ->orderByDesc('ID')
-                    ->lockForUpdate()
-                    ->value('ID');
+            $nextDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
+            $nextDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
+            $nextDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
+            $hasAttachments = count($request->input('attachments', [])) > 0;
 
-                $nextDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
-                $nextDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
-                $nextDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
+            /*
+             * Multiple assignment uses one physical document row.
+             * IDkeeper remains a legacy single-assignee field, so it is NULL
+             * for a true multiple assignment.
+             */
+            $document = DtsDocument::create([
+                'IDdoc' => $nextDocumentId,
+                'classification' => $validated['classification'],
+                'IDdoctype' => $validated['IDdoctype'],
+                'entrydate' => $entryDate,
+                'IDfor' => $validated['IDfor'],
+                'IDfrom' => $validated['IDfrom'],
+                'subject' => $validated['subject'],
+                'regarding' => $validated['regarding'] ?? null,
+                'IDdocstatus' => $defaultDocStatusId,
+                'IDnote' => null,
+                'IDuser' => Auth::id(),
+                'remarks' => $validated['remarks'] ?? null,
+                'IDkeeper' => $isMultipleAssignment
+                    ? null
+                    : $staffIds->first(),
+                'IDprogram_pms' => null,
+                'IDproject' => null,
+                'IDprogram_prp' => null,
+                'IDproposal' => null,
+                'IDdocrq' => null,
+                'YNdays' => 'False',
+                'datecleared' => null,
+            ]);
 
-                $hasAttachments = count($request->input('attachments', [])) > 0;
+            $documentNameUpdates = [];
 
-                $document = DtsDocument::create([
-                    'IDdoc' => $nextDocumentId,
-                    'classification' => $validated['classification'],
-                    'IDdoctype' => $validated['IDdoctype'],
-                    'entrydate' => $entryDate,
-                    'IDfor' => $validated['IDfor'],
-                    'IDfrom' => $validated['IDfrom'],
-                    'subject' => $validated['subject'],
-                    'regarding' => $validated['regarding'] ?? null,
-                    'IDdocstatus' => $defaultDocStatusId,
-                    'IDnote' => null,
-                    'IDuser' => Auth::id(),
-                    'remarks' => $validated['remarks'] ?? null,
-                    'IDkeeper' => $validated['IDkeeper'],
-                    'IDprogram_pms' => null,
-                    'IDproject' => null,
-                    'IDprogram_prp' => null,
-                    'IDproposal' => null,
-                    'IDdocrq' => null,
-                    'YNdays' => 'False',
-                    'datecleared' => null,
-                ]);
+            if (Schema::hasColumn('document', 'to_name')) {
+                $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
+                $document->to_name = $validated['to_name'] ?? null;
+            }
 
-                $documentNameUpdates = [];
+            if (Schema::hasColumn('document', 'from_name')) {
+                $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
+                $document->from_name = $validated['from_name'] ?? null;
+            }
 
-                if (Schema::hasColumn('document', 'to_name')) {
-                    $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
-                    $document->to_name = $validated['to_name'] ?? null;
+            /*
+             * The old document_group_id/assignment_suffix columns are retained
+             * only for historical compatibility. New multiple assignments live
+             * exclusively in dts_document_assignments.
+             */
+            if (Schema::hasColumn('document', 'document_group_id')) {
+                $documentNameUpdates['document_group_id'] = null;
+            }
+
+            if (Schema::hasColumn('document', 'assignment_suffix')) {
+                $documentNameUpdates['assignment_suffix'] = null;
+            }
+
+            if (! empty($documentNameUpdates)) {
+                DB::table('document')
+                    ->where('IDdoc', $document->IDdoc)
+                    ->update($documentNameUpdates);
+            }
+
+            $assignmentIds = [];
+
+            foreach ($staffIds->values() as $index => $staffId) {
+                $staffId = (int) $staffId;
+                $personnel = $personnelRows->get($staffId);
+                $assignmentId = null;
+
+                if ($isMultipleAssignment) {
+                    $assignmentId = (int) DB::table('dts_document_assignments')
+                        ->insertGetId([
+                            'IDdoc' => $document->IDdoc,
+                            'assignment_suffix' => $this->assignmentSuffixFromIndex($index),
+                            'idmapagency' => $staffId,
+                            'created_by' => Auth::id(),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+
+                    $assignmentIds[] = $assignmentId;
                 }
 
-                if (Schema::hasColumn('document', 'from_name')) {
-                    $documentNameUpdates['from_name'] = $validated['from_name'] ?? null;
-                    $document->from_name = $validated['from_name'] ?? null;
-                }
-
-                if (! empty($documentNameUpdates)) {
-                    DB::table('document')
-                        ->where('IDdoc', $document->IDdoc)
-                        ->update($documentNameUpdates);
-                }
-
-                if (! empty($validated['IDtransac'])) {
-                    DtsDocTransaction::create([
-                        'ID' => $nextDocTransactionId,
-                        'IDdoc' => $document->IDdoc,
-                        'IDtransac' => $validated['IDtransac'],
-                        'YNattach' => $hasAttachments ? 'True' : 'False',
-                        'IDparentdoc' => null,
-                    ]);
-                }
-
-                DtsDistribution::create([
-                    'IDdist' => $nextDistributionId,
+                $distributionData = [
+                    'IDdist' => $nextDistributionId++,
                     'IDdoc' => $document->IDdoc,
                     'IDoffice' => $validated['IDfor'],
                     'distdate' => now()->format('Y-m-d H:i:s'),
@@ -2405,294 +1199,114 @@ public function index(Request $request)
                     'remarks' => $validated['remarks'] ?? null,
                     'IDparentdist' => null,
                     'YNpulled' => 'False',
-                    'idmapagency' => $validated['IDkeeper'],
-                ]);
+                    'idmapagency' => $staffId,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
 
-                $attachments = $request->input('attachments', []);
-
-                foreach ($attachments as $index => $attachment) {
-                    $file = $request->file("attachments.{$index}.file");
-
-                    if (! $file) {
-                        continue;
-                    }
-
-                    $attachmentTypeId = $attachment['type_id'] ?? null;
-                    $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
-
-                    $path = $file->store(
-                        "dts/documents/{$document->IDdoc}",
-                        'public'
-                    );
-
-                    if (Schema::hasTable('dts_document_files')) {
-                        DB::table('dts_document_files')->insert([
-                            'IDdoc' => $document->IDdoc,
-                            'IDattachment' => $attachmentTypeId ?: 0,
-                            'type_name' => $attachmentTypeName,
-                            'original_name' => $file->getClientOriginalName(),
-                            'stored_name' => basename($path),
-                            'path' => $path,
-                            'mime_type' => $file->getClientMimeType(),
-                            'size' => $file->getSize(),
-                            'uploaded_by' => Auth::id(),
-                            'created_at' => now(),
-                            'updated_at' => now(),
-                        ]);
-                    }
+                if (Schema::hasColumn('distribution', 'assignment_id')) {
+                    $distributionData['assignment_id'] = $assignmentId;
                 }
 
-                return $document;
-            }, 3);
+                DB::table('distribution')->insert($distributionData);
 
-            $createdDocuments = collect([
-                (object) [
-                    'document' => $document,
-                    'reference' => 'DTS - ' . $document->IDdoc,
-                    'personnel_id' => (int) $validated['IDkeeper'],
-                    'personnel_name' => $selectedPersonnel->get((int) $validated['IDkeeper'])->name ?? null,
-                    'suffix' => null,
-                ],
-            ]);
-        } else {
-            /*
-             * MULTIPLE MODE
-             *
-             * Create one complete, independent document workflow per selected
-             * staff member. The original details are copied, while IDdoc,
-             * IDkeeper, distribution, status, actions, and history remain
-             * separate for every entry.
-             */
-            $createdDocuments = DB::transaction(function () use (
-                $request,
-                $validated,
-                $entryDate,
-                $defaultDocStatusId,
-                $staffIds,
-                $selectedPersonnel,
-                $makeAssignmentSuffix
-            ) {
-                $lastDocumentId = DB::table('document')
-                    ->orderByDesc('IDdoc')
-                    ->lockForUpdate()
-                    ->value('IDdoc');
-
-                $lastDistributionId = DtsDistribution::query()
-                    ->orderByDesc('IDdist')
-                    ->lockForUpdate()
-                    ->value('IDdist');
-
-                $lastDocTransactionId = DtsDocTransaction::query()
-                    ->orderByDesc('ID')
-                    ->lockForUpdate()
-                    ->value('ID');
-
-                $baseDocumentId = ((int) ($lastDocumentId ?? 0)) + 1;
-                $baseDistributionId = ((int) ($lastDistributionId ?? 0)) + 1;
-                $baseDocTransactionId = ((int) ($lastDocTransactionId ?? 0)) + 1;
-
-                $hasAttachments = count($request->input('attachments', [])) > 0;
-                $created = collect();
-
-                foreach ($staffIds as $index => $staffId) {
-                    $documentId = $baseDocumentId + $index;
-                    $distributionId = $baseDistributionId + $index;
-                    $suffix = $makeAssignmentSuffix($index + 1);
-
-                    $document = DtsDocument::create([
-                        'IDdoc' => $documentId,
-                        'classification' => $validated['classification'],
-                        'IDdoctype' => $validated['IDdoctype'],
-                        'entrydate' => $entryDate,
-                        'IDfor' => $validated['IDfor'],
-                        'IDfrom' => $validated['IDfrom'],
-                        'subject' => $validated['subject'],
-                        'regarding' => $validated['regarding'] ?? null,
-                        'IDdocstatus' => $defaultDocStatusId,
-                        'IDnote' => null,
-                        'IDuser' => Auth::id(),
-                        'remarks' => $validated['remarks'] ?? null,
-                        'IDkeeper' => (int) $staffId,
-                        'IDprogram_pms' => null,
-                        'IDproject' => null,
-                        'IDprogram_prp' => null,
-                        'IDproposal' => null,
-                        'IDdocrq' => null,
-                        'YNdays' => 'False',
-                        'datecleared' => null,
-                    ]);
-
-                    /*
-                     * These fields are updated directly so the DtsDocument
-                     * model fillable list does not need to be changed yet.
-                     */
-                    $documentUpdates = [
-                        'document_group_id' => $baseDocumentId,
-                        'assignment_suffix' => $suffix,
+                if (! empty($validated['IDtransac'])) {
+                    $transactionData = [
+                        'ID' => $nextDocTransactionId++,
+                        'IDdoc' => $document->IDdoc,
+                        'IDtransac' => $validated['IDtransac'],
+                        'YNattach' => $hasAttachments ? 'True' : 'False',
+                        'IDparentdoc' => null,
                     ];
 
-                    if (Schema::hasColumn('document', 'to_name')) {
-                        $documentUpdates['to_name'] = $validated['to_name'] ?? null;
-                        $document->to_name = $validated['to_name'] ?? null;
+                    if (Schema::hasColumn('docs_transactions', 'assignment_id')) {
+                        $transactionData['assignment_id'] = $assignmentId;
                     }
 
-                    if (Schema::hasColumn('document', 'from_name')) {
-                        $documentUpdates['from_name'] = $validated['from_name'] ?? null;
-                        $document->from_name = $validated['from_name'] ?? null;
-                    }
+                    DB::table('docs_transactions')->insert($transactionData);
+                }
+            }
 
-                    DB::table('document')
-                        ->where('IDdoc', $document->IDdoc)
-                        ->update($documentUpdates);
+            foreach ($request->input('attachments', []) as $index => $attachment) {
+                $file = $request->file("attachments.{$index}.file");
 
-                    $document->document_group_id = $baseDocumentId;
-                    $document->assignment_suffix = $suffix;
-
-                    if (! empty($validated['IDtransac'])) {
-                        DtsDocTransaction::create([
-                            'ID' => $baseDocTransactionId + $index,
-                            'IDdoc' => $document->IDdoc,
-                            'IDtransac' => $validated['IDtransac'],
-                            'YNattach' => $hasAttachments ? 'True' : 'False',
-                            'IDparentdoc' => null,
-                        ]);
-                    }
-
-                    DtsDistribution::create([
-                        'IDdist' => $distributionId,
-                        'IDdoc' => $document->IDdoc,
-                        'IDoffice' => $validated['IDfor'],
-                        'distdate' => now()->format('Y-m-d H:i:s'),
-                        'confirmdate' => null,
-                        'confirmuser' => null,
-                        'YNreturn' => 'False',
-                        'returndate' => null,
-                        'IDuser' => Auth::id(),
-                        'remarks' => $validated['remarks'] ?? null,
-                        'IDparentdist' => null,
-                        'YNpulled' => 'False',
-                        'idmapagency' => (int) $staffId,
-                    ]);
-
-                    /*
-                     * Store an independent physical copy for each entry.
-                     * This keeps the existing attachment remove/replace logic
-                     * isolated: deleting A's file will not break B or C.
-                     */
-                    $attachments = $request->input('attachments', []);
-
-                    foreach ($attachments as $attachmentIndex => $attachment) {
-                        $file = $request->file("attachments.{$attachmentIndex}.file");
-
-                        if (! $file) {
-                            continue;
-                        }
-
-                        $attachmentTypeId = $attachment['type_id'] ?? null;
-                        $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
-
-                        $path = $file->store(
-                            "dts/documents/{$document->IDdoc}",
-                            'public'
-                        );
-
-                        if (Schema::hasTable('dts_document_files')) {
-                            DB::table('dts_document_files')->insert([
-                                'IDdoc' => $document->IDdoc,
-                                'IDattachment' => $attachmentTypeId ?: 0,
-                                'type_name' => $attachmentTypeName,
-                                'original_name' => $file->getClientOriginalName(),
-                                'stored_name' => basename($path),
-                                'path' => $path,
-                                'mime_type' => $file->getClientMimeType(),
-                                'size' => $file->getSize(),
-                                'uploaded_by' => Auth::id(),
-                                'created_at' => now(),
-                                'updated_at' => now(),
-                            ]);
-                        }
-                    }
-
-                    $personnel = $selectedPersonnel->get((int) $staffId);
-
-                    $created->push((object) [
-                        'document' => $document,
-                        'reference' => 'DTS - ' . $baseDocumentId . '-' . $suffix,
-                        'personnel_id' => (int) $staffId,
-                        'personnel_name' => $personnel->name ?? null,
-                        'suffix' => $suffix,
-                    ]);
+                if (! $file) {
+                    continue;
                 }
 
-                return $created;
-            }, 3);
-        }
+                $attachmentTypeId = $attachment['type_id'] ?? null;
+                $attachmentTypeName = $attachment['type_name'] ?? 'Uploaded File';
+
+                $path = $file->store(
+                    "dts/documents/{$document->IDdoc}",
+                    'public'
+                );
+
+                if (Schema::hasTable('dts_document_files')) {
+                    DB::table('dts_document_files')->insert([
+                        'IDdoc' => $document->IDdoc,
+                        'IDattachment' => $attachmentTypeId ?: 0,
+                        'type_name' => $attachmentTypeName,
+                        'original_name' => $file->getClientOriginalName(),
+                        'stored_name' => basename($path),
+                        'path' => $path,
+                        'mime_type' => $file->getClientMimeType(),
+                        'size' => $file->getSize(),
+                        'uploaded_by' => Auth::id(),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            return [
+                'document' => $document,
+                'first_assignment_id' => $assignmentIds[0] ?? null,
+                'assignment_count' => $staffIds->count(),
+            ];
+        }, 3);
     } finally {
-        /* Always release the connection-level MySQL named lock. */
         DB::selectOne(
             'SELECT RELEASE_LOCK(?) AS released',
             [$creationLockName]
         );
     }
 
-    foreach ($createdDocuments as $createdEntry) {
-        $createdDocument = $createdEntry->document;
+    /** @var \App\Models\DtsDocument $document */
+    $document = $result['document'];
+    $firstAssignmentId = $result['first_assignment_id'];
 
-        $this->recordDtsActivity(
-            $isMultipleAssignment
-                ? 'created document assignment'
-                : 'created document',
-            'Created ' . $createdEntry->reference
-                . ' for '
-                . ($createdEntry->personnel_name ?? 'Personnel #' . $createdEntry->personnel_id)
-                . ': '
-                . ($createdDocument->subject ?? 'No subject'),
-            (int) $createdDocument->IDdoc,
-            [
-                'display_reference' => $createdEntry->reference,
-                'document_group_id' => $isMultipleAssignment
-                    ? (int) $createdDocuments->first()->document->document_group_id
-                    : null,
-                'assignment_suffix' => $createdEntry->suffix,
-                'assigned_personnel_id' => $createdEntry->personnel_id,
-                'assigned_personnel_name' => $createdEntry->personnel_name,
-                'subject' => $createdDocument->subject ?? null,
-                'classification' => $createdDocument->classification ?? null,
-            ]
-        );
+    $this->recordDtsActivity(
+        'created document',
+        'Created document #' . $document->IDdoc . ': ' . ($document->subject ?? 'No subject'),
+        (int) $document->IDdoc,
+        [
+            'subject' => $document->subject ?? null,
+            'classification' => $document->classification ?? null,
+            'assignment_count' => $result['assignment_count'],
+            'staff_ids' => $staffIds->all(),
+        ]
+    );
+
+    $routeParameters = ['id' => $document->IDdoc];
+
+    if ($firstAssignmentId) {
+        $routeParameters['assignment_id'] = $firstAssignmentId;
     }
 
-    $firstCreatedDocument = $createdDocuments->first()->document;
+    $successMessage = $firstAssignmentId
+        ? 'Document saved successfully as DTS - '
+            . $document->IDdoc
+            . ' with '
+            . $result['assignment_count']
+            . ' staff assignments.'
+        : 'Document saved successfully as DTS - ' . $document->IDdoc . '.';
 
-    if (! $isMultipleAssignment) {
-        return redirect()
-            ->route('dts.show', $firstCreatedDocument->IDdoc)
-            ->with(
-                'success',
-                'Document saved successfully as DTS - ' . $firstCreatedDocument->IDdoc . '.'
-            );
-    }
-
-    $createdReferences = $createdDocuments
-        ->pluck('reference')
-        ->implode(', ');
-
-    /*
-     * Open the first independent assignment after saving. The remaining
-     * entries are available in the normal DTS list and keep separate actions.
-     */
     return redirect()
-        ->route('dts.show', $firstCreatedDocument->IDdoc)
-        ->with(
-            'success',
-            $createdDocuments->count()
-                . ' separate document assignments were saved: '
-                . $createdReferences
-                . '.'
-        );
+        ->route('dts.show', $routeParameters)
+        ->with('success', $successMessage);
 }
-
-  public function show($id)
+public function show(Request $request, $id)
 {
     $document = DtsDocument::query()
         ->with([
@@ -2705,6 +1319,13 @@ public function index(Request $request)
         ])
         ->where('IDdoc', $id)
         ->firstOrFail();
+
+    $requestedAssignmentId = $this->requestedAssignmentId($request);
+    $assignment = $this->resolveDocumentAssignment(
+        (int) $document->IDdoc,
+        $requestedAssignmentId
+    );
+    $assignmentId = $assignment ? (int) $assignment->id : null;
 
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
 
@@ -2727,12 +1348,16 @@ public function index(Request $request)
         ->select($completionSelect)
         ->first();
 
-    $isDocumentCompletedForSummary = $hasManualCompletionColumnsForShow
-        ? (
-            ! empty($completionData?->is_completed)
-            || ! empty($completionData?->completed_at)
-        )
-        : ! empty($completionData?->legacy_completed);
+    $isDocumentCompletedForSummary = $assignment
+        ? false
+        : (
+            $hasManualCompletionColumnsForShow
+                ? (
+                    ! empty($completionData?->is_completed)
+                    || ! empty($completionData?->completed_at)
+                )
+                : ! empty($completionData?->legacy_completed)
+        );
 
     $completedByName = null;
 
@@ -2742,7 +1367,13 @@ public function index(Request $request)
             ->value('name');
     }
 
-    abort_unless($this->viewerCanAccessDocument((int) $document->IDdoc), 403);
+    abort_unless(
+        $this->viewerCanAccessDocument(
+            (int) $document->IDdoc,
+            $assignmentId
+        ),
+        403
+    );
 
     $uploadedAttachments = Schema::hasTable('dts_document_files')
         ? DB::table('dts_document_files')
@@ -2799,6 +1430,11 @@ public function index(Request $request)
         $remarkSelect = [
             'dts_document_remarks.id',
             'dts_document_remarks.IDdoc',
+            DB::raw(
+                Schema::hasColumn('dts_document_remarks', 'assignment_id')
+                    ? 'dts_document_remarks.assignment_id'
+                    : 'NULL as assignment_id'
+            ),
             'dts_document_remarks.remarks',
             'dts_document_remarks.created_by',
             'dts_document_remarks.created_at',
@@ -2833,8 +1469,18 @@ public function index(Request $request)
                 ->leftJoin('dts_action_types as actionTypeList', 'actionTypeList.id', '=', 'dts_document_remarks.action_type_id');
         }
 
+        $remarksHistoryQuery
+            ->where('dts_document_remarks.IDdoc', $document->IDdoc);
+
+        if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+            $this->applyAssignmentColumnScope(
+                $remarksHistoryQuery,
+                'dts_document_remarks.assignment_id',
+                $assignmentId
+            );
+        }
+
         $remarksHistory = $remarksHistoryQuery
-            ->where('dts_document_remarks.IDdoc', $document->IDdoc)
             ->orderByDesc('dts_document_remarks.created_at')
             ->select($remarkSelect)
             ->get();
@@ -2861,6 +1507,12 @@ public function index(Request $request)
              */
             $join->on('parentDist.IDdist', '=', 'dist.IDparentdist')
                 ->on('parentDist.IDdoc', '=', 'dist.IDdoc');
+
+            if (Schema::hasColumn('distribution', 'assignment_id')) {
+                $join->whereRaw(
+                    'parentDist.assignment_id <=> dist.assignment_id'
+                );
+            }
         })
         ->leftJoin('distribution as returnChildDist', function ($join) {
             /*
@@ -2870,15 +1522,36 @@ public function index(Request $request)
              */
             $join->on('returnChildDist.IDparentdist', '=', 'dist.IDdist')
                 ->on('returnChildDist.IDdoc', '=', 'dist.IDdoc');
+
+            if (Schema::hasColumn('distribution', 'assignment_id')) {
+                $join->whereRaw(
+                    'returnChildDist.assignment_id <=> dist.assignment_id'
+                );
+            }
         })
         ->leftJoin('username as returnUser', 'returnUser.ID', '=', 'returnChildDist.IDuser')
         ->leftJoin('username as returnConfirmUser', 'returnConfirmUser.ID', '=', 'dist.confirmuser')
         ->leftJoin('lu_personnel as targetPersonnel', 'targetPersonnel.ID', '=', 'dist.idmapagency')
-        ->where('dist.IDdoc', $document->IDdoc)
+        ->where('dist.IDdoc', $document->IDdoc);
+
+    if (Schema::hasColumn('distribution', 'assignment_id')) {
+        $this->applyAssignmentColumnScope(
+            $distributionRowsForHistory,
+            'dist.assignment_id',
+            $assignmentId
+        );
+    }
+
+    $distributionRowsForHistory = $distributionRowsForHistory
         ->orderBy('dist.IDdist')
         ->select([
             'dist.IDdist',
             'dist.IDdoc',
+            DB::raw(
+                Schema::hasColumn('distribution', 'assignment_id')
+                    ? 'dist.assignment_id'
+                    : 'NULL as assignment_id'
+            ),
             'dist.IDoffice',
             'dist.IDuser',
             'dist.IDparentdist',
@@ -2939,6 +1612,7 @@ public function index(Request $request)
             return [
                 'IDdist' => $distribution->IDdist,
                 'IDdoc' => $distribution->IDdoc,
+                'assignment_id' => $distribution->assignment_id ?? null,
                 'IDoffice' => $distribution->IDoffice,
                 'IDuser' => $distribution->IDuser,
                 'IDparentdist' => $distribution->IDparentdist,
@@ -2975,23 +1649,51 @@ public function index(Request $request)
         ? in_array((string) ($latestDistributionForSummary->YNpulled ?? ''), array_map('strval', $trueValues), true)
         : false;
 
-    $hasSelectedActionForSummary = Schema::hasTable('dts_document_remarks')
+    $hasSelectedActionForSummary = false;
+
+    if (
+        Schema::hasTable('dts_document_remarks')
         && Schema::hasColumn('dts_document_remarks', 'action_type')
-        && DB::table('dts_document_remarks')
+    ) {
+        $selectedActionSummaryQuery = DB::table('dts_document_remarks')
             ->where('IDdoc', $document->IDdoc)
-            ->where('action_type', 'action_taken')
-            ->when(! empty($latestDistributionForSummary?->distdate), function ($query) use ($latestDistributionForSummary) {
-                $query->where('created_at', '>=', $latestDistributionForSummary->distdate);
-            })
-            ->exists();
+            ->where('action_type', 'action_taken');
+
+        if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+            $this->applyAssignmentColumnScope(
+                $selectedActionSummaryQuery,
+                'assignment_id',
+                $assignmentId
+            );
+        }
+
+        if (! empty($latestDistributionForSummary?->distdate)) {
+            $selectedActionSummaryQuery->where(
+                'created_at',
+                '>=',
+                $latestDistributionForSummary->distdate
+            );
+        }
+
+        $hasSelectedActionForSummary = $selectedActionSummaryQuery->exists();
+    }
 
     $returnParentForSummary = null;
 
     if ($latestDistributionForSummary && ! empty($latestDistributionForSummary->IDparentdist)) {
-        $returnParentForSummary = DB::table('distribution')
+        $returnParentForSummaryQuery = DB::table('distribution')
             ->where('IDdist', $latestDistributionForSummary->IDparentdist)
-            ->where('IDdoc', $document->IDdoc)
-            ->first();
+            ->where('IDdoc', $document->IDdoc);
+
+        if (Schema::hasColumn('distribution', 'assignment_id')) {
+            $this->applyAssignmentColumnScope(
+                $returnParentForSummaryQuery,
+                'assignment_id',
+                $assignmentId
+            );
+        }
+
+        $returnParentForSummary = $returnParentForSummaryQuery->first();
     }
 
     $isCurrentReturnChild = $returnParentForSummary
@@ -3386,9 +2088,13 @@ public function index(Request $request)
      * - at least one Select Action/action_taken exists;
      * - the document is not yet completed.
      */
-    $canCompleteCurrentDocumentForViewer = $this->currentUserRights() === '2'
+    $canCompleteCurrentDocumentForViewer = $assignmentId === null
+        && $this->currentUserRights() === '2'
         && ! $isDocumentCompletedForSummary
-        && $this->documentIsTaggedToViewer((int) $document->IDdoc)
+        && $this->documentIsTaggedToViewer(
+            (int) $document->IDdoc,
+            $assignmentId
+        )
         && ! empty($latestDistributionForSummary?->confirmdate)
         && $hasSelectedActionForSummary;
 
@@ -3408,79 +2114,74 @@ public function index(Request $request)
     $canUseDocumentActions = ! $isDocumentCompletedForSummary
         && ! $hasSelectedActionForSummary;
 
-    /*
-     * Multiple-assignment display values.
-     *
-     * IDdoc remains the internal numeric identifier used by routes, actions,
-     * distributions, remarks, attachments, and history.
-     *
-     * display_document_no is presentation only:
-     * - Single assignment: 184782
-     * - Multiple assignment: 184782-A / 184782-B / 184782-C
-     */
-    $hasMultipleAssignmentColumnsForShow =
-        Schema::hasColumn('document', 'document_group_id')
-        && Schema::hasColumn('document', 'assignment_suffix');
-
-    $documentGroupIdForShow = $hasMultipleAssignmentColumnsForShow
-        && ! empty($document->document_group_id)
-            ? (int) $document->document_group_id
-            : null;
-
-    $assignmentSuffixForShow = $hasMultipleAssignmentColumnsForShow
-        ? strtoupper(trim((string) ($document->assignment_suffix ?? '')))
-        : '';
-
-    $isMultipleAssignmentForShow =
-        ! empty($documentGroupIdForShow)
-        && $assignmentSuffixForShow !== '';
-
-    $assignmentCountForShow = $isMultipleAssignmentForShow
-        ? DB::table('document')
-            ->where('document_group_id', $documentGroupIdForShow)
-            ->whereNotNull('assignment_suffix')
-            ->whereRaw("TRIM(assignment_suffix) != ''")
+    $assignmentCount = Schema::hasTable('dts_document_assignments')
+        ? DB::table('dts_document_assignments')
+            ->where('IDdoc', $document->IDdoc)
             ->count()
-        : 1;
+        : 0;
 
-    $displayDocumentNumberForShow = $isMultipleAssignmentForShow
-        ? $documentGroupIdForShow . '-' . $assignmentSuffixForShow
-        : (string) $document->IDdoc;
+    $currentPersonnelId = $latestDistributionForSummary?->target_personnel_id
+        ?? $assignment?->idmapagency
+        ?? $document->IDkeeper;
+
+    $currentPersonnelName = $staffConcerns
+        ->firstWhere('ID', $currentPersonnelId)?->name;
+
+    $displayDocumentNo = $this->workflowReference(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
-        'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly((int) $document->IDdoc),
+        'isSuperAdminViewOnly' => $this->isSuperAdminViewOnly(
+            (int) $document->IDdoc,
+            $assignmentId
+        ),
         'canReceiveDts' => $canUseReceiveAction
             && $this->canReceiveDts()
-            && $this->viewerCanActOnDocument((int) $document->IDdoc),
+            && $this->viewerCanActOnDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canTransferDts' => $canUseDocumentActions
-            && $this->viewerCanTransferDocument((int) $document->IDdoc),
+            && $this->viewerCanTransferDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canReattachDts' => $canUseDocumentActions
-            && $this->viewerCanReattachDocument((int) $document->IDdoc),
+            && $this->viewerCanReattachDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canDeleteAttachments' => $this->currentUserRights() === '3'
-            && $this->viewerCanAccessDocument((int) $document->IDdoc),
+            && $this->viewerCanAccessDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canRemarkDts' => $canUseDocumentActions
             && $this->canRemarkDts()
-            && $this->viewerCanRemarkDocument((int) $document->IDdoc),
+            && $this->viewerCanRemarkDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canActionTakenDts' => $canUseDocumentActions
             && $this->canRemarkDts()
-            && $this->viewerCanActOnDocument((int) $document->IDdoc),
+            && $this->viewerCanActOnDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canCompleteDts' => $canCompleteCurrentDocumentForViewer,
                 'document' => [
-                /*
-                 * Keep IDdoc/document_no numeric for existing routes and
-                 * internal workflow logic. The Vue page uses
-                 * display_document_no only for the visible DTS reference.
-                 */
                 'IDdoc' => $document->IDdoc,
-                'document_no' => $document->IDdoc,
-                'display_document_no' => $displayDocumentNumberForShow,
-                'document_group_id' => $documentGroupIdForShow,
-                'assignment_suffix' => $assignmentSuffixForShow !== ''
-                    ? $assignmentSuffixForShow
+                'document_no' => $displayDocumentNo,
+                'display_document_no' => $displayDocumentNo,
+                'assignment_id' => $assignmentId,
+                'assignment_suffix' => $assignment
+                    ? strtoupper(trim((string) $assignment->assignment_suffix))
                     : null,
-                'is_multiple_assignment' => $isMultipleAssignmentForShow,
-                'assignment_count' => $assignmentCountForShow,
+                'assignment_count' => $assignmentCount,
+                'is_multiple_assignment' => $assignmentId !== null,
                 'created_by' => $document->IDuser,
                 'created_by_name' => $documentCreatorName ?? (! empty($document->IDuser) ? 'Account #' . $document->IDuser : null),
 
@@ -3507,8 +2208,10 @@ public function index(Request $request)
                 'regarding' => $document->regarding,
                 'remarks' => $document->remarks,
 
-                'IDkeeper' => $document->IDkeeper,
-                'staff_concern' => $staffConcerns->firstWhere('ID', $document->IDkeeper)?->name,
+                'IDkeeper' => $currentPersonnelId,
+                'staff_concern' => $currentPersonnelName,
+                'assigned_personnel' => $currentPersonnelName,
+                'personnel_name' => $currentPersonnelName,
 
                 'IDdocstatus' => $document->IDdocstatus,
                 'status' => $document->status?->name,
@@ -3566,6 +2269,7 @@ public function index(Request $request)
     ]);
 }
 
+
 public function viewFile($file)
 {
     $fileRecord = DB::table('dts_document_files')
@@ -3597,26 +2301,39 @@ public function viewFile($file)
         'Content-Disposition' => 'inline; filename="' . $fileName . '"',
     ]);
 }
-
-   public function receive($id)
+public function receive(Request $request, $id)
 {
     $this->ensureCanReceiveDts();
-    $this->ensureViewerCanActOnDocument((int) $id);
 
-    $latestDistribution = DB::table('distribution')
-        ->where('IDdoc', $id)
-        ->orderByDesc('IDdist')
-        ->first();
+    $assignmentId = $this->requestedAssignmentId($request);
+    $this->ensureViewerCanActOnDocument((int) $id, $assignmentId);
+
+    $latestDistribution = $this->latestDistributionForWorkflow(
+        (int) $id,
+        $assignmentId
+    );
 
     if (! $latestDistribution) {
         return back()->withErrors([
-            'receive' => 'No distribution record found for this document.',
+            'receive' => 'No distribution record was found for this assignment.',
         ]);
     }
 
     if (! empty($latestDistribution->confirmdate)) {
         return back()->withErrors([
-            'receive' => 'This document is already received.',
+            'receive' => 'This assignment is already received.',
+        ]);
+    }
+
+    if (
+        in_array(
+            (string) ($latestDistribution->YNpulled ?? ''),
+            ['True', 'true', 'Y', 'y', '1'],
+            true
+        )
+    ) {
+        return back()->withErrors([
+            'receive' => 'This assignment was already pulled out.',
         ]);
     }
 
@@ -3625,34 +2342,47 @@ public function viewFile($file)
         ->update([
             'confirmdate' => now()->format('Y-m-d H:i:s'),
             'confirmuser' => Auth::id(),
+            'updated_at' => now(),
         ]);
+
+    $reference = $this->workflowReference((int) $id, $assignmentId);
 
     $this->recordDtsActivity(
         'received document',
-        'Received document #' . $id . '.',
-        (int) $id
+        'Received document #' . $reference . '.',
+        (int) $id,
+        [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
+        ]
     );
 
-    return back()->with('success', 'Document received successfully.');
+    return back()->with('success', 'Document assignment received successfully.');
 }
-
-public function pullout($id)
+public function pullout(Request $request, $id)
 {
     $this->ensureCanManageDts();
-    $latestDistribution = DB::table('distribution')
-        ->where('IDdoc', $id)
-        ->orderByDesc('IDdist')
-        ->first();
+
+    $assignmentId = $this->requestedAssignmentId($request);
+
+    if ($assignmentId !== null) {
+        $this->resolveDocumentAssignment((int) $id, $assignmentId);
+    }
+
+    $latestDistribution = $this->latestDistributionForWorkflow(
+        (int) $id,
+        $assignmentId
+    );
 
     if (! $latestDistribution) {
         return back()->withErrors([
-            'pullout' => 'No distribution record found for this document.',
+            'pullout' => 'No distribution record was found for this assignment.',
         ]);
     }
 
     if (! empty($latestDistribution->confirmdate)) {
         return back()->withErrors([
-            'pullout' => 'This document is already received and cannot be pulled out.',
+            'pullout' => 'This assignment is already received and cannot be pulled out.',
         ]);
     }
 
@@ -3660,25 +2390,39 @@ public function pullout($id)
         ->where('IDdist', $latestDistribution->IDdist)
         ->update([
             'YNpulled' => 'True',
+            'updated_at' => now(),
         ]);
+
+    $reference = $this->workflowReference((int) $id, $assignmentId);
 
     $this->recordDtsActivity(
         'pulled out document',
-        'Pulled out document #' . $id . '.',
-        (int) $id
+        'Pulled out document #' . $reference . '.',
+        (int) $id,
+        [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
+        ]
     );
 
-    return back()->with('success', 'Document pulled out successfully.');
+    return back()->with('success', 'Document assignment pulled out successfully.');
 }
 public function forward(Request $request, $id)
 {
     $this->ensureCanReceiveDts();
-    $this->ensureViewerCanTransferDocument((int) $id);
+
+    $assignmentId = $this->requestedAssignmentId($request);
+    $this->ensureViewerCanTransferDocument((int) $id, $assignmentId);
 
     $validated = $request->validate([
         'IDpersonnel' => ['required', 'integer', 'exists:lu_personnel,ID'],
         'remarks' => ['required', 'string'],
+        'assignment_id' => ['nullable', 'integer'],
     ]);
+
+    $assignment = $assignmentId !== null
+        ? $this->resolveDocumentAssignment((int) $id, $assignmentId)
+        : null;
 
     $personnel = DB::table('lu_personnel as p')
         ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
@@ -3699,16 +2443,23 @@ public function forward(Request $request, $id)
 
     $document = DtsDocument::findOrFail($id);
 
-    DB::transaction(function () use ($document, $validated, $personnel) {
-        $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
-            ->orderByDesc('IDdist')
-            ->first();
+    DB::transaction(function () use (
+        $document,
+        $validated,
+        $personnel,
+        $assignmentId,
+        $assignment
+    ) {
+        $latestDistribution = $this->latestDistributionForWorkflow(
+            (int) $document->IDdoc,
+            $assignmentId
+        );
 
         if (! $latestDistribution) {
-            abort(422, 'No distribution record found for this document.');
+            abort(422, 'No distribution record was found for this assignment.');
         }
 
-        DtsDistribution::create([
+        $distributionData = [
             'IDdist' => $this->nextDistributionId(),
             'IDdoc' => $document->IDdoc,
             'IDoffice' => $personnel->IDoffice,
@@ -3718,88 +2469,131 @@ public function forward(Request $request, $id)
             'YNreturn' => 'False',
             'returndate' => null,
             'IDuser' => Auth::id(),
-            'remarks' => $validated['remarks'] ?? null,
-            'IDparentdist' => $latestDistribution?->IDdist,
+            'remarks' => $validated['remarks'],
+            'IDparentdist' => $latestDistribution->IDdist,
             'YNpulled' => 'False',
             'idmapagency' => $personnel->ID,
-        ]);
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
 
-        $document->update([
-            'IDfor' => $personnel->IDoffice,
-            'IDkeeper' => $personnel->ID,
-        ]);
+        if (Schema::hasColumn('distribution', 'assignment_id')) {
+            $distributionData['assignment_id'] = $assignmentId;
+        }
+
+        DB::table('distribution')->insert($distributionData);
+
+        if ($assignment) {
+            DB::table('dts_document_assignments')
+                ->where('id', $assignment->id)
+                ->where('IDdoc', $document->IDdoc)
+                ->update([
+                    'idmapagency' => $personnel->ID,
+                    'updated_at' => now(),
+                ]);
+        } else {
+            $document->update([
+                'IDfor' => $personnel->IDoffice,
+                'IDkeeper' => $personnel->ID,
+            ]);
+        }
     });
+
+    $reference = $this->workflowReference(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     $this->recordDtsActivity(
         'forwarded document',
-        'Forwarded document #' . $document->IDdoc . ' to ' . ($personnel->name ?? 'Personnel #' . $validated['IDpersonnel']) . '.',
+        'Forwarded document #' . $reference . ' to '
+            . ($personnel->name ?? 'Personnel #' . $validated['IDpersonnel'])
+            . '.',
         (int) $document->IDdoc,
         [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
             'to_personnel_id' => $validated['IDpersonnel'],
             'to_personnel_name' => $personnel->name ?? null,
             'to_office_id' => $personnel->IDoffice,
             'to_office_name' => $personnel->office_name ?? null,
-            'remarks' => $validated['remarks'] ?? null,
+            'remarks' => $validated['remarks'],
         ]
     );
 
-    return back()->with('success', 'Document transferred successfully.');
+    return back()->with('success', 'Document assignment transferred successfully.');
 }
-
 public function returnDocument(Request $request, $id)
 {
-    /* Return to Admin is performed by Role 2 only. */
     abort_unless($this->currentUserRights() === '2', 403);
 
     $this->ensureCanReceiveDts();
-    $this->ensureViewerCanActOnDocument((int) $id);
+
+    $assignmentId = $this->requestedAssignmentId($request);
+    $this->ensureViewerCanActOnDocument((int) $id, $assignmentId);
 
     $validated = $request->validate([
         'remarks' => ['required', 'string'],
+        'assignment_id' => ['nullable', 'integer'],
     ]);
 
     $document = DtsDocument::findOrFail($id);
+    $assignment = $assignmentId !== null
+        ? $this->resolveDocumentAssignment((int) $id, $assignmentId)
+        : null;
 
-    $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
-        ->orderByDesc('IDdist')
-        ->first();
+    $latestDistribution = $this->latestDistributionForWorkflow(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     if (! $latestDistribution) {
         return back()->withErrors([
-            'remarks' => 'No distribution record found for this document.',
+            'remarks' => 'No distribution record was found for this assignment.',
         ]);
     }
 
-    if (in_array($latestDistribution->YNreturn, ['True', 'true', 'Y', 'y', '1', 1], true)) {
+    if (
+        in_array(
+            (string) ($latestDistribution->YNreturn ?? ''),
+            ['True', 'true', 'Y', 'y', '1'],
+            true
+        )
+    ) {
         return back()->withErrors([
-            'remarks' => 'This document is already returned.',
+            'remarks' => 'This assignment is already returned.',
         ]);
     }
 
-    /*
-     * Returning a document should tag it back to the personnel who encoded/created
-     * the document, not to the latest sender/previous handler.
-     *
-     * The current distribution is marked as returned, then a new distribution is
-     * created for the encoder so the returned document appears in their
-     * For Receiving list.
-     */
-    $returnTarget = $this->resolveReturnTarget($document, $latestDistribution);
+    $returnTarget = $this->resolveReturnTarget(
+        $document,
+        $latestDistribution
+    );
 
     if (empty($returnTarget['personnel_id']) || empty($returnTarget['office_id'])) {
         return back()->withErrors([
-            'remarks' => 'Unable to return this document because the encoder account is not linked to a personnel record. Please set the encoder username.idmapagency to the correct lu_personnel.ID first.',
+            'remarks' => 'Unable to return this assignment because the encoder account is not linked to a personnel record.',
         ]);
     }
 
-    DB::transaction(function () use ($document, $latestDistribution, $validated, $returnTarget) {
-        $latestDistribution->update([
-            'YNreturn' => 'True',
-            'returndate' => now()->format('Y-m-d H:i:s'),
-            'remarks' => $validated['remarks'],
-        ]);
+    DB::transaction(function () use (
+        $document,
+        $latestDistribution,
+        $validated,
+        $returnTarget,
+        $assignmentId,
+        $assignment
+    ) {
+        DB::table('distribution')
+            ->where('IDdist', $latestDistribution->IDdist)
+            ->update([
+                'YNreturn' => 'True',
+                'returndate' => now()->format('Y-m-d H:i:s'),
+                'remarks' => $validated['remarks'],
+                'updated_at' => now(),
+            ]);
 
-        DtsDistribution::create([
+        $distributionData = [
             'IDdist' => $this->nextDistributionId(),
             'IDdoc' => $document->IDdoc,
             'IDoffice' => $returnTarget['office_id'],
@@ -3812,30 +2606,58 @@ public function returnDocument(Request $request, $id)
             'remarks' => $validated['remarks'],
             'IDparentdist' => $latestDistribution->IDdist,
             'YNpulled' => 'False',
-            'idmapagency' => $returnTarget['personnel_id'] ?? null,
-        ]);
+            'idmapagency' => $returnTarget['personnel_id'],
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
 
-        $document->update([
-            'IDfor' => $returnTarget['office_id'],
-            'IDkeeper' => $returnTarget['personnel_id'],
-        ]);
+        if (Schema::hasColumn('distribution', 'assignment_id')) {
+            $distributionData['assignment_id'] = $assignmentId;
+        }
+
+        DB::table('distribution')->insert($distributionData);
+
+        if ($assignment) {
+            DB::table('dts_document_assignments')
+                ->where('id', $assignment->id)
+                ->where('IDdoc', $document->IDdoc)
+                ->update([
+                    'idmapagency' => $returnTarget['personnel_id'],
+                    'updated_at' => now(),
+                ]);
+        } else {
+            $document->update([
+                'IDfor' => $returnTarget['office_id'],
+                'IDkeeper' => $returnTarget['personnel_id'],
+            ]);
+        }
     });
+
+    $reference = $this->workflowReference(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     $this->recordDtsActivity(
         'returned document',
-        'Returned document #' . $document->IDdoc . ' to Admin ' . ($returnTarget['name'] ?? 'document encoder') . '.',
+        'Returned document #' . $reference . ' to Admin '
+            . ($returnTarget['name'] ?? 'document encoder')
+            . '.',
         (int) $document->IDdoc,
         [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
             'to_personnel_id' => $returnTarget['personnel_id'] ?? null,
             'to_personnel_name' => $returnTarget['name'] ?? null,
             'to_office_id' => $returnTarget['office_id'] ?? null,
             'to_office_name' => $returnTarget['office_name'] ?? null,
-            'remarks' => $validated['remarks'] ?? null,
+            'remarks' => $validated['remarks'],
         ]
     );
 
-    return back()->with('success', 'Document returned to Admin successfully.');
+    return back()->with('success', 'Document assignment returned to Admin successfully.');
 }
+
 
 
 private function resolveReturnTarget($document, $latestDistribution): array
@@ -4689,10 +3511,15 @@ public function updateEntryDate(Request $request, $id)
 public function storeAttachment(Request $request, $id)
 {
     /*
-     * Re-attach is intentionally separate from receive/transfer/return/action.
-     * User can re-attach only if they are the one who added/encoded the document.
+     * Attachments are shared by the physical document, while the optional
+     * re-attach remark belongs to the currently opened assignment.
      */
-    $this->ensureViewerCanReattachDocument((int) $id);
+    $assignmentId = $this->requestedAssignmentId($request);
+
+    $this->ensureViewerCanReattachDocument(
+        (int) $id,
+        $assignmentId
+    );
 
     $maxPdfKilobytes = 512000; // 500MB per PDF file. Laravel max rule uses kilobytes.
 
@@ -4700,6 +3527,7 @@ public function storeAttachment(Request $request, $id)
         'attachments' => ['required', 'array', 'min:1'],
         'attachments.*' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', "max:{$maxPdfKilobytes}"],
         'remarks' => ['nullable', 'string', 'max:2000'],
+        'assignment_id' => ['nullable', 'integer'],
     ], [
         'attachments.required' => 'Please select at least one PDF file.',
         'attachments.*.mimes' => 'Only PDF files are allowed.',
@@ -4730,7 +3558,13 @@ public function storeAttachment(Request $request, $id)
 
     $createdAt = now();
 
-    DB::transaction(function () use ($request, $document, $validated, $createdAt) {
+    DB::transaction(function () use (
+        $request,
+        $document,
+        $validated,
+        $createdAt,
+        $assignmentId
+    ) {
         foreach ($request->file('attachments', []) as $file) {
             if (! $file) {
                 continue;
@@ -4756,13 +3590,19 @@ public function storeAttachment(Request $request, $id)
         $remarks = trim((string) ($validated['remarks'] ?? ''));
 
         if ($remarks !== '' && Schema::hasTable('dts_document_remarks')) {
-            DB::table('dts_document_remarks')->insert([
+            $remarkData = [
                 'IDdoc' => $document->IDdoc,
                 'remarks' => $remarks,
                 'created_by' => Auth::id(),
                 'created_at' => $createdAt,
                 'updated_at' => $createdAt,
-            ]);
+            ];
+
+            if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+                $remarkData['assignment_id'] = $assignmentId;
+            }
+
+            DB::table('dts_document_remarks')->insert($remarkData);
 
             /*
              * Do not update document.remarks here.
@@ -4856,19 +3696,16 @@ public function destroyAttachment(Request $request, $id, $file)
         'Attached file removed successfully. You may now attach a replacement PDF.'
     );
 }
-
 public function storeRemark(Request $request, $id)
 {
-    /*
-     * Remarks should be allowed for roles 1, 2, and 3.
-     * Role 2 can add remarks only to documents that are tagged/assigned to them.
-     * Role 4 remains view-only.
-     */
     $this->ensureCanRemarkDts();
-    $this->ensureViewerCanRemarkDocument((int) $id);
+
+    $assignmentId = $this->requestedAssignmentId($request);
+    $this->ensureViewerCanRemarkDocument((int) $id, $assignmentId);
 
     $validated = $request->validate([
         'remarks' => ['required', 'string'],
+        'assignment_id' => ['nullable', 'integer'],
     ]);
 
     $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
@@ -4879,62 +3716,63 @@ public function storeRemark(Request $request, $id)
         ]);
     }
 
-    DB::transaction(function () use ($document, $validated) {
-        $now = now();
+    if ($assignmentId !== null) {
+        $this->resolveDocumentAssignment(
+            (int) $document->IDdoc,
+            $assignmentId
+        );
+    }
 
-        $insertData = [
-            'IDdoc' => $document->IDdoc,
-            'remarks' => $validated['remarks'],
-            'created_by' => Auth::id(),
-            'created_at' => $now,
-            'updated_at' => $now,
-        ];
+    $insertData = [
+        'IDdoc' => $document->IDdoc,
+        'remarks' => $validated['remarks'],
+        'created_by' => Auth::id(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ];
 
-        if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
-            $insertData['action_type'] = 'remark';
-        }
+    if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+        $insertData['assignment_id'] = $assignmentId;
+    }
 
-        if (Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
-            $insertData['action_type_id'] = null;
-        }
+    if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
+        $insertData['action_type'] = 'remark';
+    }
 
-        if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
-            $insertData['action_label'] = null;
-        }
+    if (Schema::hasColumn('dts_document_remarks', 'action_type_id')) {
+        $insertData['action_type_id'] = null;
+    }
 
-        DB::table('dts_document_remarks')->insert($insertData);
+    if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
+        $insertData['action_label'] = null;
+    }
 
-        /*
-         * Do not update document.remarks here.
-         * The remark is already saved in dts_document_remarks above.
-         * This prevents Role 2 remarks from overwriting Role 3 remarks.
-         */
-    });
+    DB::table('dts_document_remarks')->insert($insertData);
+
+    $reference = $this->workflowReference(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     $this->recordDtsActivity(
         'added remark',
-        'Added remark to document #' . $document->IDdoc . '.',
+        'Added remark to document #' . $reference . '.',
         (int) $document->IDdoc,
         [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
             'remarks' => $validated['remarks'],
         ]
     );
 
     return back()->with('success', 'Remark added successfully.');
 }
-
-
 public function actionTakenDocument(Request $request, $id)
 {
-    /*
-     * Addressed workflow:
-     * - First Action creates action_saved and keeps the document Received.
-     * - Final Action creates action_taken and makes the document Addressed.
-     * - First Action is optional; Final Action may be saved immediately.
-     * - Transfer and Return continue to use their own routing endpoints.
-     */
     $this->ensureCanRemarkDts();
-    $this->ensureViewerCanActOnDocument((int) $id);
+
+    $assignmentId = $this->requestedAssignmentId($request);
+    $this->ensureViewerCanActOnDocument((int) $id, $assignmentId);
 
     if (! Schema::hasTable('dts_document_remarks')) {
         return back()->withErrors([
@@ -4953,57 +3791,81 @@ public function actionTakenDocument(Request $request, $id)
 
     $document = DtsDocument::where('IDdoc', $id)->firstOrFail();
 
-    /*
-     * Backward-compatible fallback:
-     * Older Show.vue versions sent close_action only. The updated page sends
-     * action_stage explicitly as first or final.
-     */
-    $actionStage = strtolower(trim((string) $request->input('action_stage', '')));
-
-    if (! in_array($actionStage, ['first', 'final'], true)) {
-        $actionStage = $request->boolean('close_action') ? 'final' : 'first';
+    if ($assignmentId !== null) {
+        $this->resolveDocumentAssignment(
+            (int) $document->IDdoc,
+            $assignmentId
+        );
     }
 
-    $closeAction = $actionStage === 'final';
+    $actionStage = strtolower(
+        trim((string) $request->input('action_stage', ''))
+    );
+
+    if (! in_array($actionStage, ['first', 'final'], true)) {
+        $actionStage = $request->boolean('close_action')
+            ? 'final'
+            : 'first';
+    }
 
     $request->merge([
         'action_stage' => $actionStage,
-        'close_action' => $closeAction,
+        'close_action' => $actionStage === 'final',
     ]);
 
     $validated = $request->validate([
-        'IDactionType' => ['required', 'string', 'in:__address_document__'],
+        'IDactionType' => [
+            'required',
+            'string',
+            'in:__address_document__',
+        ],
         'action_stage' => ['required', 'string', 'in:first,final'],
         'remarks' => ['required', 'string'],
         'close_action' => ['nullable', 'boolean'],
+        'assignment_id' => ['nullable', 'integer'],
     ]);
 
-    $latestDistribution = DtsDistribution::where('IDdoc', $document->IDdoc)
-        ->orderByDesc('IDdist')
-        ->first();
+    $latestDistribution = $this->latestDistributionForWorkflow(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     if (! $latestDistribution || empty($latestDistribution->confirmdate)) {
         return back()->withErrors([
-            'action' => 'Addressed is available only after the document is received.',
+            'action' => 'Addressed is available only after this assignment is received.',
         ]);
     }
 
-    $existingAddressActions = DB::table('dts_document_remarks')
+    $existingAddressActionsQuery = DB::table('dts_document_remarks')
         ->where('IDdoc', $document->IDdoc)
-        ->whereIn('action_type', ['action_saved', 'action_taken'])
-        ->when(! empty($latestDistribution->distdate), function ($query) use ($latestDistribution) {
-            $query->where('created_at', '>=', $latestDistribution->distdate);
-        })
+        ->whereIn('action_type', ['action_saved', 'action_taken']);
+
+    $this->applyAssignmentColumnScope(
+        $existingAddressActionsQuery,
+        'dts_document_remarks.assignment_id',
+        $assignmentId
+    );
+
+    if (! empty($latestDistribution->distdate)) {
+        $existingAddressActionsQuery->where(
+            'created_at',
+            '>=',
+            $latestDistribution->distdate
+        );
+    }
+
+    $existingAddressActions = $existingAddressActionsQuery
         ->orderBy('id')
         ->get();
 
     $alreadyClosed = $existingAddressActions->contains(function ($item) {
-        return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_taken';
+        return strtolower(trim((string) ($item->action_type ?? '')))
+            === 'action_taken';
     });
 
     if ($alreadyClosed) {
         return back()->withErrors([
-            'action' => 'The Final Action has already been saved. This document is already Addressed.',
+            'action' => 'The Final Action has already been saved for this assignment.',
         ]);
     }
 
@@ -5015,11 +3877,6 @@ public function actionTakenDocument(Request $request, $id)
         ]);
     }
 
-    /*
-     * Compatibility for documents that already have two action_saved rows from
-     * the previous interface: Final Action converts the latest saved row instead
-     * of creating a third record.
-     */
     $finalizeExistingLatestAction = $actionStage === 'final'
         && $existingActionCount >= 2;
 
@@ -5038,7 +3895,8 @@ public function actionTakenDocument(Request $request, $id)
         $remarks,
         $actionStage,
         $finalizeExistingLatestAction,
-        $existingAddressActions
+        $existingAddressActions,
+        $assignmentId
     ) {
         $now = now();
         $isFinalAction = $actionStage === 'final';
@@ -5047,11 +3905,15 @@ public function actionTakenDocument(Request $request, $id)
             $latestSavedAction = $existingAddressActions
                 ->reverse()
                 ->first(function ($item) {
-                    return strtolower(trim((string) ($item->action_type ?? ''))) === 'action_saved';
+                    return strtolower(
+                        trim((string) ($item->action_type ?? ''))
+                    ) === 'action_saved';
                 });
 
             if (! $latestSavedAction) {
-                throw new \RuntimeException('No saved First Action was found to finalize.');
+                throw new \RuntimeException(
+                    'No saved First Action was found to finalize.'
+                );
             }
 
             $updateData = [
@@ -5083,58 +3945,85 @@ public function actionTakenDocument(Request $request, $id)
             $insertData = [
                 'IDdoc' => $document->IDdoc,
                 'remarks' => $remarks,
-                'action_type' => $isFinalAction ? 'action_taken' : 'action_saved',
+                'action_type' => $isFinalAction
+                    ? 'action_taken'
+                    : 'action_saved',
                 'action_type_id' => $addressActionTypeId,
                 'created_by' => Auth::id(),
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
 
+            if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+                $insertData['assignment_id'] = $assignmentId;
+            }
+
             if (Schema::hasColumn('dts_document_remarks', 'action_label')) {
                 $insertData['action_label'] = 'Address';
             }
 
             if (Schema::hasColumn('dts_document_remarks', 'action_status')) {
-                $insertData['action_status'] = $isFinalAction ? 'closed' : 'open';
+                $insertData['action_status'] = $isFinalAction
+                    ? 'closed'
+                    : 'open';
             }
 
-            if ($isFinalAction && Schema::hasColumn('dts_document_remarks', 'action_completed_at')) {
+            if (
+                $isFinalAction
+                && Schema::hasColumn(
+                    'dts_document_remarks',
+                    'action_completed_at'
+                )
+            ) {
                 $insertData['action_completed_at'] = $now;
             }
 
-            if ($isFinalAction && Schema::hasColumn('dts_document_remarks', 'action_completed_by')) {
+            if (
+                $isFinalAction
+                && Schema::hasColumn(
+                    'dts_document_remarks',
+                    'action_completed_by'
+                )
+            ) {
                 $insertData['action_completed_by'] = Auth::id();
             }
 
             DB::table('dts_document_remarks')->insert($insertData);
         }
-
-        /*
-         * Do not update document.remarks here.
-         * Select Action remarks must stay as their own dts_document_remarks row.
-         */
     });
+
+    $reference = $this->workflowReference(
+        (int) $document->IDdoc,
+        $assignmentId
+    );
 
     if ($actionStage === 'final') {
         $this->recordDtsActivity(
             'saved final document action',
-            'Saved the Final Action for document #' . $document->IDdoc . '.',
+            'Saved the Final Action for document #' . $reference . '.',
             (int) $document->IDdoc,
             [
+                'assignment_id' => $assignmentId,
+                'assignment_reference' => $reference,
                 'action_name' => 'Address',
                 'action_stage' => 'final',
                 'remarks' => $remarks,
             ]
         );
 
-        return back()->with('success', 'Final Action saved. The document is now Addressed.');
+        return back()->with(
+            'success',
+            'Final Action saved. This assignment is now Addressed.'
+        );
     }
 
     $this->recordDtsActivity(
         'saved first document action',
-        'Saved the First Action for document #' . $document->IDdoc . '.',
+        'Saved the First Action for document #' . $reference . '.',
         (int) $document->IDdoc,
         [
+            'assignment_id' => $assignmentId,
+            'assignment_reference' => $reference,
             'action_name' => 'Address',
             'action_stage' => 'first',
             'remarks' => $remarks,
@@ -5143,6 +4032,7 @@ public function actionTakenDocument(Request $request, $id)
 
     return back()->with('success', 'First Action saved successfully.');
 }
+
 
 public function completeDocument(Request $request, $id)
 {
@@ -5296,55 +4186,31 @@ public function closeActionTaken(Request $request, $id, $remarkId)
         'action' => 'Monitoring Dashboard is view-only. Action Taken records cannot be closed here.',
     ]);
 }
-
-
 public function monitoringDashboard(Request $request)
 {
-     $user = auth()->user();
+    $user = auth()->user();
 
-    if ((int) ($user->rights ?? 0) !== 4) {
-        abort(403, 'BAWAL KA RITO  .');
-    }
+    abort_unless((int) ($user->rights ?? 0) === 4, 403);
+
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
-
-    /*
-     * Monitoring completion source of truth.
-     * Prefer the manual completion columns introduced by the completed workflow.
-     * datecleared is retained only as a safe fallback for older databases.
-     */
-    $hasManualCompletionColumns = Schema::hasColumn('document', 'is_completed')
-        && Schema::hasColumn('document', 'completed_at');
-
-    $documentIsCompletedSql = $hasManualCompletionColumns
-        ? '(COALESCE(d.is_completed, 0) = 1 OR d.completed_at IS NOT NULL)'
-        : '(d.datecleared IS NOT NULL)';
-
-    $documentIsNotCompletedSql = 'NOT ' . $documentIsCompletedSql;
-
-    $completedFlagExpression = 'CASE WHEN ' . $documentIsCompletedSql . ' THEN 1 ELSE 0 END';
-    $completedAtExpression = Schema::hasColumn('document', 'completed_at')
-        ? 'd.completed_at'
-        : 'd.datecleared';
-
     $search = trim((string) $request->input('search', ''));
-    $status = trim((string) $request->input('status', ''));
+    $status = strtolower(trim((string) $request->input('status', '')));
+    $perPage = max(1, min((int) $request->input('per_page', 15), 100));
 
-    $allowedMonitoringStatuses = ['', 'for-receiving', 'received', 'addressed', 'returned'];
+    $allowedStatuses = [
+        '',
+        'for-receiving',
+        'received',
+        'addressed',
+        'returned',
+        'pulled-out',
+        'completed',
+    ];
 
-    if (! in_array($status, $allowedMonitoringStatuses, true)) {
+    if (! in_array($status, $allowedStatuses, true)) {
         $status = '';
     }
-    $perPage = (int) $request->input('per_page', 15);
 
-    if ($perPage < 1) {
-        $perPage = 15;
-    }
-
-    if ($perPage > 100) {
-        $perPage = 100;
-    }
-
-    
     $availableYears = DB::table('document')
         ->selectRaw('YEAR(entrydate) as year')
         ->whereNotNull('entrydate')
@@ -5355,148 +4221,381 @@ public function monitoringDashboard(Request $request)
         ->map(fn ($year) => (int) $year)
         ->values();
 
-    $requestedYear = $request->input('year');
+    $selectedYear = trim((string) $request->input('year', ''));
 
-    $selectedYear = $requestedYear !== null
-        ? trim((string) $requestedYear)
-        : (string) ($availableYears->contains((int) now()->year)
-            ? now()->year
-            : ($availableYears->first() ?? now()->year));
+    if ($selectedYear === '') {
+        $selectedYear = (string) (
+            $availableYears->contains((int) now()->year)
+                ? now()->year
+                : ($availableYears->first() ?? now()->year)
+        );
+    }
 
     if (strtolower($selectedYear) === 'all') {
         $selectedYear = '';
     }
 
-    $hasAddressedActionTables = Schema::hasTable('dts_document_remarks')
-        && Schema::hasColumn('dts_document_remarks', 'action_type')
-        && Schema::hasTable('dts_action_types');
+    $hasAssignmentTable = Schema::hasTable('dts_document_assignments');
+    $hasDistributionAssignment = Schema::hasColumn(
+        'distribution',
+        'assignment_id'
+    );
+    $hasRemarkAssignment = Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn(
+            'dts_document_remarks',
+            'assignment_id'
+        );
 
-    $latestAddressedAction = null;
-    $addressedActionLabelExpression = "'Addressed'";
-    $addressedSelectFields = [
-        DB::raw("'Addressed' as latest_action_label"),
-        DB::raw('NULL as latest_action_at'),
-    ];
+    $hasManualCompletionColumns = Schema::hasColumn(
+        'document',
+        'is_completed'
+    ) && Schema::hasColumn('document', 'completed_at');
 
-    if ($hasAddressedActionTables) {
-        $latestAddressedAction = DB::table('dts_document_remarks as addressedLatest')
+    $legacyCompletionSql = $hasManualCompletionColumns
+        ? '(COALESCE(d.is_completed, 0) = 1 OR d.completed_at IS NOT NULL)'
+        : '(d.datecleared IS NOT NULL)';
+
+    $workflowCompletionSql = '(assignment.id IS NULL AND '
+        . $legacyCompletionSql
+        . ')';
+
+    $workflowNotCompletedSql = 'NOT ' . $workflowCompletionSql;
+
+    $makeAssignmentSource = function () use ($hasAssignmentTable) {
+        if ($hasAssignmentTable) {
+            return DB::table('dts_document_assignments')
+                ->select([
+                    'id',
+                    'IDdoc',
+                    'assignment_suffix',
+                    'idmapagency',
+                ]);
+        }
+
+        return DB::table('document')
+            ->whereRaw('1 = 0')
+            ->selectRaw(
+                'NULL as id, IDdoc, NULL as assignment_suffix, '
+                . 'NULL as idmapagency'
+            );
+    };
+
+    $makeLatestDistribution = function () use ($hasDistributionAssignment) {
+        $query = DB::table('distribution as monitoringDx')
             ->select([
-                'addressedLatest.IDdoc',
-                DB::raw('MAX(addressedLatest.id) as latest_addressed_action_id'),
+                'monitoringDx.IDdoc',
+                DB::raw(
+                    $hasDistributionAssignment
+                        ? 'monitoringDx.assignment_id'
+                        : 'NULL as assignment_id'
+                ),
+                DB::raw(
+                    'MAX(CAST(monitoringDx.IDdist AS UNSIGNED)) '
+                    . 'as latest_IDdist'
+                ),
             ])
-            ->where('addressedLatest.action_type', 'action_taken')
-            ->groupBy('addressedLatest.IDdoc');
+            ->groupBy('monitoringDx.IDdoc');
 
-        $addressedActionLabelExpression = Schema::hasColumn('dts_document_remarks', 'action_label')
-            ? "COALESCE(addressedRemark.action_label, addressedActionType.name, 'Addressed')"
-            : "COALESCE(addressedActionType.name, 'Addressed')";
+        if ($hasDistributionAssignment) {
+            $query->groupBy('monitoringDx.assignment_id');
+        }
 
-        $addressedSelectFields = [
-            DB::raw($addressedActionLabelExpression . ' as latest_action_label'),
-            'addressedRemark.created_at as latest_action_at',
-        ];
-    }
+        return $query;
+    };
 
+    $makeLatestFinalAction = function () use (
+        $makeLatestDistribution,
+        $hasRemarkAssignment
+    ) {
+        if (! Schema::hasTable('dts_document_remarks')) {
+            return DB::table('document')
+                ->whereRaw('1 = 0')
+                ->selectRaw(
+                    'IDdoc, NULL as assignment_id, NULL as latest_action_id'
+                );
+        }
 
-    /*
-     * Monitoring current-status rules.
-     *
-     * A document belongs to only one card for its CURRENT/latest distribution:
-     * Addressed -> Returned -> Received -> For Receiving.
-     *
-     * Historical return and action records must not keep a document in an old
-     * card after a new distribution cycle starts.
-     */
-    $notPulledMonitoringSql = "(dist.YNpulled IS NULL OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1'))";
+        $remarkAssignmentExpression = $hasRemarkAssignment
+            ? 'finalRemark.assignment_id'
+            : 'NULL';
 
-    $pendingReturnMonitoringSql = "(
-        dist.IDparentdist IS NOT NULL
+        $query = DB::table('dts_document_remarks as finalRemark')
+            ->joinSub(
+                $makeLatestDistribution(),
+                'finalCycle',
+                function ($join) use ($remarkAssignmentExpression) {
+                    $join->on('finalCycle.IDdoc', '=', 'finalRemark.IDdoc')
+                        ->whereRaw(
+                            'finalCycle.assignment_id <=> '
+                            . $remarkAssignmentExpression
+                        );
+                }
+            )
+            ->join(
+                'distribution as finalDist',
+                'finalDist.IDdist',
+                '=',
+                'finalCycle.latest_IDdist'
+            )
+            ->where('finalRemark.action_type', 'action_taken')
+            ->whereColumn(
+                'finalRemark.created_at',
+                '>=',
+                'finalDist.distdate'
+            )
+            ->select([
+                'finalRemark.IDdoc',
+                DB::raw($remarkAssignmentExpression . ' as assignment_id'),
+                DB::raw('MAX(finalRemark.id) as latest_action_id'),
+            ])
+            ->groupBy('finalRemark.IDdoc');
+
+        if ($hasRemarkAssignment) {
+            $query->groupBy('finalRemark.assignment_id');
+        }
+
+        return $query;
+    };
+
+    $buildBase = function () use (
+        $makeAssignmentSource,
+        $makeLatestDistribution,
+        $makeLatestFinalAction,
+        $hasDistributionAssignment
+    ) {
+        return DB::table('document as d')
+            ->leftJoinSub(
+                $makeAssignmentSource(),
+                'assignment',
+                function ($join) {
+                    $join->on('assignment.IDdoc', '=', 'd.IDdoc');
+                }
+            )
+            ->leftJoinSub(
+                $makeLatestDistribution(),
+                'monitoringLatest',
+                function ($join) {
+                    $join->on('monitoringLatest.IDdoc', '=', 'd.IDdoc')
+                        ->whereRaw(
+                            'monitoringLatest.assignment_id <=> assignment.id'
+                        );
+                }
+            )
+            ->leftJoin(
+                'distribution as dist',
+                'dist.IDdist',
+                '=',
+                'monitoringLatest.latest_IDdist'
+            )
+            ->leftJoin('distribution as returnParent', function ($join) use ($hasDistributionAssignment) {
+                $join->on('returnParent.IDdist', '=', 'dist.IDparentdist')
+                    ->on('returnParent.IDdoc', '=', 'dist.IDdoc');
+
+                if ($hasDistributionAssignment) {
+                    $join->whereRaw(
+                        'returnParent.assignment_id <=> dist.assignment_id'
+                    );
+                }
+            })
+            ->leftJoinSub(
+                $makeLatestFinalAction(),
+                'latestFinalAction',
+                function ($join) {
+                    $join->on('latestFinalAction.IDdoc', '=', 'd.IDdoc')
+                        ->whereRaw(
+                            'latestFinalAction.assignment_id <=> assignment.id'
+                        );
+                }
+            )
+            ->leftJoin(
+                'dts_document_remarks as finalAction',
+                'finalAction.id',
+                '=',
+                'latestFinalAction.latest_action_id'
+            )
+            ->leftJoin(
+                'dts_action_types as finalActionType',
+                'finalActionType.id',
+                '=',
+                'finalAction.action_type_id'
+            )
+            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
+            ->leftJoin('lu_personnel as assignedPersonnel', function ($join) {
+                $join->on(
+                    'assignedPersonnel.ID',
+                    '=',
+                    DB::raw(
+                        'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper)'
+                    )
+                );
+            })
+            ->leftJoin(
+                'lu_office as assignedOffice',
+                'assignedOffice.ID',
+                '=',
+                'assignedPersonnel.IDoffice'
+            );
+    };
+
+    $displayExpression = "CASE
+        WHEN assignment.id IS NOT NULL
+            AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
+        THEN CONCAT(
+            CAST(d.IDdoc AS CHAR),
+            '-',
+            UPPER(TRIM(assignment.assignment_suffix))
+        )
+        ELSE CAST(d.IDdoc AS CHAR)
+    END";
+
+    $notPulledSql = "(
+        dist.YNpulled IS NULL
+        OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1')
+    )";
+
+    $pendingReturnSql = "(
+        returnParent.IDdist IS NOT NULL
         AND (
             returnParent.YNreturn IN ('True', 'true', 'Y', 'y', '1')
             OR returnParent.returndate IS NOT NULL
         )
         AND dist.confirmdate IS NULL
-        AND {$notPulledMonitoringSql}
+        AND {$notPulledSql}
     )";
 
-    $currentCycleFinalActionSql = $hasAddressedActionTables
-        ? "EXISTS (
-            SELECT 1
-            FROM dts_document_remarks AS currentCycleFinalAction
-            WHERE currentCycleFinalAction.IDdoc = d.IDdoc
-              AND currentCycleFinalAction.action_type = 'action_taken'
-              AND dist.distdate IS NOT NULL
-              AND currentCycleFinalAction.created_at >= dist.distdate
-        )"
-        : '(0 = 1)';
+    $statusExpression = "CASE
+        WHEN {$workflowCompletionSql}
+            THEN 'Completed'
+        WHEN dist.YNpulled IN ('True', 'true', 'Y', 'y', '1')
+            THEN 'Pulled Out'
+        WHEN dist.confirmdate IS NOT NULL
+            AND finalAction.id IS NOT NULL
+            THEN 'Addressed'
+        WHEN {$pendingReturnSql}
+            THEN 'Returned'
+        WHEN dist.confirmdate IS NOT NULL
+            THEN 'Received'
+        WHEN dist.distdate IS NOT NULL
+            AND {$notPulledSql}
+            THEN 'For Receiving'
+        ELSE 'Pending'
+    END";
 
-    $monitoringWorkflowStatusExpression = "
-        CASE
-            WHEN {$documentIsCompletedSql}
-                THEN 'Completed'
-            WHEN dist.YNpulled IN ('True', 'true', 'Y', 'y', '1')
-                THEN 'Pulled Out'
-            WHEN dist.confirmdate IS NOT NULL
-                 AND {$currentCycleFinalActionSql}
-                THEN 'Addressed'
-            WHEN {$pendingReturnMonitoringSql}
-                THEN 'Returned'
-            WHEN dist.confirmdate IS NOT NULL
-                THEN 'Received'
-            WHEN dist.distdate IS NOT NULL
-                 AND {$notPulledMonitoringSql}
-                THEN 'For Receiving'
-            ELSE 'Pending'
-        END
-    ";
-
-    /*
-     * Main Monitoring Dashboard table:
-     *
-     * Use document as the base table so Role 4/Admin Monitoring can see ALL
-     * documents, including legacy/imported Completed documents that do not have
-     * rows in distribution. The previous query started from distribution, so
-     * documents without distribution rows were excluded and the Vue table showed
-     * "No documents found."
-     */
-    /*
-     * IDdist is numeric in meaning but may be stored as VARCHAR in the legacy
-     * database. A plain MAX(IDdist) compares text values and can select an older
-     * returned parent instead of the newest received child. Cast it numerically
-     * so the dashboard always evaluates the real latest distribution cycle.
-     */
-    $latestDistributionForMonitoring = DB::table('distribution as latestDist')
-        ->select([
-            'latestDist.IDdoc',
-            DB::raw('MAX(CAST(latestDist.IDdist AS UNSIGNED)) as latest_IDdist'),
-        ])
-        ->groupBy('latestDist.IDdoc');
-
-    $transactionsQuery = DB::table('document as d')
-        ->leftJoinSub($latestDistributionForMonitoring, 'latestMonitoringDist', function ($join) {
-            $join->on('latestMonitoringDist.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestMonitoringDist.latest_IDdist')
-        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
-        ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-        ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
-        ->when($hasAddressedActionTables, function ($query) use ($latestAddressedAction) {
-            $query
-                ->leftJoinSub($latestAddressedAction, 'latestAddressedAction', function ($join) {
-                    $join->on('latestAddressedAction.IDdoc', '=', 'd.IDdoc');
-                })
-                ->leftJoin('dts_document_remarks as addressedRemark', 'addressedRemark.id', '=', 'latestAddressedAction.latest_addressed_action_id')
-                ->leftJoin('dts_action_types as addressedActionType', 'addressedActionType.id', '=', 'addressedRemark.action_type_id');
-        })
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
+    $applyYear = function ($query) use ($selectedYear) {
+        if ($selectedYear !== '') {
             $query->whereYear('d.entrydate', (int) $selectedYear);
-        })
+        }
+
+        return $query;
+    };
+
+    $applyStatus = function ($query, string $statusKey) use (
+        $workflowCompletionSql,
+        $workflowNotCompletedSql,
+        $notPulledSql,
+        $pendingReturnSql,
+        $trueValues
+    ) {
+        if ($statusKey === 'completed') {
+            return $query->whereRaw($workflowCompletionSql);
+        }
+
+        if ($statusKey === 'pulled-out') {
+            return $query
+                ->whereRaw($workflowNotCompletedSql)
+                ->whereIn('dist.YNpulled', $trueValues);
+        }
+
+        if ($statusKey === 'returned') {
+            return $query
+                ->whereRaw($workflowNotCompletedSql)
+                ->whereRaw($pendingReturnSql);
+        }
+
+        if ($statusKey === 'addressed') {
+            return $query
+                ->whereRaw($workflowNotCompletedSql)
+                ->whereNotNull('dist.confirmdate')
+                ->whereNotNull('finalAction.id')
+                ->whereRaw($notPulledSql);
+        }
+
+        if ($statusKey === 'received') {
+            return $query
+                ->whereRaw($workflowNotCompletedSql)
+                ->whereNotNull('dist.confirmdate')
+                ->whereNull('finalAction.id')
+                ->whereRaw($notPulledSql);
+        }
+
+        if ($statusKey === 'for-receiving') {
+            return $query
+                ->whereRaw($workflowNotCompletedSql)
+                ->whereNotNull('dist.distdate')
+                ->whereNull('dist.confirmdate')
+                ->whereRaw($notPulledSql)
+                ->whereRaw('NOT ' . $pendingReturnSql);
+        }
+
+        return $query;
+    };
+
+    $transactionsQuery = $buildBase();
+    $applyYear($transactionsQuery);
+
+    if ($search !== '') {
+        $searchLike = '%' . $search . '%';
+
+        $transactionsQuery->where(function ($query) use (
+            $searchLike,
+            $displayExpression,
+            $statusExpression
+        ) {
+            $query
+                ->whereRaw(
+                    '(' . $displayExpression . ') LIKE ?',
+                    [$searchLike]
+                )
+                ->orWhere('d.subject', 'like', $searchLike)
+                ->orWhere('dt.description', 'like', $searchLike)
+                ->orWhere('assignedPersonnel.name', 'like', $searchLike)
+                ->orWhere('assignedOffice.officename', 'like', $searchLike)
+                ->orWhere('finalAction.remarks', 'like', $searchLike)
+                ->orWhereRaw(
+                    '(' . $statusExpression . ') LIKE ?',
+                    [$searchLike]
+                );
+        });
+    }
+
+    if ($status !== '') {
+        $applyStatus($transactionsQuery, $status);
+    }
+
+    $actionLabelExpression = Schema::hasColumn(
+        'dts_document_remarks',
+        'action_label'
+    )
+        ? "COALESCE(finalAction.action_label, finalActionType.name, 'Addressed')"
+        : "COALESCE(finalActionType.name, 'Addressed')";
+
+    $completedAtExpression = Schema::hasColumn('document', 'completed_at')
+        ? 'CASE WHEN assignment.id IS NULL THEN d.completed_at ELSE NULL END'
+        : 'CASE WHEN assignment.id IS NULL THEN d.datecleared ELSE NULL END';
+
+    $transactions = $transactionsQuery
         ->select([
             'dist.IDdist',
             'dist.IDparentdist as distribution_parent_id',
             'returnParent.IDdist as return_parent_distribution_id',
             'd.IDdoc',
-            'd.IDdoc as document_no',
+            DB::raw($displayExpression . ' as document_no'),
+            DB::raw($displayExpression . ' as display_document_no'),
+            'assignment.id as assignment_id',
+            DB::raw(
+                "UPPER(NULLIF(TRIM(assignment.assignment_suffix), '')) "
+                . 'as assignment_suffix'
+            ),
             'dist.distdate',
             'dist.confirmdate',
             'dist.YNreturn',
@@ -5504,303 +4603,141 @@ public function monitoringDashboard(Request $request)
             'dist.YNpulled',
             'd.subject',
             'd.entrydate',
-            'd.IDkeeper',
-            DB::raw($completedFlagExpression . ' as is_completed'),
+            DB::raw(
+                'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) '
+                . 'as IDkeeper'
+            ),
+            DB::raw(
+                'CASE WHEN ' . $workflowCompletionSql
+                . ' THEN 1 ELSE 0 END as is_completed'
+            ),
             DB::raw($completedAtExpression . ' as completed_at'),
             'dt.description as document_type',
             'assignedPersonnel.name as assigned_personnel',
-            ...$addressedSelectFields,
-            DB::raw($monitoringWorkflowStatusExpression . ' as workflow_status'),
-            DB::raw('CASE WHEN ' . $currentCycleFinalActionSql . ' THEN 1 ELSE 0 END as has_current_cycle_final_action'),
+            'assignedOffice.officename as assigned_office',
+            DB::raw($actionLabelExpression . ' as latest_action_label'),
+            'finalAction.created_at as latest_action_at',
+            DB::raw($statusExpression . ' as workflow_status'),
+            DB::raw(
+                'CASE WHEN finalAction.id IS NULL THEN 0 ELSE 1 END '
+                . 'as has_current_cycle_final_action'
+            ),
             DB::raw("
                 CASE
                     WHEN dist.confirmdate IS NULL
-                         AND dist.distdate IS NOT NULL
-                         AND {$notPulledMonitoringSql}
-                         AND NOT {$pendingReturnMonitoringSql}
+                        AND dist.distdate IS NOT NULL
+                        AND {$notPulledSql}
+                        AND NOT {$pendingReturnSql}
                     THEN DATEDIFF(NOW(), dist.distdate)
                     ELSE 0
                 END as days_pending
             "),
-        ]);
-
-    if ($search !== '') {
-        $searchLike = "%{$search}%";
-        $statusSearch = strtolower($search);
-
-        $transactionsQuery->where(function ($query) use (
-            $searchLike,
-            $statusSearch,
-            $trueValues,
-            $hasAddressedActionTables,
-            $addressedActionLabelExpression,
-            $documentIsCompletedSql,
-            $completedAtExpression
-        ) {
-            $query->where('d.IDdoc', 'like', $searchLike)
-                ->orWhere('d.subject', 'like', $searchLike)
-                ->orWhere('dt.description', 'like', $searchLike)
-                ->orWhere('assignedPersonnel.name', 'like', $searchLike)
-                ->orWhere('dist.IDdist', 'like', $searchLike)
-                ->when($hasAddressedActionTables, function ($query) use ($searchLike, $addressedActionLabelExpression) {
-                    $query
-                        ->orWhere('addressedRemark.remarks', 'like', $searchLike)
-                        ->orWhere('addressedActionType.name', 'like', $searchLike)
-                        ->orWhereRaw($addressedActionLabelExpression . ' LIKE ?', [$searchLike]);
-                })
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(d.entrydate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.distdate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.confirmdate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT(dist.returndate, '%b %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%Y-%m-%d %H:%i:%s') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%M %e, %Y') LIKE ?", [$searchLike])
-                ->orWhereRaw("DATE_FORMAT({$completedAtExpression}, '%b %e, %Y') LIKE ?", [$searchLike]);
-
-            if (str_contains($statusSearch, 'complete')) {
-                $query->orWhereRaw($documentIsCompletedSql);
-            }
-
-            if (str_contains($statusSearch, 'received')) {
-                $query->orWhereNotNull('dist.confirmdate');
-            }
-
-            if (str_contains($statusSearch, 'for receiving') || str_contains($statusSearch, 'receiving')) {
-                $query->orWhere(function ($statusQuery) use ($trueValues) {
-                    $statusQuery->whereNotNull('dist.distdate')
-                        ->whereNull('dist.confirmdate')
-                        ->where(function ($subQuery) use ($trueValues) {
-                            $subQuery->whereNull('dist.YNreturn')
-                                ->orWhereNotIn('dist.YNreturn', $trueValues);
-                        })
-                        ->where(function ($subQuery) use ($trueValues) {
-                            $subQuery->whereNull('dist.YNpulled')
-                                ->orWhereNotIn('dist.YNpulled', $trueValues);
-                        });
-                });
-            }
-
-            if (str_contains($statusSearch, 'return')) {
-                $query->orWhere(function ($statusQuery) use ($trueValues) {
-                    $statusQuery->whereIn('dist.YNreturn', $trueValues)
-                        ->orWhereNotNull('dist.returndate');
-                });
-            }
-
-            if (str_contains($statusSearch, 'pulled') || str_contains($statusSearch, 'pullout')) {
-                $query->orWhereIn('dist.YNpulled', $trueValues);
-            }
-        });
-    }
-
-    if ($status === 'for-receiving') {
-        $transactionsQuery
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw('NOT ' . $pendingReturnMonitoringSql);
-    }
-
-    if ($status === 'received') {
-        $transactionsQuery
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw('NOT ' . $currentCycleFinalActionSql);
-    }
-
-    if ($status === 'addressed') {
-        $transactionsQuery
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw($currentCycleFinalActionSql);
-    }
-
-    if ($status === 'completed') {
-        $transactionsQuery->whereRaw($documentIsCompletedSql);
-    }
-
-    if ($status === 'returned') {
-        /*
-         * Returned is a CURRENT pending state, not return history.
-         * Once the return child is received or acted on, it leaves Returned.
-         */
-        $transactionsQuery
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereRaw($pendingReturnMonitoringSql);
-    }
-
-    if ($status === 'pulled-out') {
-        $transactionsQuery
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereIn('dist.YNpulled', $trueValues);
-    }
-
-    if ($status === 'completed') {
-        $transactionsQuery->orderByDesc(DB::raw($completedAtExpression));
-    } else {
-        $transactionsQuery->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'));
-    }
-
-    $transactions = $transactionsQuery
+        ])
+        ->orderByDesc(DB::raw('COALESCE(dist.distdate, d.entrydate)'))
         ->orderByDesc('d.IDdoc')
+        ->orderByRaw("COALESCE(assignment.assignment_suffix, '') ASC")
         ->paginate($perPage)
         ->appends($request->query());
 
-    
-    $totalDocuments = DB::table('document as d')
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-            $query->whereYear('d.entrydate', (int) $selectedYear);
-        })
-        ->count('d.IDdoc');
+    $statsBase = $buildBase();
+    $applyYear($statsBase);
 
-    $statsBase = DB::table('document as d')
-        ->leftJoinSub($latestDistributionForMonitoring, 'latestStatsDist', function ($join) {
-            $join->on('latestStatsDist.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestStatsDist.latest_IDdist')
-        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-            $query->whereYear('d.entrydate', (int) $selectedYear);
-        });
+    $countStatus = function (string $statusKey) use (
+        $statsBase,
+        $applyStatus
+    ) {
+        $query = clone $statsBase;
+        $applyStatus($query, $statusKey);
 
-    $completedDocuments = DB::table('document as d')
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-            $query->whereYear('d.entrydate', (int) $selectedYear);
-        })
-        ->whereRaw($documentIsCompletedSql)
-        ->distinct()
-        ->count('d.IDdoc');
+        return $query->count();
+    };
+
+    $totalWorkflows = (clone $statsBase)->count();
 
     $stats = [
-        /*
-         * Correct value for the first card.
-         * total_transactions is kept only as fallback for old Vue code,
-         * but its value is now also document count.
-         */
-        'total_documents' => $totalDocuments,
-        'total_transactions' => $totalDocuments,
-        'completed' => $completedDocuments,
-
-        'for_receiving' => (clone $statsBase)
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'received' => (clone $statsBase)
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw('NOT ' . $currentCycleFinalActionSql)
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'addressed' => (clone $statsBase)
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereNotNull('dist.confirmdate')
-            ->whereRaw($notPulledMonitoringSql)
-            ->whereRaw($currentCycleFinalActionSql)
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'returned' => (clone $statsBase)
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereRaw($pendingReturnMonitoringSql)
-            ->distinct()
-            ->count('d.IDdoc'),
-
-        'pulled_out' => (clone $statsBase)
-            ->whereRaw($documentIsNotCompletedSql)
-            ->whereIn('dist.YNpulled', $trueValues)
-            ->distinct()
-            ->count('d.IDdoc'),
+        'total_documents' => $totalWorkflows,
+        'total_transactions' => $totalWorkflows,
+        'completed' => $countStatus('completed'),
+        'for_receiving' => $countStatus('for-receiving'),
+        'received' => $countStatus('received'),
+        'addressed' => $countStatus('addressed'),
+        'returned' => $countStatus('returned'),
+        'pulled_out' => $countStatus('pulled-out'),
     ];
 
-    // Backward compatibility for older cached frontend assets.
     $stats['no_action'] = $stats['for_receiving'];
+    $stats['action_taken'] = $stats['addressed'];
+    $stats['action_taken_documents'] = $stats['addressed'];
+    $stats['final_action_documents'] = $stats['addressed'];
+    $stats['pending_returned'] = $stats['returned'];
+    $stats['current_returned'] = $stats['returned'];
 
-    /*
-     * Table: Sino ang hindi uma-action?
-     * Group pending documents by assigned personnel, then attach the document list per person.
-     */
-    $peopleNoAction = DB::table('document as d')
-        ->leftJoinSub($latestDistributionForMonitoring, 'latestPeopleDist', function ($join) {
-            $join->on('latestPeopleDist.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestPeopleDist.latest_IDdist')
-        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
-        ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
-        ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-            $query->whereYear('d.entrydate', (int) $selectedYear);
-        })
-        ->whereRaw($documentIsNotCompletedSql)
-        ->whereNotNull('dist.distdate')
-        ->whereNull('dist.confirmdate')
-        ->whereRaw($notPulledMonitoringSql)
-        ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
+    $pendingBase = $buildBase();
+    $applyYear($pendingBase);
+    $applyStatus($pendingBase, 'for-receiving');
+
+    $peopleNoAction = (clone $pendingBase)
         ->select([
-            'p.ID as personnel_id',
-            DB::raw("COALESCE(p.name, 'Unassigned') as personnel_name"),
-            DB::raw("COALESCE(o.officename, 'No office') as office_name"),
-            DB::raw('COUNT(DISTINCT d.IDdoc) as pending_transactions'),
-            DB::raw('MAX(DATEDIFF(NOW(), dist.distdate)) as max_days_pending'),
+            'assignedPersonnel.ID as personnel_id',
+            DB::raw(
+                "COALESCE(assignedPersonnel.name, 'Unassigned') "
+                . 'as personnel_name'
+            ),
+            DB::raw(
+                "COALESCE(assignedOffice.officename, 'No office') "
+                . 'as office_name'
+            ),
+            DB::raw('COUNT(*) as pending_transactions'),
+            DB::raw(
+                'MAX(DATEDIFF(NOW(), dist.distdate)) as max_days_pending'
+            ),
             DB::raw('MIN(dist.distdate) as oldest_pending_date'),
         ])
-        ->groupBy('p.ID', 'p.name', 'o.officename')
+        ->groupBy(
+            'assignedPersonnel.ID',
+            'assignedPersonnel.name',
+            'assignedOffice.officename'
+        )
         ->orderByDesc('max_days_pending')
         ->orderByDesc('pending_transactions')
         ->limit(20)
         ->get();
 
-    $pendingDocumentsForPeople = DB::table('document as d')
-        ->leftJoinSub($latestDistributionForMonitoring, 'latestPendingPeopleDist', function ($join) {
-            $join->on('latestPendingPeopleDist.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestPendingPeopleDist.latest_IDdist')
-        ->leftJoin('distribution as returnParent', 'returnParent.IDdist', '=', 'dist.IDparentdist')
-        ->leftJoin('lu_personnel as p', 'p.ID', '=', 'd.IDkeeper')
-        ->leftJoin('lu_office as o', 'o.ID', '=', 'p.IDoffice')
-        ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-            $query->whereYear('d.entrydate', (int) $selectedYear);
-        })
-        ->whereRaw($documentIsNotCompletedSql)
-        ->whereNotNull('dist.distdate')
-        ->whereNull('dist.confirmdate')
-        ->whereRaw($notPulledMonitoringSql)
-        ->whereRaw('NOT ' . $pendingReturnMonitoringSql)
+    $pendingDocumentsForPeople = (clone $pendingBase)
         ->select([
-            'p.ID as personnel_id',
-            DB::raw("COALESCE(p.name, 'Unassigned') as personnel_name"),
-            DB::raw("COALESCE(o.officename, 'No office') as office_name"),
+            'assignedPersonnel.ID as personnel_id',
+            DB::raw(
+                "COALESCE(assignedPersonnel.name, 'Unassigned') "
+                . 'as personnel_name'
+            ),
+            DB::raw(
+                "COALESCE(assignedOffice.officename, 'No office') "
+                . 'as office_name'
+            ),
             'd.IDdoc',
+            'assignment.id as assignment_id',
+            DB::raw($displayExpression . ' as document_no'),
+            DB::raw($displayExpression . ' as display_document_no'),
             'd.subject',
             'dist.distdate',
             DB::raw('DATEDIFF(NOW(), dist.distdate) as days_pending'),
         ])
         ->orderByDesc('days_pending')
-        ->orderBy('d.IDdoc')
+        ->orderByDesc('d.IDdoc')
         ->limit(500)
         ->get()
         ->groupBy(function ($doc) {
-            return $doc->personnel_id ? (string) $doc->personnel_id : 'unassigned';
+            return $doc->personnel_id
+                ? (string) $doc->personnel_id
+                : 'unassigned';
         });
 
-    $peopleNoAction = $peopleNoAction->map(function ($person) use ($pendingDocumentsForPeople) {
-        $key = $person->personnel_id ? (string) $person->personnel_id : 'unassigned';
+    $peopleNoAction = $peopleNoAction->map(function ($person) use (
+        $pendingDocumentsForPeople
+    ) {
+        $key = $person->personnel_id
+            ? (string) $person->personnel_id
+            : 'unassigned';
 
         $person->documents = $pendingDocumentsForPeople
             ->get($key, collect())
@@ -5809,94 +4746,172 @@ public function monitoringDashboard(Request $request)
         return $person;
     });
 
-    /*
-     * Monitoring Dashboard only:
-     * Show Action Taken records per document for monitoring.
-     * No close/open workflow and no action_status column required.
-     */
     $actionTakenItems = collect();
-    $actionTakenCount = 0;
 
     if (
         Schema::hasTable('dts_document_remarks')
         && Schema::hasColumn('dts_document_remarks', 'action_type')
-        && Schema::hasTable('dts_action_types')
     ) {
-        $actionSelect = [
-            'remarksTable.id',
-            'remarksTable.IDdoc',
-            'd.IDdoc as document_no',
-            'd.subject',
-            'd.entrydate',
-            'd.IDkeeper',
-            'assignedPersonnel.name as assigned_personnel',
-            'remarksTable.remarks',
-            'remarksTable.action_type',
-            'remarksTable.created_at',
-            DB::raw("COALESCE(NULLIF(TRIM(remarkUser.name), ''), NULLIF(TRIM(remarkUser.loginname), ''), CONCAT('Account #', remarkUser.ID)) as actor_name"),
-            DB::raw("COALESCE(remarksTable.action_label, actionType.name, 'Addressed') as action_label"),
-        ];
-
         $actionTakenBase = DB::table('dts_document_remarks as remarksTable')
-            ->leftJoin('document as d', 'd.IDdoc', '=', 'remarksTable.IDdoc')
-            ->leftJoinSub($latestDistributionForMonitoring, 'latestActionCycleDist', function ($join) {
-                $join->on('latestActionCycleDist.IDdoc', '=', 'd.IDdoc');
+            ->join('document as d', 'd.IDdoc', '=', 'remarksTable.IDdoc')
+            ->leftJoinSub(
+                $makeAssignmentSource(),
+                'assignment',
+                function ($join) use ($hasRemarkAssignment) {
+                    $join->on('assignment.IDdoc', '=', 'd.IDdoc');
+
+                    if ($hasRemarkAssignment) {
+                        $join->whereRaw(
+                            'assignment.id <=> remarksTable.assignment_id'
+                        );
+                    } else {
+                        $join->whereNull('assignment.id');
+                    }
+                }
+            )
+            ->leftJoinSub(
+                $makeLatestDistribution(),
+                'latestActionDist',
+                function ($join) use ($hasRemarkAssignment) {
+                    $join->on('latestActionDist.IDdoc', '=', 'd.IDdoc');
+
+                    if ($hasRemarkAssignment) {
+                        $join->whereRaw(
+                            'latestActionDist.assignment_id '
+                            . '<=> remarksTable.assignment_id'
+                        );
+                    } else {
+                        $join->whereNull('latestActionDist.assignment_id');
+                    }
+                }
+            )
+            ->leftJoin(
+                'distribution as dist',
+                'dist.IDdist',
+                '=',
+                'latestActionDist.latest_IDdist'
+            )
+            ->leftJoin(
+                'dts_action_types as actionType',
+                'actionType.id',
+                '=',
+                'remarksTable.action_type_id'
+            )
+            ->leftJoin(
+                'username as remarkUser',
+                'remarkUser.ID',
+                '=',
+                'remarksTable.created_by'
+            )
+            ->leftJoin('lu_personnel as assignedPersonnel', function ($join) {
+                $join->on(
+                    'assignedPersonnel.ID',
+                    '=',
+                    DB::raw(
+                        'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper)'
+                    )
+                );
             })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'latestActionCycleDist.latest_IDdist')
-            ->leftJoin('dts_action_types as actionType', 'actionType.id', '=', 'remarksTable.action_type_id')
-            ->leftJoin('username as remarkUser', 'remarkUser.ID', '=', 'remarksTable.created_by')
-            ->leftJoin('lu_personnel as assignedPersonnel', 'assignedPersonnel.ID', '=', 'd.IDkeeper')
-            /*
-             * Return both First Action and Final Action for the Addressed modal,
-             * but only for documents that already have a Final Action.
-             */
-            ->whereIn('remarksTable.action_type', ['action_saved', 'action_taken'])
+            ->whereIn(
+                'remarksTable.action_type',
+                ['action_saved', 'action_taken']
+            )
             ->whereNotNull('dist.confirmdate')
             ->whereNotNull('dist.distdate')
-            ->whereColumn('remarksTable.created_at', '>=', 'dist.distdate')
-            ->whereExists(function ($query) {
+            ->whereColumn(
+                'remarksTable.created_at',
+                '>=',
+                'dist.distdate'
+            )
+            ->whereExists(function ($query) use ($hasRemarkAssignment) {
                 $query->select(DB::raw(1))
                     ->from('dts_document_remarks as finalAddressedAction')
-                    ->whereColumn('finalAddressedAction.IDdoc', 'd.IDdoc')
-                    ->where('finalAddressedAction.action_type', 'action_taken')
-                    ->whereColumn('finalAddressedAction.created_at', '>=', 'dist.distdate');
-            })
-            ->whereRaw($documentIsNotCompletedSql)
-            ->when($selectedYear !== '', function ($query) use ($selectedYear) {
-                $query->whereYear('d.entrydate', (int) $selectedYear);
+                    ->whereColumn(
+                        'finalAddressedAction.IDdoc',
+                        'd.IDdoc'
+                    )
+                    ->where(
+                        'finalAddressedAction.action_type',
+                        'action_taken'
+                    )
+                    ->whereColumn(
+                        'finalAddressedAction.created_at',
+                        '>=',
+                        'dist.distdate'
+                    );
+
+                if ($hasRemarkAssignment) {
+                    $query->whereRaw(
+                        'finalAddressedAction.assignment_id '
+                        . '<=> assignment.id'
+                    );
+                }
             });
 
+        $applyYear($actionTakenBase);
+
         if ($search !== '') {
-            $actionTakenBase->where(function ($query) use ($search) {
-                $query->where('d.IDdoc', 'like', "%{$search}%")
-                    ->orWhere('d.subject', 'like', "%{$search}%")
-                    ->orWhere('remarksTable.remarks', 'like', "%{$search}%")
-                    ->orWhere('remarksTable.action_label', 'like', "%{$search}%")
-                    ->orWhere('actionType.name', 'like', "%{$search}%")
-                    ->orWhere('assignedPersonnel.name', 'like', "%{$search}%")
-                    ->orWhere('remarkUser.loginname', 'like', "%{$search}%")
-                    ->orWhere('remarkUser.name', 'like', "%{$search}%");
+            $searchLike = '%' . $search . '%';
+
+            $actionTakenBase->where(function ($query) use ($searchLike) {
+                $query
+                    ->where('d.IDdoc', 'like', $searchLike)
+                    ->orWhere('d.subject', 'like', $searchLike)
+                    ->orWhere('remarksTable.remarks', 'like', $searchLike)
+                    ->orWhere('actionType.name', 'like', $searchLike)
+                    ->orWhere(
+                        'assignedPersonnel.name',
+                        'like',
+                        $searchLike
+                    )
+                    ->orWhere('remarkUser.name', 'like', $searchLike)
+                    ->orWhere('remarkUser.loginname', 'like', $searchLike);
             });
         }
 
+        $actionTakenLabelExpression = Schema::hasColumn(
+            'dts_document_remarks',
+            'action_label'
+        )
+            ? "COALESCE(remarksTable.action_label, actionType.name, 'Addressed')"
+            : "COALESCE(actionType.name, 'Addressed')";
+
         $actionTakenItems = $actionTakenBase
-            ->select($actionSelect)
+            ->select([
+                'remarksTable.id',
+                'remarksTable.IDdoc',
+                DB::raw(
+                    $hasRemarkAssignment
+                        ? 'remarksTable.assignment_id'
+                        : 'NULL as assignment_id'
+                ),
+                DB::raw($displayExpression . ' as document_no'),
+                DB::raw($displayExpression . ' as display_document_no'),
+                'd.subject',
+                'd.entrydate',
+                DB::raw(
+                    'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) '
+                    . 'as IDkeeper'
+                ),
+                'assignedPersonnel.name as assigned_personnel',
+                'remarksTable.remarks',
+                'remarksTable.action_type',
+                'remarksTable.created_at',
+                DB::raw(
+                    "COALESCE(
+                        NULLIF(TRIM(remarkUser.name), ''),
+                        NULLIF(TRIM(remarkUser.loginname), ''),
+                        CONCAT('Account #', remarkUser.ID)
+                    ) as actor_name"
+                ),
+                DB::raw(
+                    $actionTakenLabelExpression . ' as action_label'
+                ),
+            ])
             ->orderByDesc('remarksTable.created_at')
             ->limit(300)
             ->get();
-
-        /*
-         * Card count comes from the unpaginated current-status stats query.
-         * The modal list may be search-filtered and limited to 300 records.
-         */
-        $actionTakenCount = (int) ($stats['addressed'] ?? 0);
     }
-
-    $stats['action_taken'] = (int) ($stats['addressed'] ?? $actionTakenCount);
-    $stats['action_taken_documents'] = (int) ($stats['addressed'] ?? $actionTakenCount);
-    $stats['final_action_documents'] = (int) ($stats['addressed'] ?? $actionTakenCount);
-    $stats['pending_returned'] = (int) ($stats['returned'] ?? 0);
-    $stats['current_returned'] = (int) ($stats['returned'] ?? 0);
 
     return Inertia::render('DTS/MonitoringDashboard', [
         ...$this->dtsNotificationProps(),
@@ -5913,6 +4928,7 @@ public function monitoringDashboard(Request $request)
         ],
     ]);
 }
+
 
 private function recordDtsActivity(
     string $action,
@@ -5964,14 +4980,10 @@ private function cleanIntegerIds(array $ids): array
         ->values()
         ->all();
 }
-
-private function isSuperAdminViewOnly(?int $documentId = null): bool
-{
-    /*
-     * Role 4 is view-only ONLY when the document is not tagged to them.
-     * If the document is tagged to the logged-in Role 4 personnel, they can receive,
-     * add remarks, and add Action Taken like a normal assigned receiver.
-     */
+private function isSuperAdminViewOnly(
+    ?int $documentId = null,
+    ?int $assignmentId = null
+): bool {
     if ($this->currentUserRights() !== '4') {
         return false;
     }
@@ -5980,8 +4992,12 @@ private function isSuperAdminViewOnly(?int $documentId = null): bool
         return true;
     }
 
-    return ! $this->documentIsTaggedToViewer($documentId);
+    return ! $this->documentIsTaggedToViewer(
+        $documentId,
+        $assignmentId
+    );
 }
+
 
 private function shouldLimitDtsToTaggedDocuments(): bool
 {
@@ -6236,195 +5252,196 @@ private function applyViewerActionScope($query, string $documentAlias = 'd', str
             });
     });
 }
+private function viewerCanAccessDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
+    if (! DB::table('document')->where('IDdoc', $documentId)->exists()) {
+        return false;
+    }
 
-private function viewerCanAccessDocument(int $documentId): bool
-{
+    if ($assignmentId !== null) {
+        if (! Schema::hasTable('dts_document_assignments')) {
+            return false;
+        }
+
+        if (
+            ! DB::table('dts_document_assignments')
+                ->where('id', $assignmentId)
+                ->where('IDdoc', $documentId)
+                ->exists()
+        ) {
+            return false;
+        }
+    }
+
     /*
-     * Role 2 can view all documents through the All Documents module.
-     * Non-tagged documents remain viewing-only because action permissions
-     * still use viewerCanActOnDocument().
+     * The current DTS allows users to open document details through
+     * All Documents. Action permissions remain assignment-specific.
      */
-    if ($this->currentUserRights() === '2') {
-        return true;
-    }
-
-    if (! $this->shouldLimitDtsToTaggedDocuments()) {
-        return true;
-    }
-
-    $personnelIds = $this->viewerAssignedPersonnelIds();
-    $officeIds = $this->viewerAssignedOfficeIds($personnelIds);
-
-    if (empty($personnelIds)) {
-        return false;
-    }
-
-    $latestDistribution = DB::table('distribution as accessDx')
-        ->select([
-            'accessDx.IDdoc',
-            DB::raw('MAX(CAST(accessDx.IDdist AS UNSIGNED)) as latest_IDdist'),
-        ])
-        ->groupBy('accessDx.IDdoc');
-
-    $query = DB::table('document as d')
-        ->leftJoinSub($latestDistribution, 'accessLd', function ($join) {
-            $join->on('accessLd.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'accessLd.latest_IDdist')
-        ->where('d.IDdoc', $documentId);
-
-    $this->applyViewerDocumentScope($query, 'd', 'dist', $officeIds, $personnelIds);
-
-    return $query->exists();
+    return true;
 }
-
-private function documentIsTaggedToViewer(int $documentId): bool
-{
+private function documentIsTaggedToViewer(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
     $personnelIds = $this->viewerAssignedPersonnelIds();
 
     if (empty($personnelIds)) {
         return false;
     }
 
-    $latestDistribution = DB::table('distribution as taggedDx')
-        ->select([
-            'taggedDx.IDdoc',
-            DB::raw('MAX(CAST(taggedDx.IDdist AS UNSIGNED)) as latest_IDdist'),
-        ])
-        ->groupBy('taggedDx.IDdoc');
+    if ($assignmentId !== null) {
+        $assignment = $this->resolveDocumentAssignment(
+            $documentId,
+            $assignmentId
+        );
 
-    $query = DB::table('document as d')
-        ->leftJoinSub($latestDistribution, 'taggedLd', function ($join) {
-            $join->on('taggedLd.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'taggedLd.latest_IDdist')
-        ->where('d.IDdoc', $documentId);
+        $latestDistribution = $this->latestDistributionForWorkflow(
+            $documentId,
+            $assignmentId
+        );
 
-    if (! Schema::hasColumn('distribution', 'idmapagency')) {
-        return $query->whereIn('d.IDkeeper', $personnelIds)->exists();
+        if ($latestDistribution) {
+            return in_array(
+                (int) ($latestDistribution->idmapagency ?? 0),
+                $personnelIds,
+                true
+            );
+        }
+
+        return in_array(
+            (int) ($assignment->idmapagency ?? 0),
+            $personnelIds,
+            true
+        );
     }
 
-    return $query
-        ->where(function ($scope) use ($personnelIds) {
-            $scope
-                ->where(function ($latestTag) use ($personnelIds) {
-                    $latestTag
-                        ->whereNotNull('dist.IDdist')
-                        ->whereIn('dist.idmapagency', $personnelIds);
-                })
-                ->orWhere(function ($noDistribution) use ($personnelIds) {
-                    $noDistribution
-                        ->whereNull('dist.IDdist')
-                        ->whereIn('d.IDkeeper', $personnelIds);
-                });
-        })
-        ->exists();
-}
-
-private function viewerCanTransferDocument(int $documentId): bool
-{
     /*
-     * Role 3 special rule:
-     * Can transfer any document they can access/view, regardless of
-     * receive status and regardless of the currently tagged personnel.
+     * Legacy/single document workflow uses assignment_id = NULL.
+     */
+    $latestDistribution = $this->latestDistributionForWorkflow(
+        $documentId,
+        null
+    );
+
+    if ($latestDistribution) {
+        return in_array(
+            (int) ($latestDistribution->idmapagency ?? 0),
+            $personnelIds,
+            true
+        );
+    }
+
+    $keeperId = DB::table('document')
+        ->where('IDdoc', $documentId)
+        ->value('IDkeeper');
+
+    return in_array((int) $keeperId, $personnelIds, true);
+}
+private function viewerCanTransferDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
+    /*
+     * Preserve the Role 3 quick-transfer rule, but verify that the requested
+     * assignment belongs to the document.
      */
     if ($this->currentUserRights() === '3') {
-        return $this->viewerCanAccessDocument($documentId);
+        return $this->viewerCanAccessDocument(
+            $documentId,
+            $assignmentId
+        );
     }
 
     if (! $this->canReceiveDts()) {
         return false;
     }
 
-    return $this->viewerCanActOnDocument($documentId);
+    return $this->viewerCanActOnDocument(
+        $documentId,
+        $assignmentId
+    );
 }
-
-private function ensureViewerCanTransferDocument(int $documentId): void
-{
-    abort_unless($this->viewerCanTransferDocument($documentId), 403);
+private function ensureViewerCanTransferDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): void {
+    abort_unless(
+        $this->viewerCanTransferDocument(
+            $documentId,
+            $assignmentId
+        ),
+        403
+    );
 }
-
-private function viewerCanActOnDocument(int $documentId): bool
-{
+private function viewerCanActOnDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
     if (! $this->canReceiveDts() && ! $this->canRemarkDts()) {
         return false;
     }
 
-    /*
-     * Role 3 has unlimited Select Action COUNT, but actions still require the
-     * document to be currently tagged to the logged-in personnel.
-     */
     if (! $this->shouldLimitDtsActionToTaggedDocuments()) {
         return true;
     }
 
-    $personnelIds = $this->viewerAssignedPersonnelIds();
-    $officeIds = $this->viewerAssignedOfficeIds($personnelIds);
-
-    if (empty($personnelIds)) {
-        return false;
-    }
-
-    $latestDistribution = DB::table('distribution as actionDx')
-        ->select([
-            'actionDx.IDdoc',
-            DB::raw('MAX(CAST(actionDx.IDdist AS UNSIGNED)) as latest_IDdist'),
-        ])
-        ->groupBy('actionDx.IDdoc');
-
-    $query = DB::table('document as d')
-        ->leftJoinSub($latestDistribution, 'actionLd', function ($join) {
-            $join->on('actionLd.IDdoc', '=', 'd.IDdoc');
-        })
-        ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'actionLd.latest_IDdist')
-        ->where('d.IDdoc', $documentId);
-
-    $this->applyViewerActionScope($query, 'd', 'dist', $officeIds, $personnelIds);
-
-    return $query->exists();
+    return $this->documentIsTaggedToViewer(
+        $documentId,
+        $assignmentId
+    );
 }
-
-private function viewerCanRemarkDocument(int $documentId): bool
-{
-    /*
-     * Role 2 can view all documents through All Documents,
-     * but if a document is not tagged to them, it must be viewing-only.
-     */
+private function viewerCanRemarkDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
     if ($this->currentUserRights() === '2') {
-        return $this->viewerCanActOnDocument($documentId);
+        return $this->viewerCanActOnDocument(
+            $documentId,
+            $assignmentId
+        );
     }
 
-    return $this->viewerCanAccessDocument($documentId);
+    return $this->viewerCanAccessDocument(
+        $documentId,
+        $assignmentId
+    );
 }
-
-private function ensureViewerCanRemarkDocument(int $documentId): void
-{
+private function ensureViewerCanRemarkDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): void {
     abort_unless(
-        $this->canRemarkDts() && $this->viewerCanRemarkDocument($documentId),
+        $this->canRemarkDts()
+            && $this->viewerCanRemarkDocument(
+                $documentId,
+                $assignmentId
+            ),
         403
     );
 }
-
-private function viewerCanReattachDocument(int $documentId): bool
-{
-    /*
-     * Role 3 may attach a replacement PDF to any document that they are
-     * authorized to open.
-     *
-     * Other roles retain the original rule: only the user who encoded the
-     * document may re-attach, and Role 2 must also be tagged to the document.
-     */
+private function viewerCanReattachDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): bool {
     if (! $this->canReattachDts()) {
         return false;
     }
 
     if ($this->currentUserRights() === '3') {
-        return $this->viewerCanAccessDocument($documentId);
+        return $this->viewerCanAccessDocument(
+            $documentId,
+            $assignmentId
+        );
     }
 
     if (
         $this->currentUserRights() === '2'
-        && ! $this->viewerCanActOnDocument($documentId)
+        && ! $this->viewerCanActOnDocument(
+            $documentId,
+            $assignmentId
+        )
     ) {
         return false;
     }
@@ -6440,15 +5457,193 @@ private function viewerCanReattachDocument(int $documentId): bool
         ->where('IDuser', $currentUserId)
         ->exists();
 }
-
-private function ensureViewerCanReattachDocument(int $documentId): void
-{
-    abort_unless($this->viewerCanReattachDocument($documentId), 403);
+private function ensureViewerCanReattachDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): void {
+    abort_unless(
+        $this->viewerCanReattachDocument(
+            $documentId,
+            $assignmentId
+        ),
+        403
+    );
+}
+private function ensureViewerCanActOnDocument(
+    int $documentId,
+    ?int $assignmentId = null
+): void {
+    abort_unless(
+        $this->viewerCanActOnDocument(
+            $documentId,
+            $assignmentId
+        ),
+        403
+    );
 }
 
-private function ensureViewerCanActOnDocument(int $documentId): void
+
+private function requestedAssignmentId(Request $request): ?int
 {
-    abort_unless($this->viewerCanActOnDocument($documentId), 403);
+    $value = $request->input(
+        'assignment_id',
+        $request->query('assignment_id')
+    );
+
+    if ($value === null || $value === '' || ! is_numeric($value)) {
+        return null;
+    }
+
+    $assignmentId = (int) $value;
+
+    return $assignmentId > 0 ? $assignmentId : null;
+}
+
+private function assignmentSuffixFromIndex(int $index): string
+{
+    /*
+     * Excel-style letters:
+     * 0 = A, 25 = Z, 26 = AA, 27 = AB, ...
+     */
+    $number = $index + 1;
+    $suffix = '';
+
+    while ($number > 0) {
+        $number--;
+        $suffix = chr(65 + ($number % 26)) . $suffix;
+        $number = intdiv($number, 26);
+    }
+
+    return $suffix;
+}
+
+private function resolveDocumentAssignment(
+    int $documentId,
+    ?int $assignmentId = null
+): ?object {
+    if (! Schema::hasTable('dts_document_assignments')) {
+        abort_if($assignmentId !== null, 404);
+
+        return null;
+    }
+
+    $query = DB::table('dts_document_assignments')
+        ->where('IDdoc', $documentId)
+        ->orderBy('id');
+
+    if (! $query->exists()) {
+        abort_if($assignmentId !== null, 404);
+
+        return null;
+    }
+
+    if ($assignmentId !== null) {
+        $assignment = (clone $query)
+            ->where('id', $assignmentId)
+            ->first();
+
+        abort_unless($assignment, 404);
+
+        return $assignment;
+    }
+
+    /*
+     * A manually opened shared-ID URL may omit assignment_id.
+     * Prefer the assignment currently tagged to the logged-in personnel.
+     */
+    $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
+
+    if (! empty($viewerPersonnelIds)) {
+        $viewerAssignment = (clone $query)
+            ->whereIn('idmapagency', $viewerPersonnelIds)
+            ->first();
+
+        if ($viewerAssignment) {
+            return $viewerAssignment;
+        }
+    }
+
+    return $query->first();
+}
+
+private function applyAssignmentColumnScope(
+    $query,
+    string $column,
+    ?int $assignmentId
+) {
+    if ($assignmentId === null) {
+        return $query->whereNull($column);
+    }
+
+    return $query->where($column, $assignmentId);
+}
+
+private function latestDistributionForWorkflow(
+    int $documentId,
+    ?int $assignmentId
+): ?object {
+    $query = DB::table('distribution')
+        ->where('IDdoc', $documentId);
+
+    if (Schema::hasColumn('distribution', 'assignment_id')) {
+        $this->applyAssignmentColumnScope(
+            $query,
+            'assignment_id',
+            $assignmentId
+        );
+    } elseif ($assignmentId !== null) {
+        return null;
+    }
+
+    return $query
+        ->orderByDesc('IDdist')
+        ->first();
+}
+
+private function workflowReference(
+    int $documentId,
+    ?int $assignmentId
+): string {
+    if (
+        $assignmentId !== null
+        && Schema::hasTable('dts_document_assignments')
+    ) {
+        $suffix = DB::table('dts_document_assignments')
+            ->where('id', $assignmentId)
+            ->where('IDdoc', $documentId)
+            ->value('assignment_suffix');
+
+        $suffix = strtoupper(trim((string) $suffix));
+
+        if ($suffix !== '') {
+            return $documentId . '-' . $suffix;
+        }
+    }
+
+    if (
+        Schema::hasColumn('document', 'document_group_id')
+        && Schema::hasColumn('document', 'assignment_suffix')
+    ) {
+        $legacyDisplay = DB::table('document')
+            ->where('IDdoc', $documentId)
+            ->select(['document_group_id', 'assignment_suffix'])
+            ->first();
+
+        $legacySuffix = strtoupper(
+            trim((string) ($legacyDisplay->assignment_suffix ?? ''))
+        );
+
+        if (
+            ! empty($legacyDisplay?->document_group_id)
+            && $legacySuffix !== ''
+        ) {
+            return $legacyDisplay->document_group_id
+                . '-'
+                . $legacySuffix;
+        }
+    }
+
+    return (string) $documentId;
 }
 
 private function currentUserRights(): string
@@ -6521,15 +5716,8 @@ private function ensureCanRemarkDts(): void
 {
     abort_unless($this->canRemarkDts(), 403);
 }
-
-
 private function dtsNotificationProps(): array
 {
-    /*
-     * Shared notification props for every DTS page.
-     * Without this, the notification bell count appears only on pages that
-     * manually pass viewerNotifications/creatorReceivedNotifications.
-     */
     $viewerNotifications = collect();
     $creatorReceivedNotifications = collect();
     $automaticStatusReminders = collect();
@@ -6546,6 +5734,17 @@ private function dtsNotificationProps(): array
     $viewerPersonnelIds = $this->viewerAssignedPersonnelIds();
     $currentUserId = $this->currentUserId();
 
+    $hasAssignmentTable = Schema::hasTable('dts_document_assignments');
+    $hasDistributionAssignment = Schema::hasColumn(
+        'distribution',
+        'assignment_id'
+    );
+    $hasRemarkAssignment = Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn(
+            'dts_document_remarks',
+            'assignment_id'
+        );
+
     $doctypeCodeColumn = 'dt.description';
 
     if (Schema::hasTable('lu_doctype')) {
@@ -6558,68 +5757,234 @@ private function dtsNotificationProps(): array
         }
     }
 
-    $makeLatestDistribution = function () {
-        return DB::table('distribution as dx')
-            ->select([
-                'dx.IDdoc',
-                DB::raw('MAX(CAST(dx.IDdist AS UNSIGNED)) as latest_IDdist'),
-            ])
-            ->groupBy('dx.IDdoc');
+    $makeAssignmentSource = function () use ($hasAssignmentTable) {
+        if ($hasAssignmentTable) {
+            return DB::table('dts_document_assignments')
+                ->select([
+                    'id',
+                    'IDdoc',
+                    'assignment_suffix',
+                    'idmapagency',
+                ]);
+        }
+
+        return DB::table('document')
+            ->whereRaw('1 = 0')
+            ->selectRaw(
+                'NULL as id, IDdoc, NULL as assignment_suffix, '
+                . 'NULL as idmapagency'
+            );
     };
 
-    if (! empty($viewerPersonnelIds)) {
-        $viewerNotificationsQuery = DB::table('document as d')
-            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-            ->leftJoinSub($makeLatestDistribution(), 'viewerLd', function ($join) {
-                $join->on('viewerLd.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'viewerLd.latest_IDdist')
-            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
-            ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.distdate')
-            ->whereNull('dist.confirmdate')
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNreturn')
-                    ->orWhereNotIn('dist.YNreturn', $trueValues);
-            })
-            ->where(function ($query) use ($trueValues) {
-                $query->whereNull('dist.YNpulled')
-                    ->orWhereNotIn('dist.YNpulled', $trueValues);
-            })
-            ->where(function ($query) use ($viewerPersonnelIds) {
-                $query->whereIn('d.IDkeeper', $viewerPersonnelIds);
+    $makeLatestDistribution = function () use ($hasDistributionAssignment) {
+        $query = DB::table('distribution as notificationDx')
+            ->select([
+                'notificationDx.IDdoc',
+                DB::raw(
+                    $hasDistributionAssignment
+                        ? 'notificationDx.assignment_id'
+                        : 'NULL as assignment_id'
+                ),
+                DB::raw(
+                    'MAX(CAST(notificationDx.IDdist AS UNSIGNED)) '
+                    . 'as latest_IDdist'
+                ),
+            ])
+            ->groupBy('notificationDx.IDdoc');
 
-                if (Schema::hasColumn('distribution', 'idmapagency')) {
-                    $query->orWhereIn('dist.idmapagency', $viewerPersonnelIds);
+        if ($hasDistributionAssignment) {
+            $query->groupBy('notificationDx.assignment_id');
+        }
+
+        return $query;
+    };
+
+    $buildNotificationBase = function () use (
+        $makeAssignmentSource,
+        $makeLatestDistribution
+    ) {
+        return DB::table('document as d')
+            ->leftJoinSub(
+                $makeAssignmentSource(),
+                'assignment',
+                function ($join) {
+                    $join->on('assignment.IDdoc', '=', 'd.IDdoc');
                 }
+            )
+            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
+            ->leftJoin(
+                'lu_office as fromOffice',
+                'fromOffice.ID',
+                '=',
+                'd.IDfrom'
+            )
+            ->leftJoinSub(
+                $makeLatestDistribution(),
+                'notificationLd',
+                function ($join) {
+                    $join->on('notificationLd.IDdoc', '=', 'd.IDdoc')
+                        ->whereRaw(
+                            'notificationLd.assignment_id <=> assignment.id'
+                        );
+                }
+            )
+            ->leftJoin(
+                'distribution as dist',
+                'dist.IDdist',
+                '=',
+                'notificationLd.latest_IDdist'
+            )
+            ->leftJoin(
+                'lu_office as distOffice',
+                'distOffice.ID',
+                '=',
+                'dist.IDoffice'
+            )
+            ->leftJoin(
+                'username as receiveUser',
+                'receiveUser.ID',
+                '=',
+                'dist.confirmuser'
+            );
+    };
+
+    $applyViewerTag = function ($query) use ($viewerPersonnelIds) {
+        $personnelIds = collect($viewerPersonnelIds)
+            ->filter(fn ($id) => $id !== null && $id !== '' && (int) $id > 0)
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($personnelIds)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where(function ($scope) use ($personnelIds) {
+            $scope->where(function ($multiple) use ($personnelIds) {
+                $multiple
+                    ->whereNotNull('assignment.id')
+                    ->where(function ($tag) use ($personnelIds) {
+                        $tag
+                            ->where(function ($current) use ($personnelIds) {
+                                $current
+                                    ->whereNotNull('dist.IDdist')
+                                    ->whereIn(
+                                        'dist.idmapagency',
+                                        $personnelIds
+                                    );
+                            })
+                            ->orWhere(function ($fallback) use ($personnelIds) {
+                                $fallback
+                                    ->whereNull('dist.IDdist')
+                                    ->whereIn(
+                                        'assignment.idmapagency',
+                                        $personnelIds
+                                    );
+                            });
+                    });
             });
 
-        $viewerNotifications = $viewerNotificationsQuery
-            ->select([
-                DB::raw("'for_receiving' as notification_type"),
-                'd.IDdoc',
-                'd.IDdoc as document_no',
-                'd.subject',
-                'd.entrydate',
-                DB::raw($doctypeCodeColumn . ' as code'),
-                'dt.description as doctype',
-                'fromOffice.officename as from_office',
-                'distOffice.officename as transferred_to',
-                'dist.distdate as transfer_date',
-                DB::raw('DATE_ADD(dist.distdate, INTERVAL 7 DAY) as due_date'),
-            ])
+            $scope->orWhere(function ($legacy) use ($personnelIds) {
+                $legacy
+                    ->whereNull('assignment.id')
+                    ->where(function ($tag) use ($personnelIds) {
+                        $tag
+                            ->where(function ($current) use ($personnelIds) {
+                                $current
+                                    ->whereNotNull('dist.IDdist')
+                                    ->whereIn(
+                                        'dist.idmapagency',
+                                        $personnelIds
+                                    );
+                            })
+                            ->orWhere(function ($fallback) use ($personnelIds) {
+                                $fallback
+                                    ->whereNull('dist.IDdist')
+                                    ->whereIn('d.IDkeeper', $personnelIds);
+                            });
+                    });
+            });
+        });
+    };
+
+    $applyActiveDistribution = function ($query) use ($trueValues) {
+        $query->where(function ($condition) use ($trueValues) {
+            $condition->whereNull('dist.YNreturn')
+                ->orWhereNotIn('dist.YNreturn', $trueValues);
+        });
+
+        $query->where(function ($condition) use ($trueValues) {
+            $condition->whereNull('dist.YNpulled')
+                ->orWhereNotIn('dist.YNpulled', $trueValues);
+        });
+
+        return $query;
+    };
+
+    $displayExpression = "CASE
+        WHEN assignment.id IS NOT NULL
+            AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
+        THEN CONCAT(
+            CAST(d.IDdoc AS CHAR),
+            '-',
+            UPPER(TRIM(assignment.assignment_suffix))
+        )
+        ELSE CAST(d.IDdoc AS CHAR)
+    END";
+
+    $notificationSelect = [
+        'd.IDdoc',
+        'assignment.id as assignment_id',
+        DB::raw(
+            "UPPER(NULLIF(TRIM(assignment.assignment_suffix), '')) "
+            . 'as assignment_suffix'
+        ),
+        DB::raw($displayExpression . ' as document_no'),
+        DB::raw($displayExpression . ' as display_document_no'),
+        'd.subject',
+        'd.entrydate',
+        DB::raw($doctypeCodeColumn . ' as code'),
+        'dt.description as doctype',
+        'fromOffice.officename as from_office',
+        'distOffice.officename as transferred_to',
+        'dist.distdate as transfer_date',
+    ];
+
+    if (! empty($viewerPersonnelIds)) {
+        $viewerQuery = $buildNotificationBase()
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.distdate')
+            ->whereNull('dist.confirmdate');
+
+        $applyViewerTag($viewerQuery);
+        $applyActiveDistribution($viewerQuery);
+
+        $viewerNotifications = $viewerQuery
+            ->select(array_merge($notificationSelect, [
+                DB::raw(
+                    'DATE_ADD(dist.distdate, INTERVAL 7 DAY) as due_date'
+                ),
+            ]))
             ->orderBy('dist.distdate')
             ->limit(50)
             ->get()
             ->map(function ($doc) {
-                $transferDate = $doc->transfer_date ? Carbon::parse($doc->transfer_date) : null;
-                $dueDate = $transferDate ? $transferDate->copy()->addDays(7) : null;
+                $transferDate = $doc->transfer_date
+                    ? Carbon::parse($doc->transfer_date)
+                    : null;
+
+                $dueDate = $transferDate
+                    ? $transferDate->copy()->addDays(7)
+                    : null;
 
                 return [
                     'notification_type' => 'for_receiving',
                     'IDdoc' => $doc->IDdoc,
+                    'assignment_id' => $doc->assignment_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
                     'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
                     'subject' => $doc->subject,
                     'entrydate' => $doc->entrydate,
                     'code' => $doc->code,
@@ -6627,49 +5992,138 @@ private function dtsNotificationProps(): array
                     'from_office' => $doc->from_office,
                     'transferred_to' => $doc->transferred_to,
                     'transfer_date' => $doc->transfer_date,
-                    'due_date' => $dueDate ? $dueDate->format('Y-m-d H:i:s') : null,
-                    'days_since_transfer' => $transferDate ? $transferDate->diffInDays(now()) : 0,
-                    'is_overdue' => $dueDate ? now()->greaterThanOrEqualTo($dueDate) : false,
+                    'due_date' => $dueDate
+                        ? $dueDate->format('Y-m-d H:i:s')
+                        : null,
+                    'days_since_transfer' => $transferDate
+                        ? $transferDate->diffInDays(now())
+                        : 0,
+                    'is_overdue' => $dueDate
+                        ? now()->greaterThanOrEqualTo($dueDate)
+                        : false,
                 ];
             })
+            ->values();
+
+        /*
+         * Three-day reminders are assignment-specific.
+         */
+        $automaticStatusReminders = $viewerNotifications
+            ->filter(function ($item) {
+                return (int) ($item['days_since_transfer'] ?? 0) >= 3;
+            })
+            ->map(function ($item) {
+                return array_merge($item, [
+                    'current_status' => 'For Receiving',
+                    'days_pending' => $item['days_since_transfer'] ?? 0,
+                    'status_started_at' => $item['transfer_date'] ?? null,
+                ]);
+            })
+            ->values();
+
+        $receivedReminderQuery = $buildNotificationBase()
+            ->whereNotNull('dist.IDdist')
+            ->whereNotNull('dist.confirmdate')
+            ->whereDate('dist.confirmdate', '<=', now()->subDays(3));
+
+        $applyViewerTag($receivedReminderQuery);
+        $applyActiveDistribution($receivedReminderQuery);
+
+        if (Schema::hasTable('dts_document_remarks')) {
+            $receivedReminderQuery->whereNotExists(function ($subQuery) use ($hasRemarkAssignment) {
+                $subQuery->select(DB::raw(1))
+                    ->from('dts_document_remarks as reminderRemark')
+                    ->whereColumn('reminderRemark.IDdoc', 'd.IDdoc')
+                    ->where('reminderRemark.action_type', 'action_taken')
+                    ->whereColumn(
+                        'reminderRemark.created_at',
+                        '>=',
+                        'dist.distdate'
+                    );
+
+                if ($hasRemarkAssignment) {
+                    $subQuery->whereRaw(
+                        'reminderRemark.assignment_id <=> assignment.id'
+                    );
+                } else {
+                    $subQuery->whereNull('assignment.id');
+                }
+            });
+        }
+
+        $receivedReminders = $receivedReminderQuery
+            ->select(array_merge($notificationSelect, [
+                'dist.confirmdate as received_date',
+            ]))
+            ->orderBy('dist.confirmdate')
+            ->limit(50)
+            ->get()
+            ->map(function ($doc) {
+                $receivedAt = $doc->received_date
+                    ? Carbon::parse($doc->received_date)
+                    : null;
+
+                return [
+                    'notification_type' => 'received',
+                    'IDdoc' => $doc->IDdoc,
+                    'assignment_id' => $doc->assignment_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
+                    'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
+                    'subject' => $doc->subject,
+                    'entrydate' => $doc->entrydate,
+                    'code' => $doc->code,
+                    'doctype' => $doc->doctype,
+                    'from_office' => $doc->from_office,
+                    'transferred_to' => $doc->transferred_to,
+                    'transfer_date' => $doc->transfer_date,
+                    'received_date' => $doc->received_date,
+                    'current_status' => 'Received',
+                    'status_started_at' => $doc->received_date,
+                    'days_pending' => $receivedAt
+                        ? $receivedAt->diffInDays(now())
+                        : 0,
+                    'is_overdue' => true,
+                ];
+            })
+            ->values();
+
+        $automaticStatusReminders = $automaticStatusReminders
+            ->concat($receivedReminders)
             ->values();
     }
 
     if ($currentUserId) {
-        $creatorReceivedNotifications = DB::table('document as d')
-            ->leftJoin('lu_doctype as dt', 'dt.ID', '=', 'd.IDdoctype')
-            ->leftJoin('lu_office as fromOffice', 'fromOffice.ID', '=', 'd.IDfrom')
-            ->leftJoinSub($makeLatestDistribution(), 'creatorLd', function ($join) {
-                $join->on('creatorLd.IDdoc', '=', 'd.IDdoc');
-            })
-            ->leftJoin('distribution as dist', 'dist.IDdist', '=', 'creatorLd.latest_IDdist')
-            ->leftJoin('lu_office as distOffice', 'distOffice.ID', '=', 'dist.IDoffice')
-            ->leftJoin('username as receiveUser', 'receiveUser.ID', '=', 'dist.confirmuser')
+        $creatorQuery = $buildNotificationBase()
             ->where('d.IDuser', $currentUserId)
             ->whereNotNull('dist.IDdist')
-            ->whereNotNull('dist.confirmdate')
-            ->select([
-                DB::raw("'received_by_addressee' as notification_type"),
-                'd.IDdoc',
-                'd.IDdoc as document_no',
-                'd.subject',
-                'd.entrydate',
-                DB::raw($doctypeCodeColumn . ' as code'),
-                'dt.description as doctype',
-                'fromOffice.officename as from_office',
-                'distOffice.officename as received_office',
-                'dist.distdate as transfer_date',
+            ->whereNotNull('dist.confirmdate');
+
+        $applyActiveDistribution($creatorQuery);
+
+        $creatorReceivedNotifications = $creatorQuery
+            ->select(array_merge($notificationSelect, [
                 'dist.confirmdate as received_date',
-                DB::raw("COALESCE(NULLIF(TRIM(receiveUser.name), ''), NULLIF(TRIM(receiveUser.loginname), ''), CONCAT('Account #', receiveUser.ID)) as received_by"),
-            ])
+                'distOffice.officename as received_office',
+                DB::raw(
+                    "COALESCE(
+                        NULLIF(TRIM(receiveUser.name), ''),
+                        NULLIF(TRIM(receiveUser.loginname), ''),
+                        CONCAT('Account #', receiveUser.ID)
+                    ) as received_by"
+                ),
+            ]))
             ->orderByDesc('dist.confirmdate')
-            ->limit(20)
+            ->limit(50)
             ->get()
             ->map(function ($doc) {
                 return [
                     'notification_type' => 'received_by_addressee',
                     'IDdoc' => $doc->IDdoc,
+                    'assignment_id' => $doc->assignment_id,
+                    'assignment_suffix' => $doc->assignment_suffix,
                     'document_no' => $doc->document_no,
+                    'display_document_no' => $doc->display_document_no,
                     'subject' => $doc->subject,
                     'entrydate' => $doc->entrydate,
                     'code' => $doc->code,
@@ -6692,6 +6146,7 @@ private function dtsNotificationProps(): array
         'automaticStatusReminders' => $automaticStatusReminders,
     ];
 }
+
 
 private function canAccessMonitoringDashboard(): bool
 {

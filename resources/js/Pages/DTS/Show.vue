@@ -165,14 +165,18 @@ const showActionTakenModal = ref(false)
 const showActionHistoryModal = ref(false)
 const showReattachPanel = ref(false)
 
-const receiveForm = useForm({})
+const receiveForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
+})
 
 const forwardForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
     IDpersonnel: '',
     remarks: '',
 })
 
 const actionTakenForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
     IDactionType: '',
     action_stage: '',
     remarks: '',
@@ -180,6 +184,7 @@ const actionTakenForm = useForm({
 })
 
 const returnForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
     remarks: '',
 })
 
@@ -191,10 +196,12 @@ const FIRST_ADDRESS_ACTION = 'first'
 const FINAL_ADDRESS_ACTION = 'final'
 
 const remarkForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
     remarks: '',
 })
 
 const reattachForm = useForm({
+    assignment_id: props.document?.assignment_id ?? null,
     attachments: [],
     remarks: '',
 })
@@ -899,90 +906,38 @@ const classificationLabel = computed(() => {
     return classification || '-'
 })
 
-const documentGroupId = computed(() => {
-    return props.document.document_group_id
-        ?? props.document.group_document_id
-        ?? null
+const assignmentId = computed(() => {
+    const value = Number(props.document?.assignment_id || 0)
+
+    return Number.isFinite(value) && value > 0 ? value : null
 })
 
 const assignmentSuffix = computed(() => {
-    return String(
-        props.document.assignment_suffix
-        ?? props.document.assignment_code
-        ?? ''
-    ).trim().toUpperCase()
+    return String(props.document?.assignment_suffix || '')
+        .trim()
+        .toUpperCase()
 })
 
 const isMultipleAssignment = computed(() => {
-    return Boolean(
-        props.document.is_multiple_assignment
-        || (
-            hasFilledValue(documentGroupId.value)
-            && hasFilledValue(assignmentSuffix.value)
-        )
-    )
-})
-
-const assignmentCount = computed(() => {
-    const count = Number(props.document.assignment_count || 0)
-
-    return Number.isFinite(count) && count > 0 ? count : 1
+    return Boolean(assignmentId.value && assignmentSuffix.value)
 })
 
 const documentNumber = computed(() => {
-    /*
-     * Keep IDdoc as the internal route/action identifier.
-     * display_document_no is presentation only:
-     *
-     * Single:   184782
-     * Multiple: 184782-A, 184782-B, 184782-C
-     */
-    const explicitDisplayNumber = String(
-        props.document.display_document_no
-        ?? props.document.assignment_reference
+    const explicitNumber = String(
+        props.document?.display_document_no
+        ?? props.document?.document_no
         ?? ''
     ).trim()
 
-    if (explicitDisplayNumber) {
-        return explicitDisplayNumber
+    if (explicitNumber) {
+        return explicitNumber
     }
 
     if (isMultipleAssignment.value) {
-        return `${documentGroupId.value}-${assignmentSuffix.value}`
+        return `${documentId.value}-${assignmentSuffix.value}`
     }
 
-    return props.document.document_no || documentId.value || '-'
-})
-
-const assignmentBadgeLabel = computed(() => {
-    if (!isMultipleAssignment.value) {
-        return ''
-    }
-
-    return assignmentCount.value > 1
-        ? `Assignment ${assignmentSuffix.value} of ${assignmentCount.value}`
-        : `Assignment ${assignmentSuffix.value}`
-})
-
-/*
- * Multiple-assignment assignee display:
- * - Role 3 needs the assignee name beside the DTS number so each A/B/C entry
- *   can be identified quickly.
- * - Role 2 is already viewing the assignment through their own account, so
- *   showing their own name beside the DTS number is redundant.
- */
-const showAssigneeNameInDtsNumber = computed(() => {
-    return isRoleThree.value
-        && isMultipleAssignment.value
-        && hasFilledValue(staffConcernDisplay.value)
-})
-
-const staffConcernForViewer = computed(() => {
-    if (isRoleTwo.value) {
-        return 'Assigned to You'
-    }
-
-    return staffConcernDisplay.value
+    return documentId.value || '-'
 })
 
 const relatedDocuments = computed(() => {
@@ -2017,7 +1972,6 @@ const formatFileSize = (bytes) => {
                                 {{ currentWorkflowStatus || 'No status' }}
                             </span>
 
-                         
                             <span
                                 v-if="isSuperAdminViewOnly"
                                 class="rounded-full bg-amber-100 px-4 py-1.5 text-xs font-black uppercase tracking-wide text-amber-800"
@@ -2071,24 +2025,12 @@ const formatFileSize = (bytes) => {
                                     </svg>
                                 </div>
 
-                                <div class="min-w-0">
-                                    <p
-                                        class="flex flex-wrap items-baseline gap-x-1 whitespace-nowrap text-xl font-black tracking-[-0.02em] text-blue-950"
-                                    >
-                                        <span>
-                                            DTS - #<span class="text-blue-700">{{ documentNumber }}</span>
-                                        </span>
-
-                                        <span
-                                            v-if="showAssigneeNameInDtsNumber"
-                                            class="text-sm font-black text-slate-600"
-                                        >
-                                            {{ staffConcernDisplay }}
-                                        </span>
-                                    </p>
-
-                                   
-                                </div>
+                                <p
+                                    class="whitespace-nowrap text-xl font-black tracking-[-0.02em] text-blue-950"
+                                >
+                                    DTS - #<span class="text-blue-700">{{ documentNumber }}</span>
+                                    
+                                </p>
                             </div>
                         </div>
 
@@ -2236,23 +2178,17 @@ const formatFileSize = (bytes) => {
                             <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                                 <div class="flex items-center justify-between gap-3">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
-                                        {{ isRoleTwo ? 'Assignment' : 'Staff Concern' }}
+                                        Staff Concern
                                     </p>
 
                                     <span class="rounded-full bg-white px-3 py-1 text-[11px] font-black text-blue-700">
-                                        {{
-                                            isRoleTwo
-                                                ? 'Current User'
-                                                : (isMultipleAssignment ? `Assignment ${assignmentSuffix}` : 'Assigned')
-                                        }}
+                                        Assigned
                                     </span>
                                 </div>
 
                                 <p class="mt-2 break-words text-sm font-black leading-6 text-slate-950">
-                                    {{ staffConcernForViewer }}
+                                    {{ staffConcernDisplay }}
                                 </p>
-
-                                
                             </div>
 
                             <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
