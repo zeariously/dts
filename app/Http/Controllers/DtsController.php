@@ -880,6 +880,11 @@ public function index(Request $request)
             : [],
         'staffConcerns' => $staffConcernsForDropdown,
         ...$this->dtsNotificationProps(),
+        'reminderSessionToken' => hash_hmac(
+    'sha256',
+    $request->session()->getId(),
+    (string) config('app.key')
+),
     ]);
 }
 

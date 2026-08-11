@@ -385,18 +385,36 @@ const documentId = computed(() => {
         ?? null
 })
 
+/*
+ * MULTIPLE TAGGING ROUTE RULE
+ *
+ * Actions use the existing Laravel document routes.
+ * assignment_id is always sent in the request body.
+ */
+const workflowActionUrl = (action) => {
+    if (!documentId.value) return ''
+
+    const normalizedAction = String(action || '').replace(/^\/+/, '')
+
+    return `/dts/${documentId.value}/${normalizedAction}`
+}
+
+const currentAssignmentIdForRequest = () => {
+    const value = Number(props.document?.assignment_id || 0)
+
+    return Number.isFinite(value) && value > 0 ? value : null
+}
+
 const receiveDocument = () => {
     if (!canReceiveDts.value || !documentId.value) return
 
-    receiveForm.post(`/dts/${documentId.value}/receive`, {
+    receiveForm.assignment_id = currentAssignmentIdForRequest()
+
+    receiveForm.post(workflowActionUrl('receive'), {
         preserveScroll: true,
         onSuccess: () => {
             showReceiveModal.value = false
 
-            /*
-             * Reload the page after receiving so the workflow status updates.
-             * Once the document is received, the Select Action button will appear.
-             */
             router.reload({
                 preserveScroll: true,
             })
@@ -407,7 +425,9 @@ const receiveDocument = () => {
 const forwardDocument = () => {
     if ((!canQuickTransferCurrentDocument.value && !canTransferCurrentDocument.value) || !documentId.value) return
 
-    forwardForm.post(`/dts/${documentId.value}/forward`, {
+    forwardForm.assignment_id = currentAssignmentIdForRequest()
+
+    forwardForm.post(workflowActionUrl('forward'), {
         preserveScroll: true,
         onSuccess: () => {
             showForwardModal.value = false
@@ -426,9 +446,10 @@ const postAddressAction = () => {
         return
     }
 
+    actionTakenForm.assignment_id = currentAssignmentIdForRequest()
     actionTakenForm.close_action = actionStage === FINAL_ADDRESS_ACTION
 
-    actionTakenForm.post(`/dts/${documentId.value}/action-taken`, {
+    actionTakenForm.post(workflowActionUrl('action-taken'), {
         preserveScroll: true,
         onSuccess: () => {
             showActionTakenModal.value = false
@@ -449,7 +470,9 @@ const submitSelectedAction = () => {
     if (isTransferDocumentActionSelected.value) {
         if (!canTransferCurrentDocument.value) return
 
-        forwardForm.post(`/dts/${documentId.value}/forward`, {
+        forwardForm.assignment_id = currentAssignmentIdForRequest()
+
+        forwardForm.post(workflowActionUrl('forward'), {
             preserveScroll: true,
             onSuccess: () => {
                 showActionTakenModal.value = false
@@ -464,7 +487,9 @@ const submitSelectedAction = () => {
     if (isReturnDocumentActionSelected.value) {
         if (!canReturnCurrentDocument.value) return
 
-        returnForm.post(`/dts/${documentId.value}/return`, {
+        returnForm.assignment_id = currentAssignmentIdForRequest()
+
+        returnForm.post(workflowActionUrl('return'), {
             preserveScroll: true,
             onSuccess: () => {
                 showActionTakenModal.value = false
@@ -478,7 +503,9 @@ const submitSelectedAction = () => {
 const returnDocument = () => {
     if (!canReceiveDts.value || !documentId.value) return
 
-    returnForm.post(`/dts/${documentId.value}/return`, {
+    returnForm.assignment_id = currentAssignmentIdForRequest()
+
+    returnForm.post(workflowActionUrl('return'), {
         preserveScroll: true,
         onSuccess: () => {
             showReturnModal.value = false
@@ -490,7 +517,9 @@ const returnDocument = () => {
 const addRemark = () => {
     if (!canRemarkDts.value || !documentId.value) return
 
-    remarkForm.post(`/dts/${documentId.value}/remarks`, {
+    remarkForm.assignment_id = currentAssignmentIdForRequest()
+
+    remarkForm.post(workflowActionUrl('remarks'), {
         preserveScroll: true,
         preserveState: true,
         onSuccess: () => {
@@ -589,6 +618,7 @@ const reattachFiles = () => {
         return
     }
 
+    reattachForm.assignment_id = currentAssignmentIdForRequest()
     reattachForm.attachments = selectedReattachFiles.value
 
     reattachForm.post(`/dts/${documentId.value}/attachments`, {

@@ -89,6 +89,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    reminderSessionToken: {
+        type: String,
+        default: '',
+    },
 })
 
 const page = usePage()
@@ -187,6 +191,152 @@ const firstErrorMessage = computed(() => {
  * This does not change or consume the notification bell items.
  */
 const showAutomaticReminderModal = ref(false)
+
+/*
+ * Automatic reminder behavior:
+ * - Prompts immediately on every fresh login.
+ * - "Remind Me in 15 Minutes" snoozes it only for the current login session.
+ * - After 15 minutes, it opens again when unresolved reminders still exist.
+ * - A new Laravel login session invalidates any previous snooze.
+ */
+const AUTOMATIC_REMINDER_SNOOZE_MINUTES = 15
+const automaticReminderSnoozedUntil = ref(0)
+let automaticReminderSnoozeTimer = null
+
+const currentReminderSessionToken = computed(() => {
+    return String(props.reminderSessionToken || '').trim()
+})
+
+const automaticReminderSnoozeStorageKey = computed(() => {
+    const userId = page.props.auth?.user?.ID || page.props.auth?.user?.id || 'guest'
+
+    return `dts_automatic_reminder_snooze_${userId}`
+})
+
+const isAutomaticReminderSnoozed = () => {
+    return Number(automaticReminderSnoozedUntil.value || 0) > Date.now()
+}
+
+const clearAutomaticReminderSnoozeTimer = () => {
+    if (
+        typeof window !== 'undefined'
+        && automaticReminderSnoozeTimer
+    ) {
+        window.clearTimeout(automaticReminderSnoozeTimer)
+        automaticReminderSnoozeTimer = null
+    }
+}
+
+const clearAutomaticReminderSnooze = () => {
+    automaticReminderSnoozedUntil.value = 0
+    clearAutomaticReminderSnoozeTimer()
+
+    if (typeof window === 'undefined') return
+
+    try {
+        window.localStorage.removeItem(automaticReminderSnoozeStorageKey.value)
+    } catch (error) {
+        // The in-memory snooze has already been cleared.
+    }
+}
+
+const scheduleAutomaticReminderAfterSnooze = () => {
+    if (typeof window === 'undefined') return
+
+    clearAutomaticReminderSnoozeTimer()
+
+    const remainingMilliseconds = Number(
+        automaticReminderSnoozedUntil.value || 0
+    ) - Date.now()
+
+    if (remainingMilliseconds <= 0) {
+        clearAutomaticReminderSnooze()
+
+        if (hasAutomaticStatusReminders.value) {
+            openAutomaticReminderModal()
+        }
+
+        return
+    }
+
+    automaticReminderSnoozeTimer = window.setTimeout(() => {
+        clearAutomaticReminderSnooze()
+
+        if (hasAutomaticStatusReminders.value) {
+            openAutomaticReminderModal()
+        }
+    }, remainingMilliseconds)
+}
+
+const loadAutomaticReminderSnooze = () => {
+    if (typeof window === 'undefined') return
+
+    const currentSessionToken = currentReminderSessionToken.value
+
+    /*
+     * Without a session token, do not reuse an old snooze.
+     * This guarantees that the reminder can still prompt on page load.
+     */
+    if (!currentSessionToken) {
+        clearAutomaticReminderSnooze()
+        return
+    }
+
+    try {
+        const rawValue = window.localStorage.getItem(
+            automaticReminderSnoozeStorageKey.value
+        )
+
+        const savedSnooze = rawValue ? JSON.parse(rawValue) : null
+        const savedSessionToken = String(savedSnooze?.sessionToken || '')
+        const savedUntil = Number(savedSnooze?.snoozedUntil || 0)
+
+        /*
+         * A fresh login has a different hashed Laravel session token.
+         * Discard the old snooze so the reminder opens immediately.
+         */
+        if (
+            savedSessionToken !== currentSessionToken
+            || !Number.isFinite(savedUntil)
+            || savedUntil <= Date.now()
+        ) {
+            clearAutomaticReminderSnooze()
+            return
+        }
+
+        automaticReminderSnoozedUntil.value = savedUntil
+        scheduleAutomaticReminderAfterSnooze()
+    } catch (error) {
+        clearAutomaticReminderSnooze()
+    }
+}
+
+const remindAutomaticReminderIn15Minutes = () => {
+    if (typeof window === 'undefined') {
+        closeAutomaticReminderModal()
+        return
+    }
+
+    const snoozedUntil = Date.now()
+        + (AUTOMATIC_REMINDER_SNOOZE_MINUTES * 60 * 1000)
+
+    automaticReminderSnoozedUntil.value = snoozedUntil
+
+    try {
+        window.localStorage.setItem(
+            automaticReminderSnoozeStorageKey.value,
+            JSON.stringify({
+                sessionToken: currentReminderSessionToken.value,
+                snoozedUntil,
+            })
+        )
+    } catch (error) {
+        // The in-memory snooze still works while the component remains loaded.
+    }
+
+    closeAutomaticReminderModal()
+    scheduleAutomaticReminderAfterSnooze()
+}
 
 /*
  * Reminder sound:
@@ -316,7 +466,12 @@ const automaticReminderBadgeClass = (status) => {
 }
 
 const openAutomaticReminderModal = () => {
-    if (!hasAutomaticStatusReminders.value) return
+    if (
+        !hasAutomaticStatusReminders.value
+        || isAutomaticReminderSnoozed()
+    ) {
+        return
+    }
 
     const wasClosed = !showAutomaticReminderModal.value
 
@@ -331,9 +486,8 @@ const openAutomaticReminderModal = () => {
 
 const closeAutomaticReminderModal = () => {
     /*
-     * Disregard only closes the current modal.
-     * Nothing is saved in localStorage, so unresolved reminders will prompt
-     * again on refresh, navigation, or the next dashboard visit.
+     * Close only hides the current modal.
+     * "Remind Me in 15 Minutes" applies the timed snooze.
      */
     showAutomaticReminderModal.value = false
     automaticReminderSoundPending = false
@@ -387,6 +541,7 @@ const markNotificationSeen = (item) => {
 
 onMounted(() => {
     loadSeenNotificationKeys()
+    loadAutomaticReminderSnooze()
 
     if (typeof window !== 'undefined') {
         window.addEventListener('pointerdown', unlockAutomaticReminderSound)
@@ -394,16 +549,20 @@ onMounted(() => {
     }
 
     /*
-     * Always prompt whenever the dashboard loads and an unresolved 3-day
-     * reminder exists. Disregarding it does not mark it as seen.
+     * Prompt immediately after a fresh login when unresolved reminders exist.
+     * During the same login, respect an active 15-minute snooze.
      */
-    if (hasAutomaticStatusReminders.value) {
+    if (
+        hasAutomaticStatusReminders.value
+        && !isAutomaticReminderSnoozed()
+    ) {
         openAutomaticReminderModal()
     }
 })
 
 onBeforeUnmount(() => {
     clearTimeout(automaticReportLoadTimer)
+    clearAutomaticReminderSnoozeTimer()
 
     if (typeof window !== 'undefined') {
         window.removeEventListener('pointerdown', unlockAutomaticReminderSound)
@@ -419,12 +578,23 @@ onBeforeUnmount(() => {
 watch(
     automaticReminderItems,
     () => {
-        /* Re-open after an Inertia refresh when reminders still exist. */
-        if (hasAutomaticStatusReminders.value) {
-            openAutomaticReminderModal()
-        } else {
+        if (!hasAutomaticStatusReminders.value) {
             showAutomaticReminderModal.value = false
+            clearAutomaticReminderSnooze()
+            return
         }
+
+        /*
+         * Receive, Transfer, Return, filters, and other Inertia actions must
+         * not reopen the reminder while its 15-minute snooze is active.
+         */
+        if (isAutomaticReminderSnoozed()) {
+            showAutomaticReminderModal.value = false
+            scheduleAutomaticReminderAfterSnooze()
+            return
+        }
+
+        openAutomaticReminderModal()
     },
     { deep: true }
 )
@@ -2014,6 +2184,17 @@ const submitEntryDateUpdate = () => {
                             </article>
                         </div>
 
+                        <div class="mt-5 flex flex-col gap-3 border-t border-red-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
+                            
+
+                            <button
+                                type="button"
+                                class="w-full rounded-xl border border-red-300 bg-white px-5 py-3 text-sm font-black text-red-700 hover:bg-red-50 sm:w-auto"
+                                @click="remindAutomaticReminderIn15Minutes"
+                            >
+                                Remind me later
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
