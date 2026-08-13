@@ -2253,7 +2253,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                Doc ID: {{ documentNumberDisplay(doc) }}
+                                                DTS - #{{ documentNumberDisplay(doc) }}
                                             </span>
 
                                             <span
@@ -2927,7 +2927,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-4 font-bold text-blue-700">
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </td>
 
                                     <td class="border border-black px-3 py-4 font-semibold text-black">
@@ -3003,7 +3003,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-2 py-3 font-bold text-black">
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </td>
 
                                     <td class="border border-black px-2 py-3 font-semibold text-black">
@@ -3319,7 +3319,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -3537,7 +3537,7 @@ const submitEntryDateUpdate = () => {
                                 :href="documentUrl(doc)"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                {{ documentNumberDisplay(doc) }}
+                                DTS - #{{ documentNumberDisplay(doc) }}
                             </Link>
                         </td>
 
@@ -3742,7 +3742,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    {{ documentNumberDisplay(doc) }}
+                                    DTS - #{{ documentNumberDisplay(doc) }}
                                 </Link>
                             </td>
 
@@ -3921,7 +3921,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -4225,7 +4225,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -4570,7 +4570,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -4922,7 +4922,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -5318,7 +5318,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="px-4 py-5 align-top">
                                     <span class="font-bold text-blue-700">
-                                        {{ documentNumberDisplay(doc) }}
+                                        DTS - #{{ documentNumberDisplay(doc) }}
                                     </span>
                                 </td>
 
