@@ -141,6 +141,13 @@ const displayDocument = computed(() => {
     return selectedDocument.value || selectedDocumentSummary.value || {}
 })
 
+const displayDocumentStatus = computed(() => {
+    return displayDocument.value?.status_summary?.current_status
+        || displayDocument.value?.workflow_status
+        || displayDocument.value?.status
+        || 'Document'
+})
+
 const actionHistory = computed(() => {
     return selectedDocument.value?.action_history || []
 })
@@ -1467,7 +1474,7 @@ const historyBadgeClass = (type) => {
                                 </span>
 
                                 <span class="rounded-full bg-indigo-500/30 px-3 py-1 text-xs font-black text-indigo-100">
-                                    {{ displayDocument.status || displayDocument.workflow_status || 'Document' }}
+                                    {{ displayDocumentStatus }}
                                 </span>
                             </div>
 

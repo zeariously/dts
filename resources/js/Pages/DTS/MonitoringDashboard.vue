@@ -937,6 +937,63 @@ const daysPendingClass = (days) => {
                     </button>
                 </section>
 
+                <!-- Pending Summary -->
+                <section class="overflow-hidden rounded-[2rem] bg-white shadow-sm ring-1 ring-blue-100">
+                    <div class="flex flex-col gap-4 border-b border-blue-100 bg-gradient-to-r from-blue-700 to-blue-600 px-5 py-5 text-white lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                                Pending Summary
+                            </p>
+
+                            <h2 class="mt-1 text-xl font-black">
+                                Documents Requiring Attention
+                            </h2>
+
+                            <p class="mt-1 text-sm font-semibold text-blue-100">
+                                Quick overview of personnel with documents that are still pending.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="w-fit rounded-2xl bg-white px-5 py-2.5 text-sm font-black text-blue-700 shadow-sm transition hover:bg-blue-50"
+                            @click="openPendingModal"
+                        >
+                            View Pending Details
+                        </button>
+                    </div>
+
+                    <div
+                        v-if="topPendingPeople.length"
+                        class="border-t border-blue-100 bg-blue-50/40 px-5 py-4"
+                    >
+                        <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+                            <p class="shrink-0 text-xs font-black uppercase tracking-[0.16em] text-blue-700">
+                                Highest Pending
+                            </p>
+
+                            <div class="flex flex-wrap gap-2">
+                                <span
+                                    v-for="person in topPendingPeople"
+                                    :key="`pending-summary-${person.personnel_id || person.personnel_name || 'unassigned'}`"
+                                    class="inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm ring-1 ring-blue-100"
+                                >
+                                    <span>
+                                        {{ person.personnel_name || 'Unassigned' }}
+                                    </span>
+
+                                    <span
+                                        class="rounded-full border px-2 py-0.5 text-[10px] font-black"
+                                        :class="daysPendingClass(person.max_days_pending)"
+                                    >
+                                        {{ person.max_days_pending ?? 0 }}d
+                                    </span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- Filters -->
                 <section class="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-blue-100">
                     <div class="mb-5 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -1150,24 +1207,24 @@ const daysPendingClass = (days) => {
                     <div class="overflow-x-auto">
                         <table class="min-w-full text-sm">
                             <thead>
-                                <tr class="border-b border-blue-50 bg-blue-50/70 text-left text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                                <tr class="border-b border-blue-700 bg-blue-700 text-left text-xs font-black uppercase tracking-[0.18em] text-white">
                                     <th class="whitespace-nowrap px-5 py-4">
                                         Document No.
-                                    </th>
-
-                                    <th class="min-w-[420px] px-5 py-4">
-                                        Subject
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4">
                                         Assigned Personnel
                                     </th>
 
-                                    <th class="whitespace-nowrap px-5 py-4 text-center">
-                                        {{ isAddressedView ? 'Final Action' : 'Days Pending' }}
+                                    <th class="min-w-[420px] px-5 py-4 text-center">
+                                        Subject
                                     </th>
 
-                                    <th class="whitespace-nowrap px-5 py-4 text-right">
+                                    <th class="whitespace-nowrap px-5 py-4 text-center">
+                                        Days Pending
+                                    </th>
+
+                                    <th class="whitespace-nowrap px-5 py-4 text-center">
                                         Action
                                     </th>
                                 </tr>
@@ -1177,7 +1234,7 @@ const daysPendingClass = (days) => {
                                 <tr
                                     v-for="document in displayedDocumentRows"
                                     :key="`document-${document.IDdoc || document.document_no || document.id}`"
-                                    class="border-b border-slate-100 transition hover:bg-blue-50/60"
+                                    class="border-b border-slate-100 bg-white transition hover:bg-blue-50"
                                 >
                                     <td class="whitespace-nowrap px-5 py-4 align-top">
                                         <p class="text-lg font-black text-blue-700">
@@ -1185,18 +1242,25 @@ const daysPendingClass = (days) => {
                                         </p>
                                     </td>
 
-                                    <td class="px-5 py-4 align-top">
+                                    <td class="whitespace-nowrap px-5 py-4 align-top">
+                                        <div class="inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-sm font-black text-slate-800 shadow-sm ring-1 ring-slate-200">
+                                            <span class="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
+                                            {{ document.assigned_personnel || 'Unassigned' }}
+                                        </div>
+                                    </td>
+
+                                    <td class="px-5 py-4 text-center align-top">
                                         <p class="text-sm font-black leading-snug text-slate-900">
                                             {{ document.subject || 'No subject' }}
                                         </p>
 
                                         <span
-                                            v-if="!isAddressedView"
                                             class="mt-2 inline-flex rounded-full border px-3 py-1 text-[11px] font-black"
                                             :class="{
                                                 'border-amber-200 bg-amber-50 text-amber-700': monitoringDocumentStatus(document) === 'for-receiving',
                                                 'border-emerald-200 bg-emerald-50 text-emerald-700': monitoringDocumentStatus(document) === 'received',
                                                 'border-rose-200 bg-rose-50 text-rose-700': monitoringDocumentStatus(document) === 'returned',
+                                                'border-indigo-200 bg-indigo-50 text-indigo-700': monitoringDocumentStatus(document) === 'addressed',
                                             }"
                                         >
                                             {{
@@ -1206,47 +1270,23 @@ const daysPendingClass = (days) => {
                                                         ? 'Received'
                                                         : monitoringDocumentStatus(document) === 'returned'
                                                             ? 'Returned'
-                                                            : 'Current Status'
+                                                            : monitoringDocumentStatus(document) === 'addressed'
+                                                                ? 'Addressed'
+                                                                : 'Current Status'
                                             }}
                                         </span>
                                     </td>
 
-                                    <td class="whitespace-nowrap px-5 py-4 align-top">
-                                        <div class="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-2 text-sm font-black text-slate-800 ring-1 ring-slate-200">
-                                            <span class="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
-                                            {{ document.assigned_personnel || 'Unassigned' }}
-                                        </div>
+                                    <td class="whitespace-nowrap px-5 py-4 text-center align-top">
+                                        <span
+                                            class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
+                                            :class="daysPendingClass(document.days_pending)"
+                                        >
+                                            {{ document.days_pending ?? 0 }} day(s)
+                                        </span>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
-                                        <template v-if="isAddressedView">
-                                            <span class="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700">
-                                                Final Action
-                                            </span>
-
-                                            <p class="mt-2 text-[11px] font-bold text-slate-600">
-                                                {{ document.latest_action_label || document.selected_action || 'Addressed' }}
-                                            </p>
-
-                                            <p
-                                                v-if="document.latest_action_at"
-                                                class="mt-2 text-[11px] font-bold text-slate-500"
-                                            >
-                                                {{ formatDate(document.latest_action_at) }}
-                                            </p>
-                                        </template>
-
-                                        <template v-else>
-                                            <span
-                                                class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
-                                                :class="daysPendingClass(document.days_pending)"
-                                            >
-                                                {{ document.days_pending ?? 0 }} day(s)
-                                            </span>
-                                        </template>
-                                    </td>
-
-                                    <td class="whitespace-nowrap px-5 py-4 text-right align-top">
                                         <button
                                             type="button"
                                             class="rounded-2xl bg-blue-600 px-5 py-2.5 text-xs font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700"

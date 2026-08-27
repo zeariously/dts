@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\AdminUserManagementController;
 use App\Http\Controllers\AnnouncementController;
 use App\Http\Controllers\DtsController;
+use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -129,6 +130,34 @@ Route::middleware(['auth', 'verified'])
 
         /*
         |--------------------------------------------------------------------------
+        | Inventory Routes
+        |--------------------------------------------------------------------------
+        | GET    /dts/inventory
+        | POST   /dts/inventory
+        | PUT    /dts/inventory/{inventoryItem}
+        | DELETE /dts/inventory/{inventoryItem}
+        |--------------------------------------------------------------------------
+        */
+
+        Route::get('/inventory', [InventoryController::class, 'index'])
+         ->name('inventory');
+
+        Route::post('/inventory', [InventoryController::class, 'store'])
+            ->name('inventory.store');
+
+        Route::get(
+            '/inventory/{inventoryItem}/history',
+            [InventoryController::class, 'history']
+        )->name('inventory.history');
+
+        Route::put('/inventory/{inventoryItem}', [InventoryController::class, 'update'])
+            ->name('inventory.update');
+
+        Route::delete('/inventory/{inventoryItem}', [InventoryController::class, 'destroy'])
+         ->name('inventory.destroy');
+
+        /*
+        |--------------------------------------------------------------------------
         | Library - Personnel
         |--------------------------------------------------------------------------
         */
@@ -142,12 +171,6 @@ Route::middleware(['auth', 'verified'])
         Route::post('/library/personnel/{id}/update', [DtsController::class, 'updatePersonnel'])
             ->name('library.personnel.update');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Library - Office
-        |--------------------------------------------------------------------------
-        */
-
         Route::post('/library/office/store', [DtsController::class, 'storeOffice'])
             ->name('library.office.store');
 
@@ -156,12 +179,6 @@ Route::middleware(['auth', 'verified'])
 
         Route::post('/library/office/{id}/update', [DtsController::class, 'updateOffice'])
             ->name('library.office.update');
-
-        /*
-        |--------------------------------------------------------------------------
-        | Library - Document Type
-        |--------------------------------------------------------------------------
-        */
 
         Route::post('/library/doctype/store', [DtsController::class, 'storeDocType'])
             ->name('library.doctype.store');
@@ -172,12 +189,6 @@ Route::middleware(['auth', 'verified'])
         Route::post('/library/doctype/{id}/update', [DtsController::class, 'updateDocType'])
             ->name('library.doctype.update');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Library - Attachment Type
-        |--------------------------------------------------------------------------
-        */
-
         Route::post('/library/attachment/store', [DtsController::class, 'storeLibraryAttachment'])
             ->name('library.attachment.store');
 
@@ -187,17 +198,6 @@ Route::middleware(['auth', 'verified'])
         Route::post('/library/attachment/{id}/update', [DtsController::class, 'updateLibraryAttachment'])
             ->name('library.attachment.update');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Library - Action Taken Types
-        |--------------------------------------------------------------------------
-        | Final URLs:
-        | POST   /dts/library/action-types
-        | PATCH  /dts/library/action-types/{id}
-        | DELETE /dts/library/action-types
-        |--------------------------------------------------------------------------
-        */
-
         Route::post('/library/action-types', [DtsController::class, 'storeActionType'])
             ->name('library.action-types.store');
 
@@ -206,12 +206,6 @@ Route::middleware(['auth', 'verified'])
 
         Route::delete('/library/action-types', [DtsController::class, 'deleteActionType'])
             ->name('library.action-types.delete');
-
-        /*
-        |--------------------------------------------------------------------------
-        | File / Attachment Routes
-        |--------------------------------------------------------------------------
-        */
 
         Route::get('/files/{file}/view', [DtsController::class, 'viewFile'])
             ->name('files.view');
@@ -225,13 +219,7 @@ Route::middleware(['auth', 'verified'])
             ->whereNumber('file')
             ->name('attachments.destroy');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Document Action Routes
-        |--------------------------------------------------------------------------
-        | Must be before Route::get('/{id}', ...)
-        |--------------------------------------------------------------------------
-        */
+        
 
         Route::post('/{id}/receive', [DtsController::class, 'receive'])
             ->name('receive');
@@ -257,23 +245,12 @@ Route::middleware(['auth', 'verified'])
         Route::patch('/{id}/entry-date', [DtsController::class, 'updateEntryDate'])
             ->name('entry-date.update');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Show Document
-        |--------------------------------------------------------------------------
-        | This must always be LAST among /dts routes because it catches /{id}.
-        |--------------------------------------------------------------------------
-        */
 
         Route::get('/{id}', [DtsController::class, 'show'])
             ->name('show');
     });
 
-/*
-|--------------------------------------------------------------------------
-| Profile Routes
-|--------------------------------------------------------------------------
-*/
+
 
 Route::middleware('auth')->group(function () {
     Route::get('/profile', [ProfileController::class, 'edit'])

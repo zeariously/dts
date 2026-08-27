@@ -341,8 +341,13 @@ const isLibraryActive = computed(() => {
     return page.url.startsWith('/dts/library')
 })
 
+
+
 const isReportsActive = computed(() => {
     return activeSection.value === 'reports'
+})
+const isInventoryActive = computed(() => {
+    return page.url.startsWith('/dts/inventory')
 })
 
 const isAboutActive = computed(() => {
@@ -374,6 +379,7 @@ const isCollaborationActive = computed(() => {
 const isDocumentsActive = computed(() => {
     return page.url.startsWith('/dts')
         && !isLibraryActive.value
+        && !isInventoryActive.value
         && !isReportsActive.value
         && !isAboutActive.value
         && !isAllDocumentsActive.value
@@ -508,6 +514,7 @@ const emit = defineEmits([
                             </span>
                         </Link> -->
 
+                        
                         <Link
                             href="/dts/library"
                             @click="closeMobileSidebar"
@@ -536,6 +543,18 @@ const emit = defineEmits([
                             >
                             </span>
                         </Link>
+
+                        <Link
+                            href="/dts/inventory"
+                            @click="closeMobileSidebar"
+                            class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
+                            :class="navLinkClass(isInventoryActive)"
+                        >
+                            <span class="flex items-center gap-3">
+                                <span>Inventory</span>
+                            </span>
+                        </Link>
+
 
                         <Link
                             href="/dts?section=about"

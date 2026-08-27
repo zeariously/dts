@@ -502,7 +502,8 @@ class AdminUserManagementController extends Controller
                     'staff_concern' => $personnelMap->get($assignedPersonnelId),
                     'transferred_to' => $personnelMap->get($assignedPersonnelId),
                     'workflow_status' => $this->workflowStatus(
-                        $latestDistribution
+                        $latestDistribution,
+                        $document->IDdoc
                     ),
                 ];
             })
@@ -600,13 +601,25 @@ class AdminUserManagementController extends Controller
             ->all();
     }
 
-    private function workflowStatus($distribution): string
+    private function workflowStatus($distribution, $documentId): string
     {
         if (! $distribution) {
             return 'Unassigned';
         }
 
         $trueValues = ['true', 'y', '1'];
+
+      
+        if (
+            Schema::hasColumn('distribution', 'YNpulled')
+            && in_array(
+                strtolower((string) ($distribution->YNpulled ?? '')),
+                $trueValues,
+                true
+            )
+        ) {
+            return 'Pulled Out';
+        }
 
         if (
             Schema::hasColumn('distribution', 'YNreturn')
@@ -619,22 +632,56 @@ class AdminUserManagementController extends Controller
             return 'Returned';
         }
 
-        if (
-            Schema::hasColumn('distribution', 'YNpulled')
-            && in_array(
-                strtolower((string) ($distribution->YNpulled ?? '')),
-                $trueValues,
-                true
-            )
-        ) {
-            return 'Pulled Out';
-        }
-
         if (! empty($distribution->confirmdate)) {
+            if ($this->hasCurrentFinalAction($documentId, $distribution)) {
+                return 'Addressed';
+            }
+
             return 'Received';
         }
 
         return 'For Receiving';
+    }
+
+    private function hasCurrentFinalAction($documentId, $distribution): bool
+    {
+        if (
+            ! Schema::hasTable('dts_document_remarks')
+            || ! Schema::hasColumn('dts_document_remarks', 'action_type')
+        ) {
+            return false;
+        }
+
+        $query = DB::table('dts_document_remarks')
+            ->where('IDdoc', $documentId)
+            ->where('action_type', 'action_taken');
+
+       
+        if (
+            ! empty($distribution->distdate)
+            && Schema::hasColumn('dts_document_remarks', 'created_at')
+        ) {
+            $query->where(
+                'created_at',
+                '>=',
+                $distribution->distdate
+            );
+        }
+
+        if (
+            Schema::hasColumn('distribution', 'assignment_id')
+            && Schema::hasColumn('dts_document_remarks', 'assignment_id')
+        ) {
+            $assignmentId = $distribution->assignment_id ?? null;
+
+            if ($assignmentId === null) {
+                $query->whereNull('assignment_id');
+            } else {
+                $query->where('assignment_id', $assignmentId);
+            }
+        }
+
+        return $query->exists();
     }
 
     private function classificationLabel($classification): string

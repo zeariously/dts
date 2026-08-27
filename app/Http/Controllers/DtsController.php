@@ -1787,19 +1787,7 @@ public function show(Request $request, $id)
         ),
     ];
 
-    /*
-     * SUPER STRICT ACTION HISTORY FIX:
-     *
-     * The modal must only show history that belongs to THIS document.
-     * This payload is built only from queries filtered by:
-     * - distribution.IDdoc = $document->IDdoc
-     * - dts_document_remarks.IDdoc = $document->IDdoc
-     * - dts_document_files.IDdoc = $document->IDdoc
-     *
-     * It does NOT use general activity_logs.
-     * It also skips the first distribution as "Transferred Document" because that
-     * first distribution is created together with a new document.
-     */
+  
     $actionHistory = collect();
 
     $addHistory = function (
@@ -1816,11 +1804,7 @@ public function show(Request $request, $id)
             return;
         }
 
-        /*
-         * Receive has no remarks textbox.
-         * Even if a caller accidentally passes distribution.remarks,
-         * the Received Document row must not display any remarks.
-         */
+       
         if (strtolower(trim($type)) === 'received') {
             $remarks = null;
         }
@@ -1876,11 +1860,6 @@ public function show(Request $request, $id)
                 ?? ($distRow->returned_by ? 'Account #' . $distRow->returned_by : null)
                 ?? $transferredBy;
 
-            /*
-             * Do not label the automatic child distribution created by
-             * Return to Admin as a Transfer. Its parent is the row marked
-             * returned. A genuine Transfer still has a normal parent row.
-             */
             $isReturnChild = ! empty($distRow->IDparentdist)
                 && (
                     in_array(
@@ -1986,11 +1965,7 @@ public function show(Request $request, $id)
     foreach ($uploadedAttachments as $fileItem) {
         $isReattached = ($fileItem['type_name'] ?? null) === 'Re-attached File';
 
-        /*
-         * Do not show initial uploaded files in Action History.
-         * For a newly created document, attachments are part of Document Created.
-         * Only show files that were re-attached later.
-         */
+        
         if (! $isReattached) {
             continue;
         }
@@ -2025,10 +2000,7 @@ public function show(Request $request, $id)
             return (int) ($item['IDdoc'] ?? 0) === (int) $document->IDdoc;
         })
         ->map(function ($item) {
-            /*
-             * Final safety check:
-             * Received Document rows must never carry remarks.
-             */
+            
             if (strtolower(trim((string) ($item['type'] ?? ''))) === 'received') {
                 $item['remarks'] = null;
             }
@@ -2054,12 +2026,7 @@ public function show(Request $request, $id)
             ->get()
         : collect();
 
-    /*
-     * To/From typed names:
-     * These are separate from the office names. The old system displayed
-     * personnel names for To/From, while the new DTS stores office IDs in
-     * IDfor/IDfrom and stores the displayed names in to_name/from_name.
-     */
+   
     $documentToName = null;
     $documentFromName = null;
 
@@ -2086,13 +2053,7 @@ public function show(Request $request, $id)
         $documentFromName = $fromNameValue !== '' ? $fromNameValue : null;
     }
 
-    /*
-     * Role 2 completion workflow:
-     * - the document is currently tagged to the logged-in personnel;
-     * - the latest distribution is already received;
-     * - at least one Select Action/action_taken exists;
-     * - the document is not yet completed.
-     */
+   
     $canCompleteCurrentDocumentForViewer = $assignmentId === null
         && $this->currentUserRights() === '2'
         && ! $isDocumentCompletedForSummary
@@ -2103,11 +2064,7 @@ public function show(Request $request, $id)
         && ! empty($latestDistributionForSummary?->confirmdate)
         && $hasSelectedActionForSummary;
 
-    /*
-     * Receive belongs to the latest distribution and must remain available for
-     * a newly returned/transferred document even when the document has an old
-     * action_taken record from a previous workflow cycle.
-     */
+    
     $latestDistributionAwaitingReceive = $latestDistributionForSummary
         && empty($latestDistributionForSummary->confirmdate)
         && ! $isLatestPulled;
@@ -2115,7 +2072,7 @@ public function show(Request $request, $id)
     $canUseReceiveAction = ! $isDocumentCompletedForSummary
         && $latestDistributionAwaitingReceive;
 
-    /* Other actions are blocked only by a Final Action in the CURRENT cycle. */
+   
     $canUseDocumentActions = ! $isDocumentCompletedForSummary
         && ! $hasSelectedActionForSummary;
 
@@ -2175,7 +2132,7 @@ public function show(Request $request, $id)
             && $this->viewerCanActOnDocument(
                 (int) $document->IDdoc,
                 $assignmentId
-            ),
+            ),  
         'canCompleteDts' => $canCompleteCurrentDocumentForViewer,
                 'document' => [
                 'IDdoc' => $document->IDdoc,
