@@ -546,7 +546,7 @@ const emit = defineEmits([
 
                         <Link
                             href="/dts/inventory"
-                            @click="closeMobileSidebar"
+                            @click="closeMobileSidebar" 
                             class="flex items-center justify-between rounded-xl px-4 py-3 text-sm font-bold transition"
                             :class="navLinkClass(isInventoryActive)"
                         >

@@ -11,14 +11,15 @@ class InventoryItem extends Model
         'category',
         'item',
         'unit',
+        'inventory_year',
         'fixed_value',
         'currently_available',
         'quarters',
-        'ppmp',
         'remarks',
     ];
 
     protected $casts = [
+        'inventory_year' => 'integer',
         'fixed_value' => 'integer',
         'currently_available' => 'integer',
 

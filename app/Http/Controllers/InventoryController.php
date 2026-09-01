@@ -14,7 +14,7 @@ use Inertia\Inertia;
 class InventoryController extends Controller
 {
     /**
-     * Inventory / PPMP page.
+     * Inventory page.
      */
     public function index()
     {
@@ -44,7 +44,7 @@ class InventoryController extends Controller
      *      tracked_released starts at 0 and future releases accumulate there.
      *
      * ICT & OTHER ITEMS
-     * - PPMP reference only: Item, Unit, PPMP, Remarks.
+     * - Item, Unit, Inventory Year, Quarter(s), Remarks.
      */
     public function store(Request $request)
     {
@@ -52,13 +52,13 @@ class InventoryController extends Controller
             'category' => 'required|in:supplies,ict',
             'item' => 'required|string|max:255',
             'unit' => 'required|string|max:50',
+            'inventory_year' => 'required|integer|min:2026|max:2100',
             'fixed_value' => 'nullable|integer|min:0',
             'currently_available' =>
                 'required_if:category,supplies|nullable|integer|min:0',
             'quarters' =>
-                'required_if:category,supplies|nullable|array',
+                'required|array|min:1',
             'quarters.*' => 'in:q1,q2,q3,q4',
-            'ppmp' => 'nullable|string',
             'remarks' => 'nullable|string',
         ]);
 
@@ -69,12 +69,12 @@ class InventoryController extends Controller
             strtoupper(trim($validated['unit']));
 
         /*
-         * ICT & Other Items do not use the stock/release workflow.
+         * ICT & Other Items do not use the stock/release workflow,
+         * but they still belong to an Inventory Year + Quarter(s).
          */
         if ($validated['category'] === 'ict') {
             $validated['fixed_value'] = null;
             $validated['currently_available'] = null;
-            $validated['quarters'] = null;
         }
 
         /*
@@ -110,6 +110,9 @@ class InventoryController extends Controller
             'unit' =>
                 'sometimes|required|string|max:50',
 
+            'inventory_year' =>
+                'sometimes|required|integer|min:2026|max:2100',
+
             'fixed_value' =>
                 'sometimes|nullable|integer|min:0',
 
@@ -117,13 +120,10 @@ class InventoryController extends Controller
                 'sometimes|nullable|integer|min:0',
 
             'quarters' =>
-                'sometimes|nullable|array',
+                'sometimes|required|array|min:1',
 
             'quarters.*' =>
                 'in:q1,q2,q3,q4',
-
-            'ppmp' =>
-                'sometimes|nullable|string',
 
             'remarks' =>
                 'sometimes|nullable|string',
@@ -165,6 +165,20 @@ class InventoryController extends Controller
             $oldTrackedReleased =
                 (int) ($item->tracked_released ?? 0);
 
+            $oldHasFixedBaseline =
+                $item->fixed_value !== null
+                && (int) $item->fixed_value > 0;
+
+            $oldDisplayedReleased =
+                $oldHasFixedBaseline
+                    && $oldCurrent !== null
+                        ? max(
+                            0,
+                            (int) $item->fixed_value
+                            - $oldCurrent
+                        )
+                        : $oldTrackedReleased;
+
             $oldRemarks =
                 $item->remarks;
 
@@ -188,6 +202,63 @@ class InventoryController extends Controller
                         )
                     )
                     : '';
+
+            if (!$isRelease) {
+                $targetCategory = strtolower(
+                    trim((string) ($validated['category'] ?? $item->category))
+                );
+
+                $targetItemName = trim(
+                    (string) ($validated['item'] ?? $item->item)
+                );
+
+                $targetUnit = strtoupper(
+                    trim((string) ($validated['unit'] ?? $item->unit))
+                );
+
+                $targetYear = (int) (
+                    $validated['inventory_year']
+                    ?? $item->inventory_year
+                    ?? 2026
+                );
+
+                if (
+                    $targetCategory === 'supplies'
+                    && (
+                        !array_key_exists('currently_available', $validated)
+                        || $validated['currently_available'] === null
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'currently_available' =>
+                            'Currently Available is required for Supplies.',
+                    ]);
+                }
+
+                $duplicateExists = InventoryItem::query()
+                    ->where('id', '!=', $item->id)
+                    ->whereRaw(
+                        'LOWER(TRIM(category)) = ?',
+                        [$targetCategory]
+                    )
+                    ->whereRaw(
+                        'LOWER(TRIM(item)) = ?',
+                        [strtolower($targetItemName)]
+                    )
+                    ->whereRaw(
+                        'UPPER(TRIM(unit)) = ?',
+                        [$targetUnit]
+                    )
+                    ->where('inventory_year', $targetYear)
+                    ->exists();
+
+                if ($duplicateExists) {
+                    throw ValidationException::withMessages([
+                        'item' =>
+                            "This item and unit already exist for {$targetYear}.",
+                    ]);
+                }
+            }
 
             /**
              * ========================================================
@@ -274,6 +345,11 @@ class InventoryController extends Controller
                     strtoupper(trim($validated['unit']));
             }
 
+            if (array_key_exists('inventory_year', $validated)) {
+                $item->inventory_year =
+                    (int) $validated['inventory_year'];
+            }
+
             if (array_key_exists('fixed_value', $validated)) {
                 $item->fixed_value =
                     $validated['fixed_value'];
@@ -303,9 +379,21 @@ class InventoryController extends Controller
                     $validated['quarters'];
             }
 
-            if (array_key_exists('ppmp', $validated)) {
-                $item->ppmp =
-                    $validated['ppmp'];
+            if (!$isRelease) {
+                $newHasFixedBaseline =
+                    $item->fixed_value !== null
+                    && (int) $item->fixed_value > 0;
+
+                if (
+                    $oldHasFixedBaseline
+                    && !$newHasFixedBaseline
+                    && strtolower(trim((string) $item->category)) === 'supplies'
+                ) {
+                    $item->tracked_released = max(
+                        (int) ($item->tracked_released ?? 0),
+                        (int) $oldDisplayedReleased
+                    );
+                }
             }
 
             /*
@@ -326,7 +414,7 @@ class InventoryController extends Controller
             }
 
             /*
-             * ICT stays PPMP-only.
+             * ICT does not use stock/release fields.
              */
             if (
                 strtolower(trim((string) $item->category))
@@ -334,7 +422,6 @@ class InventoryController extends Controller
             ) {
                 $item->fixed_value = null;
                 $item->currently_available = null;
-                $item->quarters = null;
                 $item->tracked_released = 0;
             }
 

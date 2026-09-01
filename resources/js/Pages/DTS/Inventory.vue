@@ -16,6 +16,7 @@ const props = defineProps({
 
 const activeTab = ref('supplies')
 const search = ref('')
+const yearFilter = ref(2026)
 const unitFilter = ref('all')
 const quarterFilter = ref('all')
 const currentPage = ref(1)
@@ -28,12 +29,26 @@ const inventoryHistories = ref([])
 const historyLoading = ref(false)
 const historyError = ref('')
 
-const showEditItemModal = ref(false)
-const editingItem = ref(null)
-const editItemErrors = ref({})
+const showReleaseItemModal = ref(false)
+const releasingItem = ref(null)
+const releaseItemErrors = ref({})
 
-const editItemForm = ref({
+const releaseItemForm = ref({
     releaseQuantity: '',
+    remarks: '',
+})
+
+const showFullEditModal = ref(false)
+const fullEditingItem = ref(null)
+const fullEditErrors = ref({})
+const fullEditForm = ref({
+    category: 'supplies',
+    item: '',
+    unit: '',
+    inventory_year: 2026,
+    fixed_value: '',
+    currently_available: '',
+    quarters: [],
     remarks: '',
 })
 
@@ -43,10 +58,10 @@ const addItemErrors = ref({})
 const newItemForm = ref({
     item: '',
     unit: '',
+    inventory_year: 2026,
     fixed: '',
     currently_available: '',
     quarters: [],
-    ppmp: '',
     remarks: '',
 })
 
@@ -64,6 +79,40 @@ const quarterValues = [
     'q3',
     'q4',
 ]
+
+
+const yearOptions = computed(() => {
+    const currentYear =
+        new Date().getFullYear()
+
+    const dataYears =
+        inventoryItemsState.value
+            .map((item) =>
+                Number(item.inventory_year)
+            )
+            .filter((year) =>
+                Number.isInteger(year)
+                && year >= 2026
+            )
+
+    const maxYear =
+        Math.max(
+            currentYear + 5,
+            2030,
+            ...(dataYears.length
+                ? dataYears
+                : [2026])
+        )
+
+    return Array.from(
+        {
+            length:
+                maxYear - 2026 + 1,
+        },
+        (_, index) =>
+            2026 + index
+    )
+})
 
 /*
 |--------------------------------------------------------------------------
@@ -160,10 +209,14 @@ const normalizeInventoryItem = (item) => {
             Number.isFinite(trackedReleased)
                 ? Math.max(0, trackedReleased)
                 : 0,
+        inventory_year:
+            Number.isInteger(
+                Number(item.inventory_year)
+            )
+                ? Number(item.inventory_year)
+                : 2026,
         quarters:
             normalizeQuarters(item.quarters),
-        ppmp:
-            item.ppmp ?? '',
         remarks:
             item.remarks ?? '',
     }
@@ -250,7 +303,7 @@ const currentItems = computed(() => {
 
 const currentTitle = computed(() => {
     return activeTab.value === 'supplies'
-        ? 'Supplies PPMP'
+        ? 'Supplies Inventory'
         : 'ICT & Other Items'
 })
 
@@ -338,11 +391,8 @@ const newItemQuantityReleased = computed(() => {
 })
 
 const inferredItemQuarters = (item) => {
-    if (
-        Array.isArray(item?.quarters)
-        && item.quarters.length
-    ) {
-        return [
+    return Array.isArray(item?.quarters)
+        ? [
             ...new Set(
                 item.quarters.filter(
                     (quarter) =>
@@ -350,83 +400,7 @@ const inferredItemQuarters = (item) => {
                 )
             ),
         ]
-    }
-
-    const ppmpText =
-        String(item?.ppmp || '')
-            .trim()
-            .toLowerCase()
-
-    const remarksText =
-        String(item?.remarks || '')
-            .trim()
-            .toLowerCase()
-
-    const text =
-        `${ppmpText} ${remarksText}`.trim()
-
-    if (
-        !ppmpText
-        || ppmpText === '0'
-        || ppmpText === 'no ppmp entry'
-    ) {
-        return []
-    }
-
-    if (
-        text.includes('/quarter')
-        || text.includes('per quarter')
-    ) {
-        return [...quarterValues]
-    }
-
-    if (activeTab.value === 'ict') {
-        if (
-            text.includes('per month')
-            || text.includes('1 year contract')
-            || text.includes('per year')
-        ) {
-            return [...quarterValues]
-        }
-    }
-
-    const rangeMatch =
-        text.match(
-            /q([1-4])\s*(?:to|-)\s*q?([1-4])/i
-        )
-
-    if (rangeMatch) {
-        const start = Number(rangeMatch[1])
-        const end = Number(rangeMatch[2])
-
-        const from = Math.min(start, end)
-        const to = Math.max(start, end)
-
-        return quarterValues.filter((quarter) => {
-            const value =
-                Number(
-                    quarter.replace('q', '')
-                )
-
-            return (
-                value >= from
-                && value <= to
-            )
-        })
-    }
-
-    return [
-        ...new Set(
-            [
-                ...text.matchAll(
-                    /q([1-4])/gi
-                ),
-            ].map(
-                (match) =>
-                    `q${match[1]}`
-            )
-        ),
-    ]
+        : []
 }
 
 const quarterBadges = (item) => {
@@ -472,10 +446,14 @@ const resetNewItemForm = () => {
     newItemForm.value = {
         item: '',
         unit: '',
+        inventory_year:
+            Number(yearFilter.value) || 2026,
         fixed: '',
         currently_available: '',
-        quarters: [],
-        ppmp: '',
+        quarters:
+            quarterFilter.value === 'all'
+                ? []
+                : [quarterFilter.value],
         remarks: '',
     }
 
@@ -512,9 +490,10 @@ const addNewItem = () => {
         .trim()
         .toUpperCase()
 
-    const ppmp = String(
-        newItemForm.value.ppmp ?? ''
-    ).trim()
+    const inventoryYear =
+        Number(
+            newItemForm.value.inventory_year
+        )
 
     const remarks = String(
         newItemForm.value.remarks ?? ''
@@ -539,15 +518,16 @@ const addNewItem = () => {
         )
         : null
 
-    const quarters = isSupplies
-        ? [
-            ...new Set(
-                newItemForm.value.quarters
-            ),
-        ].filter((quarter) =>
-            quarterValues.includes(quarter)
-        )
-        : []
+    /*
+     * Quarter assignment now applies to BOTH tabs.
+     */
+    const quarters = [
+        ...new Set(
+            newItemForm.value.quarters
+        ),
+    ].filter((quarter) =>
+        quarterValues.includes(quarter)
+    )
 
     if (!itemName) {
         addItemErrors.value.item =
@@ -559,18 +539,20 @@ const addNewItem = () => {
             'Unit of measure is required.'
     }
 
-    /*
-     * Supplies use the full stock workflow.
-     * ICT & Other Items are PPMP reference rows only:
-     * Item + Unit + PPMP 2027 + Remarks.
-     */
+    if (
+        !Number.isInteger(inventoryYear)
+        || inventoryYear < 2026
+    ) {
+        addItemErrors.value.inventory_year =
+            'Select a valid year from 2026 onwards.'
+    }
+
+    if (!quarters.length) {
+        addItemErrors.value.quarters =
+            'Select at least one applicable quarter.'
+    }
+
     if (isSupplies) {
-        /*
-         * Fixed Value is OPTIONAL.
-         * If there is no usable Fixed Value, Quantity Released starts
-         * at 0 and accumulates releases performed through the system.
-         * If Fixed Value exists, Quantity Released uses Fixed - Current.
-         */
         if (
             hasFixedValue
             && (
@@ -596,31 +578,31 @@ const addNewItem = () => {
             addItemErrors.value.currently_available =
                 'Enter a valid currently available quantity.'
         }
-
-        if (!quarters.length) {
-            addItemErrors.value.quarters =
-                'Select at least one applicable quarter.'
-        }
     }
 
+    /*
+     * Same item/unit can exist again in another year,
+     * but not twice inside the same year.
+     */
     const duplicateExists =
         currentItems.value.some((item) =>
+            Number(item.inventory_year)
+                === inventoryYear
+            &&
             String(item.item || '')
                 .trim()
                 .toLowerCase()
-            ===
-            itemName.toLowerCase()
+                === itemName.toLowerCase()
             &&
             String(item.unit || '')
                 .trim()
                 .toUpperCase()
-            ===
-            unit
+                === unit
         )
 
     if (duplicateExists) {
         addItemErrors.value.item =
-            'This item and unit already exist in the current list.'
+            `This item and unit already exist for ${inventoryYear}.`
     }
 
     if (
@@ -637,8 +619,9 @@ const addNewItem = () => {
             category: activeTab.value,
             item: itemName,
             unit,
+            inventory_year:
+                inventoryYear,
 
-            // Supplies only.
             fixed_value:
                 isSupplies
                     ? fixedValue
@@ -649,18 +632,16 @@ const addNewItem = () => {
                     ? currentlyAvailable
                     : null,
 
-            quarters:
-                isSupplies
-                    ? quarters
-                    : [],
-
-            ppmp,
+            quarters,
             remarks,
         },
         {
             preserveScroll: true,
 
             onSuccess: () => {
+                yearFilter.value =
+                    inventoryYear
+
                 search.value = ''
                 unitFilter.value = 'all'
                 quarterFilter.value = 'all'
@@ -677,6 +658,7 @@ const addNewItem = () => {
     )
 }
 
+
 /*
 |--------------------------------------------------------------------------
 | FILTERING
@@ -690,6 +672,10 @@ const filteredItems = computed(() => {
             .toLowerCase()
 
     return currentItems.value.filter((item) => {
+        const matchesYear =
+            Number(item.inventory_year)
+            === Number(yearFilter.value)
+
         const matchesSearch =
             !term
             ||
@@ -698,10 +684,6 @@ const filteredItems = computed(() => {
                 .includes(term)
             ||
             String(item.unit || '')
-                .toLowerCase()
-                .includes(term)
-            ||
-            String(item.ppmp || '')
                 .toLowerCase()
                 .includes(term)
             ||
@@ -715,8 +697,6 @@ const filteredItems = computed(() => {
             item.unit === unitFilter.value
 
         const matchesQuarter =
-            activeTab.value !== 'supplies'
-            ||
             quarterFilter.value === 'all'
             ||
             inferredItemQuarters(item)
@@ -725,7 +705,8 @@ const filteredItems = computed(() => {
                 )
 
         return (
-            matchesSearch
+            matchesYear
+            && matchesSearch
             && matchesUnit
             && matchesQuarter
         )
@@ -744,6 +725,9 @@ const unitStockSummary = computed(() => {
 
     suppliesItems.value
         .filter((item) =>
+            Number(item.inventory_year)
+                === Number(yearFilter.value)
+            &&
             itemMatchesQuarter(
                 item,
                 quarterFilter.value
@@ -980,24 +964,6 @@ const showingTo = computed(() => {
 |--------------------------------------------------------------------------
 */
 
-const ppmpCount = computed(() => {
-    return currentItems.value.filter((item) => {
-        const value =
-            String(
-                item.ppmp || ''
-            ).trim()
-
-        return (
-            value !== ''
-            && value !== '0'
-            && itemMatchesQuarter(
-                item,
-                quarterFilter.value
-            )
-        )
-    }).length
-})
-
 const withRemarksCount = computed(() => {
     return currentItems.value.filter(
         (item) =>
@@ -1015,6 +981,13 @@ const lowStockCount = computed(() => {
     }
 
     return suppliesItems.value.filter((item) => {
+        if (
+            Number(item.inventory_year)
+                !== Number(yearFilter.value)
+        ) {
+            return false
+        }
+
         if (
             !itemMatchesQuarter(
                 item,
@@ -1051,6 +1024,7 @@ const switchTab = (tab) => {
 watch(
     [
         search,
+        yearFilter,
         unitFilter,
         quarterFilter,
     ],
@@ -1389,16 +1363,232 @@ const differenceClass = (item) => {
 |--------------------------------------------------------------------------
 */
 
-const editTotalReleased = computed(() => {
+const allFullEditQuartersSelected = computed(() => {
+    return quarterValues.every((quarter) =>
+        fullEditForm.value.quarters.includes(quarter)
+    )
+})
+
+const toggleFullEditQuarter = (quarter) => {
+    const current = [...fullEditForm.value.quarters]
+
+    fullEditForm.value.quarters =
+        current.includes(quarter)
+            ? current.filter((value) => value !== quarter)
+            : [...current, quarter]
+}
+
+const toggleAllFullEditQuarters = () => {
+    fullEditForm.value.quarters =
+        allFullEditQuartersSelected.value
+            ? []
+            : [...quarterValues]
+}
+
+const openFullEditModal = (item) => {
+    if (!item?.id) {
+        return
+    }
+
+    const normalized = normalizeInventoryItem(item)
+
+    fullEditingItem.value = normalized
+    fullEditForm.value = {
+        category: normalized.category || 'supplies',
+        item: String(normalized.item || ''),
+        unit: String(normalized.unit || ''),
+        inventory_year: Number(normalized.inventory_year) || 2026,
+        fixed_value:
+            normalized.fixed === null
+            || normalized.fixed === undefined
+                ? ''
+                : normalized.fixed,
+        currently_available:
+            normalized.currently_available === null
+            || normalized.currently_available === undefined
+                ? ''
+                : normalized.currently_available,
+        quarters: [...inferredItemQuarters(normalized)],
+        remarks: String(normalized.remarks || ''),
+    }
+
+    fullEditErrors.value = {}
+    showFullEditModal.value = true
+}
+
+const closeFullEditModal = () => {
+    showFullEditModal.value = false
+    fullEditingItem.value = null
+    fullEditErrors.value = {}
+}
+
+const saveFullEditItem = () => {
+    const original = fullEditingItem.value
+
+    if (!original?.id) {
+        return
+    }
+
+    fullEditErrors.value = {}
+
+    const category = String(
+        fullEditForm.value.category || ''
+    ).trim().toLowerCase()
+
+    const itemName = String(
+        fullEditForm.value.item || ''
+    ).trim()
+
+    const unit = String(
+        fullEditForm.value.unit || ''
+    ).trim().toUpperCase()
+
+    const inventoryYear = Number(
+        fullEditForm.value.inventory_year
+    )
+
+    const quarters = [
+        ...new Set(fullEditForm.value.quarters),
+    ].filter((quarter) =>
+        quarterValues.includes(quarter)
+    )
+
+    const isSupplies = category === 'supplies'
+
+    const fixedRaw = fullEditForm.value.fixed_value
+    const hasFixed =
+        fixedRaw !== ''
+        && fixedRaw !== null
+        && fixedRaw !== undefined
+    const fixedValue = hasFixed
+        ? Number(fixedRaw)
+        : null
+
+    const currentRaw =
+        fullEditForm.value.currently_available
+    const hasCurrent =
+        currentRaw !== ''
+        && currentRaw !== null
+        && currentRaw !== undefined
+    const currentValue = hasCurrent
+        ? Number(currentRaw)
+        : null
+
+    if (!['supplies', 'ict'].includes(category)) {
+        fullEditErrors.value.category =
+            'Select a valid category.'
+    }
+
+    if (!itemName) {
+        fullEditErrors.value.item =
+            'Item name is required.'
+    }
+
+    if (!unit) {
+        fullEditErrors.value.unit =
+            'Unit of measure is required.'
+    }
+
+    if (!Number.isInteger(inventoryYear) || inventoryYear < 2026) {
+        fullEditErrors.value.inventory_year =
+            'Select a valid year from 2026 onwards.'
+    }
+
+    if (!quarters.length) {
+        fullEditErrors.value.quarters =
+            'Select at least one applicable quarter.'
+    }
+
+    if (isSupplies) {
+        if (
+            hasFixed
+            && (!Number.isFinite(fixedValue) || fixedValue < 0)
+        ) {
+            fullEditErrors.value.fixed_value =
+                'Enter a valid Fixed Value or leave it blank.'
+        }
+
+        if (
+            !hasCurrent
+            || !Number.isFinite(currentValue)
+            || currentValue < 0
+        ) {
+            fullEditErrors.value.currently_available =
+                'Currently Available is required.'
+        }
+    }
+
+    const duplicateExists =
+        normalizedInventoryItems.value.some((item) =>
+            Number(item.id) !== Number(original.id)
+            && item.category === category
+            && Number(item.inventory_year) === inventoryYear
+            && String(item.item || '').trim().toLowerCase()
+                === itemName.toLowerCase()
+            && String(item.unit || '').trim().toUpperCase()
+                === unit
+        )
+
+    if (duplicateExists) {
+        fullEditErrors.value.item =
+            `This item and unit already exist for ${inventoryYear}.`
+    }
+
+    if (Object.keys(fullEditErrors.value).length) {
+        return
+    }
+
+    router.put(
+        `/dts/inventory/${original.id}`,
+        {
+            category,
+            item: itemName,
+            unit,
+            inventory_year: inventoryYear,
+            quarters,
+            fixed_value: isSupplies ? fixedValue : null,
+            currently_available: isSupplies ? currentValue : null,
+            remarks:
+                String(fullEditForm.value.remarks || '').trim()
+                || null,
+        },
+        {
+            preserveScroll: true,
+
+            onSuccess: () => {
+                activeTab.value = category
+                yearFilter.value = inventoryYear
+                quarterFilter.value = 'all'
+                unitFilter.value = 'all'
+                search.value = ''
+                currentPage.value = 1
+
+                closeFullEditModal()
+
+                router.reload({
+                    only: ['inventoryItems'],
+                    preserveScroll: true,
+                    preserveState: true,
+                })
+            },
+
+            onError: (errors) => {
+                fullEditErrors.value = { ...errors }
+            },
+        }
+    )
+}
+
+const releaseTotalReleased = computed(() => {
     return quantityReleasedValue(
-        editingItem.value
+        releasingItem.value
     ) ?? 0
 })
 
-const editFixedValue = computed(() => {
+const releaseFixedValue = computed(() => {
     const raw =
-        editingItem.value?.fixed
-        ?? editingItem.value?.fixed_value
+        releasingItem.value?.fixed
+        ?? releasingItem.value?.fixed_value
 
     if (
         raw === null
@@ -1415,21 +1605,21 @@ const editFixedValue = computed(() => {
         : null
 })
 
-const editHasFixedBaseline = computed(() => {
+const releaseHasFixedBaseline = computed(() => {
     return hasFixedBaseline(
-        editingItem.value
+        releasingItem.value
     )
 })
 
-const editCurrentAvailable = computed(() => {
+const releaseCurrentAvailable = computed(() => {
     return currentAvailableValue(
-        editingItem.value
+        releasingItem.value
     ) ?? 0
 })
 
-const editReleaseQuantity = computed(() => {
+const releaseQuantity = computed(() => {
     const value = Number(
-        editItemForm.value.releaseQuantity
+        releaseItemForm.value.releaseQuantity
     )
 
     return Number.isFinite(value)
@@ -1438,80 +1628,80 @@ const editReleaseQuantity = computed(() => {
         : 0
 })
 
-const editRemainingQuantity = computed(() => {
+const releaseRemainingQuantity = computed(() => {
     return Math.max(
         0,
-        editCurrentAvailable.value
-        - editReleaseQuantity.value
+        releaseCurrentAvailable.value
+        - releaseQuantity.value
     )
 })
 
-const editTotalReleasedAfter = computed(() => {
-    if (!editHasFixedBaseline.value) {
+const releaseTotalReleasedAfter = computed(() => {
+    if (!releaseHasFixedBaseline.value) {
         return (
-            editTotalReleased.value
-            + editReleaseQuantity.value
+            releaseTotalReleased.value
+            + releaseQuantity.value
         )
     }
 
     return Math.max(
         0,
-        editFixedValue.value
-        - editRemainingQuantity.value
+        releaseFixedValue.value
+        - releaseRemainingQuantity.value
     )
 })
 
-const openEditItemModal = (item) => {
+const openReleaseItemModal = (item) => {
     if (!item?.id) {
         return
     }
 
-    editingItem.value = item
+    releasingItem.value = item
 
     /*
      * Every release is a NEW transaction.
      * Do not preload the previous/item remarks.
      */
-    editItemForm.value = {
+    releaseItemForm.value = {
         releaseQuantity: '',
         remarks: '',
     }
 
-    editItemErrors.value = {}
-    showEditItemModal.value = true
+    releaseItemErrors.value = {}
+    showReleaseItemModal.value = true
 }
 
-const closeEditItemModal = () => {
-    showEditItemModal.value = false
-    editingItem.value = null
+const closeReleaseItemModal = () => {
+    showReleaseItemModal.value = false
+    releasingItem.value = null
 
-    editItemForm.value = {
+    releaseItemForm.value = {
         releaseQuantity: '',
         remarks: '',
     }
 
-    editItemErrors.value = {}
+    releaseItemErrors.value = {}
 }
 
-const saveEditItem = () => {
-    const item = editingItem.value
+const saveReleaseItem = () => {
+    const item = releasingItem.value
 
     if (!item?.id) {
         return
     }
 
-    editItemErrors.value = {}
+    releaseItemErrors.value = {}
 
     const releaseQuantity =
         Number(
-            editItemForm.value.releaseQuantity
+            releaseItemForm.value.releaseQuantity
         )
 
     if (
         !Number.isFinite(releaseQuantity)
         || releaseQuantity <= 0
     ) {
-        editItemErrors.value.releaseQuantity =
+        releaseItemErrors.value.releaseQuantity =
             'Enter the quantity to release.'
 
         return
@@ -1519,10 +1709,10 @@ const saveEditItem = () => {
 
     if (
         releaseQuantity
-        > editCurrentAvailable.value
+        > releaseCurrentAvailable.value
     ) {
-        editItemErrors.value.releaseQuantity =
-            `Only ${editCurrentAvailable.value} item(s) are currently available.`
+        releaseItemErrors.value.releaseQuantity =
+            `Only ${releaseCurrentAvailable.value} item(s) are currently available.`
 
         return
     }
@@ -1545,12 +1735,12 @@ const saveEditItem = () => {
     const nextCurrent =
         Math.max(
             0,
-            editCurrentAvailable.value
+            releaseCurrentAvailable.value
             - releaseQuantity
         )
 
     const nextTrackedReleased =
-        editHasFixedBaseline.value
+        releaseHasFixedBaseline.value
             ? Number(
                 item.tracked_released ?? 0
             )
@@ -1562,17 +1752,17 @@ const saveEditItem = () => {
             )
 
     const nextGeneratedReleased =
-        editHasFixedBaseline.value
+        releaseHasFixedBaseline.value
             ? Math.max(
                 0,
-                Number(editFixedValue.value)
+                Number(releaseFixedValue.value)
                 - nextCurrent
             )
             : null
 
     const releaseRemarks =
         String(
-            editItemForm.value.remarks ?? ''
+            releaseItemForm.value.remarks ?? ''
         ).trim()
 
     router.put(
@@ -1616,7 +1806,7 @@ const saveEditItem = () => {
                     }
                 )
 
-                closeEditItemModal()
+                closeReleaseItemModal()
 
                 /*
                  * Force a fresh copy from Laravel/MySQL.
@@ -1633,7 +1823,7 @@ const saveEditItem = () => {
             },
 
             onError: (errors) => {
-                editItemErrors.value = {
+                releaseItemErrors.value = {
                     ...errors,
                 }
             },
@@ -1723,27 +1913,6 @@ const availabilityClass = (value) => {
     }
 
     return 'bg-emerald-50 text-emerald-700 border-emerald-200'
-}
-
-const ppmpPreview = (value) => {
-    const text =
-        String(
-            value || ''
-        ).trim()
-
-    if (
-        !text
-        || text === '0'
-    ) {
-        return 'No PPMP entry'
-    }
-
-    const firstLine =
-        text.split('\n')[0]
-
-    return firstLine.length > 42
-        ? `${firstLine.slice(0, 42)}...`
-        : firstLine
 }
 
 /*
@@ -1901,7 +2070,7 @@ const remainingBarClass = (item) => {
                                 </p>
 
                                 <h1 class="mt-0.5 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
-                                    Inventory & PPMP Monitoring
+                                    Inventory Monitoring
                                 </h1>
                             </div>
                         </div>
@@ -1933,17 +2102,6 @@ const remainingBarClass = (item) => {
                             @click="switchTab('supplies')"
                         >
                             <span>Supplies</span>
-
-                            <span
-                                class="rounded-full px-2 py-0.5 text-[10px]"
-                                :class="
-                                    activeTab === 'supplies'
-                                        ? 'bg-white/15 text-white'
-                                        : 'bg-blue-50 text-blue-700'
-                                "
-                            >
-                                {{ suppliesItems.length }}
-                            </span>
                         </button>
 
                         <button
@@ -1957,17 +2115,6 @@ const remainingBarClass = (item) => {
                             @click="switchTab('ict')"
                         >
                             <span>ICT & Other Items     </span>
-
-                            <span
-                                class="rounded-full px-2 py-0.5 text-[10px]"
-                                :class="
-                                    activeTab === 'ict'
-                                        ? 'bg-white/15 text-white'
-                                        : 'bg-blue-50 text-blue-700'
-                                "
-                            >
-                                {{ ictItems.length }}
-                            </span>
                         </button>
                     </div>
                 </div>
@@ -1988,8 +2135,7 @@ const remainingBarClass = (item) => {
 
                                 <span
                                     v-if="
-                                        activeTab === 'supplies'
-                                        && quarterFilter !== 'all'
+                                        quarterFilter !== 'all'
                                     "
                                     class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700"
                                 >
@@ -2000,12 +2146,7 @@ const remainingBarClass = (item) => {
                         </div>
 
                         <div
-                            class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2"
-                            :class="
-                                activeTab === 'supplies'
-                                    ? 'xl:w-[790px] xl:grid-cols-[minmax(0,1fr)_150px_150px]'
-                                    : 'xl:w-[620px] xl:grid-cols-[minmax(0,1fr)_150px]'
-                            "
+                            class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 xl:w-[960px] xl:grid-cols-[minmax(0,1fr)_120px_140px_150px]"
                         >
                             <!-- SEARCH -->
                             <div class="relative sm:col-span-2 xl:col-span-1">
@@ -2034,6 +2175,19 @@ const remainingBarClass = (item) => {
                             </div>
 
                             <select
+                                v-model.number="yearFilter"
+                                class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            >
+                                <option
+                                    v-for="year in yearOptions"
+                                    :key="`filter-year-${year}`"
+                                    :value="year"
+                                >
+                                    {{ year }}
+                                </option>
+                            </select>
+
+                            <select
                                 v-model="unitFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -2049,7 +2203,6 @@ const remainingBarClass = (item) => {
                             </select>
 
                             <select
-                                v-if="activeTab === 'supplies'"
                                 v-model="quarterFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -2215,36 +2368,32 @@ const remainingBarClass = (item) => {
                     <table class="w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
-                                <th class="w-[18%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[20%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Item
                                 </th>
 
-                                <th class="w-[8%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[7%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Unit
                                 </th>
 
-                                <th class="w-[7%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[8%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Fixed Value
                                 </th>
 
-                                <th class="w-[10%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[11%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Quantity Released
                                 </th>
 
-                                <th class="w-[15%] bg-blue-600 px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[16%] bg-blue-600 px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Currently Available in SPD
                                 </th>
 
-                                <th class="w-[14%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
-                                    PPMP 2027
-                                </th>
-
-                                <th class="w-[18%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[22%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Remarks
                                 </th>
 
-                                <th class="w-[10%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Action
+                                <th class="w-[16%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Actions
                                 </th>
                             </tr>
                         </thead>
@@ -2310,7 +2459,12 @@ const remainingBarClass = (item) => {
                                         }}
                                     </span>
 
-                                   
+                                    <p
+                                        v-if="!hasFixedBaseline(item)"
+                                        class="mt-1 text-[8px] font-bold leading-3 text-slate-400"
+                                    >
+                                        System tracked
+                                    </p>
                                 </td>
 
                                 <!-- CURRENTLY AVAILABLE -->
@@ -2355,26 +2509,6 @@ const remainingBarClass = (item) => {
                                     </span>
                                 </td>
 
-                                <!-- PPMP -->
-                                <td class="px-3 py-3 align-middle">
-                                    <p
-                                        v-if="
-                                            String(item.ppmp || '').trim()
-                                            && String(item.ppmp).trim() !== '0'
-                                        "
-                                        class="whitespace-pre-line break-words text-[11px] font-semibold leading-4 text-slate-700"
-                                    >
-                                        {{ item.ppmp }}
-                                    </p>
-
-                                    <span
-                                        v-else
-                                        class="text-xs font-semibold text-slate-300"
-                                    >
-                                        No PPMP entry
-                                    </span>
-                                </td>
-
                                 <!-- REMARKS -->
                                 <td class="px-3 py-3 align-middle">
                                     <p
@@ -2394,13 +2528,25 @@ const remainingBarClass = (item) => {
 
                                 <!-- ACTION -->
                                 <td class="px-2 py-3 text-center align-middle">
-                                    <div class="flex items-center justify-center gap-1.5">
+                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
                                         <button
                                             type="button"
-                                            class="rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-blue-700 transition hover:bg-blue-50"
-                                            @click="openEditItemModal(item)"
+                                            class="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-slate-700 transition hover:bg-slate-50"
+                                            @click="openFullEditModal(item)"
                                         >
                                             Edit
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            class="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[9px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                            :disabled="
+                                                currentAvailableValue(item) === null
+                                                || Number(currentAvailableValue(item)) <= 0
+                                            "
+                                            @click="openReleaseItemModal(item)"
+                                        >
+                                            Release
                                         </button>
 
                                         <button
@@ -2429,7 +2575,7 @@ const remainingBarClass = (item) => {
                             </tr>
 
                             <tr v-if="!paginatedItems.length">
-                                <td colspan="8" class="px-6 py-16 text-center">
+                                <td colspan="7" class="px-6 py-16 text-center">
                                     <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
                                         <svg
                                             class="h-5 w-5"
@@ -2461,7 +2607,7 @@ const remainingBarClass = (item) => {
                 </div>
 
                 
-                <!-- ICT & OTHER ITEMS — SIMPLE PPMP TABLE -->
+                <!-- ICT & OTHER ITEMS — YEAR / QUARTER TABLE -->
                 <div
                     v-if="activeTab === 'ict'"
                     class="hidden overflow-hidden lg:block"
@@ -2469,7 +2615,7 @@ const remainingBarClass = (item) => {
                     <table class="w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
-                                <th class="w-[44%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[32%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Item
                                 </th>
 
@@ -2478,11 +2624,16 @@ const remainingBarClass = (item) => {
                                 </th>
 
                                 <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    PPMP for 2027
+                                    Quarter(s)
                                 </th>
 
-                                <th class="w-[26%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[22%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Remarks
+                                </th>
+
+
+                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Action
                                 </th>
                             </tr>
                         </thead>
@@ -2509,19 +2660,22 @@ const remainingBarClass = (item) => {
                                 </td>
 
                                 <td class="px-3 py-4 text-center align-middle">
-                                    <span
-                                        v-if="String(item.ppmp || '').trim()"
-                                        class="inline-flex min-w-10 justify-center rounded-lg border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-black text-blue-700"
-                                    >
-                                        {{ item.ppmp }}
-                                    </span>
+                                    <div class="flex flex-wrap justify-center gap-1">
+                                        <span
+                                            v-for="quarter in quarterBadges(item)"
+                                            :key="`ict-quarter-${item.id}-${quarter}`"
+                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
+                                        >
+                                            {{ quarter }}
+                                        </span>
 
-                                    <span
-                                        v-else
-                                        class="text-xs font-semibold text-slate-300"
-                                    >
-                                        —
-                                    </span>
+                                        <span
+                                            v-if="!quarterBadges(item).length"
+                                            class="text-xs font-semibold text-slate-300"
+                                        >
+                                            —
+                                        </span>
+                                    </div>
                                 </td>
 
                                 <td class="px-4 py-4 align-middle">
@@ -2539,10 +2693,21 @@ const remainingBarClass = (item) => {
                                         —
                                     </span>
                                 </td>
+
+
+                                <td class="px-3 py-4 text-center align-middle">
+                                    <button
+                                        type="button"
+                                        class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                        @click="openFullEditModal(item)"
+                                    >
+                                        Edit
+                                    </button>
+                                </td>
                             </tr>
 
                             <tr v-if="!paginatedItems.length">
-                                <td colspan="4" class="px-6 py-16 text-center">
+                                <td colspan="5" class="px-6 py-16 text-center">
                                     <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
                                         <svg
                                             class="h-5 w-5"
@@ -2671,31 +2836,6 @@ const remainingBarClass = (item) => {
 
                         <div class="space-y-3 p-4">
                             <div
-                                class="rounded-xl border border-blue-100 bg-blue-50 p-3"
-                            >
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
-                                    PPMP 2027
-                                </p>
-
-                                <p
-                                    v-if="
-                                        String(item.ppmp || '').trim()
-                                        && String(item.ppmp).trim() !== '0'
-                                    "
-                                    class="mt-1 whitespace-pre-line break-words text-xs font-semibold leading-5 text-blue-950"
-                                >
-                                    {{ item.ppmp }}
-                                </p>
-
-                                <p
-                                    v-else
-                                    class="mt-1 text-xs font-semibold text-slate-400"
-                                >
-                                    No PPMP entry
-                                </p>
-                            </div>
-
-                            <div
                                 class="rounded-xl border border-slate-100 bg-slate-50 p-3"
                             >
                                 <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
@@ -2710,10 +2850,22 @@ const remainingBarClass = (item) => {
                             <div class="flex justify-end gap-2">
                                 <button
                                     type="button"
-                                    class="rounded-lg border border-blue-200 bg-white px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-50"
-                                    @click="openEditItemModal(item)"
+                                    class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                    @click="openFullEditModal(item)"
                                 >
                                     Edit
+                                </button>
+
+                                <button
+                                    type="button"
+                                    class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                    :disabled="
+                                        currentAvailableValue(item) === null
+                                        || Number(currentAvailableValue(item)) <= 0
+                                    "
+                                    @click="openReleaseItemModal(item)"
+                                >
+                                    Release
                                 </button>
 
                                 <button
@@ -2787,12 +2939,29 @@ const remainingBarClass = (item) => {
                         <div class="space-y-3 p-4">
                             <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
                                 <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
-                                    PPMP for 2027
+                                    Year / Quarter
                                 </p>
 
-                                <p class="mt-1 whitespace-pre-line break-words text-sm font-black leading-5 text-blue-950">
-                                    {{ String(item.ppmp || '').trim() || '—' }}
-                                </p>
+                                <div class="mt-2 flex flex-wrap items-center gap-1">
+                                    <span class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-blue-800 ring-1 ring-blue-100">
+                                        {{ item.inventory_year }}
+                                    </span>
+
+                                    <span
+                                        v-for="quarter in quarterBadges(item)"
+                                        :key="`mobile-ict-quarter-${item.id}-${quarter}`"
+                                        class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-blue-700 ring-1 ring-blue-100"
+                                    >
+                                        {{ quarter }}
+                                    </span>
+
+                                    <span
+                                        v-if="!quarterBadges(item).length"
+                                        class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-slate-400 ring-1 ring-blue-100"
+                                    >
+                                        No quarter
+                                    </span>
+                                </div>
                             </div>
 
                             <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -2803,6 +2972,17 @@ const remainingBarClass = (item) => {
                                 <p class="mt-1 break-words text-xs font-semibold leading-5 text-slate-600">
                                     {{ String(item.remarks || '').trim() || '—' }}
                                 </p>
+                            </div>
+
+
+                            <div class="flex justify-end">
+                                <button
+                                    type="button"
+                                    class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                    @click="openFullEditModal(item)"
+                                >
+                                    Edit
+                                </button>
                             </div>
                         </div>
                     </article>
@@ -2881,8 +3061,8 @@ const remainingBarClass = (item) => {
                             >
                                 {{
                                     activeTab === 'supplies'
-                                        ? 'Supplies PPMP'
-                                        : 'ICT & Other Items – 2027 PPMP'
+                                        ? 'Supplies Inventory'
+                                        : 'ICT & Other Items'
                                 }}
                             </p>
 
@@ -2921,11 +3101,11 @@ const remainingBarClass = (item) => {
                         class="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
                     >
                         <p class="text-xs font-black text-blue-800">
-                            ICT & Other Items · PPMP 2027
+                            ICT & Other Items
                         </p>
                         <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700/80">
-                            Item, Unit of Measure, PPMP for 2027, and Remarks only.
-                            Stock monitoring and release fields are for Supplies.
+                            Select the Inventory Year and applicable Quarter(s).
+                            Stock monitoring and release fields remain for Supplies only.
                         </p>
                     </div>
 
@@ -3022,6 +3202,39 @@ const remainingBarClass = (item) => {
                             </p>
                         </div>
 
+                        <!-- INVENTORY YEAR -->
+                        <div>
+                            <label
+                                class="mb-2 block text-sm font-black text-slate-800"
+                            >
+                                Inventory Year
+                            </label>
+
+                            <select
+                                v-model.number="newItemForm.inventory_year"
+                                class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-100"
+                                :class="
+                                    addItemErrors.inventory_year
+                                        ? 'border-rose-400'
+                                        : 'border-slate-200 focus:border-blue-400'
+                                "
+                            >
+                                <option
+                                    v-for="year in yearOptions"
+                                    :key="`add-year-${year}`"
+                                    :value="year"
+                                >
+                                    {{ year }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="addItemErrors.inventory_year"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.inventory_year }}
+                            </p>
+                        </div>
 
                         <!-- FIXED -->
                         <div v-if="activeTab === 'supplies'">
@@ -3138,34 +3351,11 @@ const remainingBarClass = (item) => {
                             </div>
                         </div>
 
-                        <!-- PPMP -->   
-                        <div
-                            :class="
-                                activeTab === 'ict'
-                                    ? 'md:col-span-2'
-                                    : ''
-                            "
-                        >
-                            <label
-                                class="mb-2 block text-sm font-black text-slate-800"
-                            >
-                                PPMP for 2027
-                            </label>
-
-                            <input
-                                v-model="
-                                    newItemForm.ppmp
-                                "
-                                type="text"
-                                placeholder="Enter PPMP for 2027"
-                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                            />
-                        </div>
                     </div>
 
 
                     <!-- QUARTERS -->
-                    <div v-if="activeTab === 'supplies'">
+                    <div>
                         <div
                             class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
                         >
@@ -3302,11 +3492,183 @@ const remainingBarClass = (item) => {
         </div>
 
 
-        <!-- EDIT ITEM MODAL -->
+        <!-- FULL EDIT ITEM MODAL -->
         <div
-            v-if="showEditItemModal"
+            v-if="showFullEditModal && fullEditingItem"
+            class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+            @click.self="closeFullEditModal"
+        >
+            <div class="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white shadow-2xl">
+                <div class="sticky top-0 z-10 border-b border-slate-200 bg-white px-5 py-5 sm:px-6">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <p class="text-[10px] font-black uppercase tracking-[0.15em] text-blue-600">
+                                Edit Inventory Item
+                            </p>
+                            <h3 class="mt-1 break-words text-xl font-black text-slate-900">
+                                {{ fullEditingItem.item || 'Inventory Item' }}
+                            </h3>
+                            <p class="mt-1 text-xs font-semibold text-slate-500">
+                                Edit all item details here. Quantity Released remains automatic.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50"
+                            @click="closeFullEditModal"
+                        >×</button>
+                    </div>
+                </div>
+
+                <form
+                    class="grid gap-4 p-5 sm:grid-cols-2 sm:p-6"
+                    @submit.prevent="saveFullEditItem"
+                >
+                    <div>
+                        <label class="mb-2 block text-sm font-black text-slate-800">Category</label>
+                        <select
+                            v-model="fullEditForm.category"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        >
+                            <option value="supplies">Supplies</option>
+                            <option value="ict">ICT & Other Items</option>
+                        </select>
+                        <p v-if="fullEditErrors.category" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.category }}</p>
+                    </div>
+
+                    <div>
+                        <label class="mb-2 block text-sm font-black text-slate-800">Inventory Year</label>
+                        <select
+                            v-model.number="fullEditForm.inventory_year"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        >
+                            <option v-for="year in yearOptions" :key="`edit-year-${year}`" :value="year">{{ year }}</option>
+                        </select>
+                        <p v-if="fullEditErrors.inventory_year" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.inventory_year }}</p>
+                    </div>
+
+                    <div>
+                        <label class="mb-2 block text-sm font-black text-slate-800">Item</label>
+                        <input
+                            v-model="fullEditForm.item"
+                            type="text"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                        <p v-if="fullEditErrors.item" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.item }}</p>
+                    </div>
+
+                    <div>
+                        <label class="mb-2 block text-sm font-black text-slate-800">Unit of Measure</label>
+                        <input
+                            v-model="fullEditForm.unit"
+                            type="text"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold uppercase text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                        <p v-if="fullEditErrors.unit" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.unit }}</p>
+                    </div>
+
+                    <template v-if="fullEditForm.category === 'supplies'">
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Fixed Value <span class="font-medium text-slate-400">(Optional)</span>
+                            </label>
+                            <input
+                                v-model="fullEditForm.fixed_value"
+                                type="number"
+                                min="0"
+                                step="1"
+                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            />
+                            <p v-if="fullEditErrors.fixed_value" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.fixed_value }}</p>
+                        </div>
+
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">Currently Available in SPD</label>
+                            <input
+                                v-model="fullEditForm.currently_available"
+                                type="number"
+                                min="0"
+                                step="1"
+                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            />
+                            <p v-if="fullEditErrors.currently_available" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.currently_available }}</p>
+                        </div>
+                    </template>
+
+                    <div class="sm:col-span-2">
+                        <div class="mb-2 flex items-center justify-between gap-3">
+                            <label class="block text-sm font-black text-slate-800">Applicable Quarter(s)</label>
+                            <button
+                                type="button"
+                                class="text-[10px] font-black text-blue-600 hover:text-blue-700"
+                                @click="toggleAllFullEditQuarters"
+                            >
+                                {{ allFullEditQuartersSelected ? 'Clear All' : 'Select All' }}
+                            </button>
+                        </div>
+
+                        <div class="grid grid-cols-4 gap-2">
+                            <button
+                                v-for="quarter in quarterValues"
+                                :key="`full-edit-${quarter}`"
+                                type="button"
+                                class="rounded-xl border px-3 py-3 text-xs font-black transition"
+                                :class="
+                                    fullEditForm.quarters.includes(quarter)
+                                        ? 'border-blue-600 bg-blue-600 text-white'
+                                        : 'border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-700'
+                                "
+                                @click="toggleFullEditQuarter(quarter)"
+                            >
+                                {{ quarter.toUpperCase() }}
+                            </button>
+                        </div>
+
+                        <p v-if="fullEditErrors.quarters" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.quarters }}</p>
+                    </div>
+
+                    <div
+                        v-if="fullEditForm.category === 'supplies'"
+                        class="sm:col-span-2 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
+                    >
+                        <p class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500">Quantity Released</p>
+                        <p class="mt-1 text-xs font-semibold leading-5 text-blue-800">
+                            Automatic/read-only. Use the separate <strong>Release</strong> action to release stock.
+                        </p>
+                    </div>
+
+                    <div class="sm:col-span-2">
+                        <label class="mb-2 block text-sm font-black text-slate-800">Remarks</label>
+                        <textarea
+                            v-model="fullEditForm.remarks"
+                            rows="4"
+                            class="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        ></textarea>
+                        <p v-if="fullEditErrors.remarks" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.remarks }}</p>
+                    </div>
+
+                    <div class="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:col-span-2 sm:flex-row sm:justify-end">
+                        <button
+                            type="button"
+                            class="h-11 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50"
+                            @click="closeFullEditModal"
+                        >Cancel</button>
+
+                        <button
+                            type="submit"
+                            class="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
+                        >Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- RELEASE ITEM MODAL -->
+        <div
+            v-if="showReleaseItemModal"
             class="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-sm sm:items-center sm:p-4"
-            @click.self="closeEditItemModal"
+            @click.self="closeReleaseItemModal"
         >
             <div
                 class="w-full max-w-lg overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-2xl"
@@ -3326,7 +3688,7 @@ const remainingBarClass = (item) => {
                             class="mt-1 break-words text-xl font-black text-slate-900"
                         >
                             {{
-                                editingItem?.item
+                                releasingItem?.item
                                 || 'Inventory Item'
                             }}
                         </h3>
@@ -3337,13 +3699,13 @@ const remainingBarClass = (item) => {
                             <span
                                 class="rounded-md bg-slate-100 px-2 py-1"
                             >
-                                {{ editingItem?.unit || '—' }}
+                                {{ releasingItem?.unit || '—' }}
                             </span>
 
                             <span>
                                 Fixed Value:
                                 <strong class="text-slate-800">
-                                    {{ editHasFixedBaseline ? editFixedValue : '—' }}
+                                    {{ releaseHasFixedBaseline ? releaseFixedValue : '—' }}
                                 </strong>
                             </span>
                         </div>
@@ -3352,7 +3714,7 @@ const remainingBarClass = (item) => {
                     <button
                         type="button"
                         class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50"
-                        @click="closeEditItemModal"
+                        @click="closeReleaseItemModal"
                     >
                         ×
                     </button>
@@ -3361,7 +3723,7 @@ const remainingBarClass = (item) => {
                 <!-- BODY -->
                 <form
                     class="space-y-5 p-5 sm:p-6"
-                    @submit.prevent="saveEditItem"
+                    @submit.prevent="saveReleaseItem"
                 >
                     <!-- CURRENT INVENTORY SUMMARY -->
                     <div
@@ -3377,11 +3739,11 @@ const remainingBarClass = (item) => {
                             <p
                                 class="mt-1 text-2xl font-black tabular-nums text-blue-700"
                             >
-                                {{ editTotalReleased ?? '—' }}
+                                {{ releaseTotalReleased ?? '—' }}
                             </p>
 
                             <p
-                                v-if="!editHasFixedBaseline"
+                                v-if="!releaseHasFixedBaseline"
                                 class="mt-1 text-[9px] font-bold leading-3 text-slate-400"
                             >
                                 System-tracked total · each release adds to this number.
@@ -3400,7 +3762,7 @@ const remainingBarClass = (item) => {
                             <p
                                 class="mt-1 text-2xl font-black tabular-nums text-emerald-700"
                             >
-                                {{ editCurrentAvailable }}
+                                {{ releaseCurrentAvailable }}
                             </p>
                         </div>
                     </div>
@@ -3420,38 +3782,38 @@ const remainingBarClass = (item) => {
                                 class="text-[10px] font-bold text-slate-400"
                             >
                                 Max:
-                                {{ editCurrentAvailable }}
+                                {{ releaseCurrentAvailable }}
                             </span>
                         </div>
 
                         <input
-                            v-model="editItemForm.releaseQuantity"
+                            v-model="releaseItemForm.releaseQuantity"
                             type="number"
                             min="1"
-                            :max="editCurrentAvailable"
+                            :max="releaseCurrentAvailable"
                             step="1"
                             placeholder="Enter quantity to release"
                             class="h-12 w-full rounded-xl border bg-white px-4 text-base font-black tabular-nums text-slate-900 outline-none transition focus:ring-4 focus:ring-blue-100"
                             :class="
-                                editItemErrors.releaseQuantity
+                                releaseItemErrors.releaseQuantity
                                     ? 'border-rose-400'
                                     : 'border-slate-200 focus:border-blue-400'
                             "
                         />
 
                         <p
-                            v-if="editItemErrors.releaseQuantity"
+                            v-if="releaseItemErrors.releaseQuantity"
                             class="mt-2 text-xs font-bold text-rose-600"
                         >
                             {{
-                                editItemErrors.releaseQuantity
+                                releaseItemErrors.releaseQuantity
                             }}
                         </p>
                     </div>
 
                     <!-- RELEASE PREVIEW -->
                     <div
-                        v-if="editReleaseQuantity > 0"
+                        v-if="releaseQuantity > 0"
                         class="rounded-xl border border-blue-100 bg-blue-50/40 p-4"
                     >
                         <p
@@ -3474,7 +3836,7 @@ const remainingBarClass = (item) => {
                                     class="mt-1 text-lg font-black tabular-nums text-slate-900"
                                 >
                                     {{
-                                        editTotalReleasedAfter
+                                        releaseTotalReleasedAfter
                                         ?? '—'
                                     }}
                                 </p>
@@ -3490,13 +3852,13 @@ const remainingBarClass = (item) => {
                                 <p
                                     class="mt-1 text-lg font-black tabular-nums"
                                     :class="
-                                        editRemainingQuantity <= 3
+                                        releaseRemainingQuantity <= 3
                                             ? 'text-rose-600'
                                             : 'text-emerald-700'
                                     "
                                 >
                                     {{
-                                        editRemainingQuantity
+                                        releaseRemainingQuantity
                                     }}
                                 </p>
                             </div>
@@ -3512,17 +3874,17 @@ const remainingBarClass = (item) => {
                         </label>
 
                         <textarea
-                            v-model="editItemForm.remarks"
+                            v-model="releaseItemForm.remarks"
                             rows="3"
                             placeholder="Optional remarks for this release..."
                             class="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                         ></textarea>
 
                         <p
-                            v-if="editItemErrors.remarks"
+                            v-if="releaseItemErrors.remarks"
                             class="mt-2 text-xs font-bold text-rose-600"
                         >
-                            {{ editItemErrors.remarks }}
+                            {{ releaseItemErrors.remarks }}
                         </p>
                     </div>
 
@@ -3533,7 +3895,7 @@ const remainingBarClass = (item) => {
                         <button
                             type="button"
                             class="h-11 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50"
-                            @click="closeEditItemModal"
+                            @click="closeReleaseItemModal"
                         >
                             Cancel
                         </button>
@@ -3542,7 +3904,7 @@ const remainingBarClass = (item) => {
                             type="submit"
                             class="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                             :disabled="
-                                editCurrentAvailable <= 0
+                                releaseCurrentAvailable <= 0
                             "
                         >
                             Release Item
