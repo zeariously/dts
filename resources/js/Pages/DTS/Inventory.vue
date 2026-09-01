@@ -123,6 +123,7 @@ const normalizeInventoryItem = (item) => {
             ? Number(item.total_released)
             : (
                 Number.isFinite(fixed)
+                && fixed > 0
                 && Number.isFinite(currentlyAvailable)
                     ? Math.max(
                         0,
@@ -131,8 +132,21 @@ const normalizeInventoryItem = (item) => {
                     : null
             )
 
+    const trackedReleased =
+        item.tracked_released !== null
+        && item.tracked_released !== undefined
+        && String(item.tracked_released).trim() !== ''
+            ? Number(item.tracked_released)
+            : 0
+
     return {
         ...item,
+        category: String(item.category ?? '')
+            .trim()
+            .toLowerCase(),
+        unit: String(item.unit ?? '')
+            .trim()
+            .toUpperCase(),
         fixed,
         currently_available:
             Number.isFinite(currentlyAvailable)
@@ -142,6 +156,10 @@ const normalizeInventoryItem = (item) => {
             Number.isFinite(generatedReleased)
                 ? generatedReleased
                 : null,
+        tracked_released:
+            Number.isFinite(trackedReleased)
+                ? Math.max(0, trackedReleased)
+                : 0,
         quarters:
             normalizeQuarters(item.quarters),
         ppmp:
@@ -151,8 +169,59 @@ const normalizeInventoryItem = (item) => {
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| LOCAL INVENTORY STATE
+|--------------------------------------------------------------------------
+|
+| Keep a local mirror of the Inertia prop.
+|
+| Why:
+| - After a successful release, update the row immediately.
+| - The remaining bar and Quantity Released move immediately.
+| - Then router.reload() re-syncs the authoritative DB values.
+|
+*/
+const inventoryItemsState = ref([])
+
+watch(
+    () => props.inventoryItems,
+    (items) => {
+        inventoryItemsState.value =
+            Array.isArray(items)
+                ? items.map((item) => ({ ...item }))
+                : []
+    },
+    {
+        immediate: true,
+        deep: true,
+    }
+)
+
+const updateLocalInventoryItem = (
+    inventoryItemId,
+    updates
+) => {
+    inventoryItemsState.value =
+        inventoryItemsState.value.map((item) => {
+            if (
+                Number(item.id)
+                !== Number(inventoryItemId)
+            ) {
+                return item
+            }
+
+            return {
+                ...item,
+                ...updates,
+            }
+        })
+}
+
 const normalizedInventoryItems = computed(() =>
-    props.inventoryItems.map(normalizeInventoryItem)
+    inventoryItemsState.value.map(
+        normalizeInventoryItem
+    )
 )
 
 const suppliesItems = computed(() =>
@@ -228,14 +297,35 @@ const allNewItemQuartersSelected = computed(() => {
 })
 
 const newItemQuantityReleased = computed(() => {
-    const fixedValue = Number(newItemForm.value.fixed)
+    const fixedRaw = newItemForm.value.fixed
+    const fixedValue = Number(fixedRaw)
+
+    const hasBaseline =
+        fixedRaw !== ''
+        && fixedRaw !== null
+        && fixedRaw !== undefined
+        && Number.isFinite(fixedValue)
+        && fixedValue > 0
+
+    /*
+     * No usable Fixed Value:
+     * Quantity Released starts at 0 and will accumulate
+     * every release performed through this system.
+     */
+    if (!hasBaseline) {
+        return 0
+    }
+
+    const currentRaw =
+        newItemForm.value.currently_available
+
     const currentlyAvailable =
-        Number(newItemForm.value.currently_available)
+        Number(currentRaw)
 
     if (
-        newItemForm.value.fixed === ''
-        || newItemForm.value.currently_available === ''
-        || !Number.isFinite(fixedValue)
+        currentRaw === ''
+        || currentRaw === null
+        || currentRaw === undefined
         || !Number.isFinite(currentlyAvailable)
     ) {
         return null
@@ -412,46 +502,52 @@ const toggleAllNewItemQuarters = (event) => {
 const addNewItem = () => {
     addItemErrors.value = {}
 
-    const itemName =
-        String(
-            newItemForm.value.item || ''
-        ).trim()
+    const itemName = String(
+        newItemForm.value.item || ''
+    ).trim()
 
-    const unit =
-        String(
-            newItemForm.value.unit || ''
-        )
-            .trim()
-            .toUpperCase()
+    const unit = String(
+        newItemForm.value.unit || ''
+    )
+        .trim()
+        .toUpperCase()
 
-    const fixedValue =
-        Number(
-            newItemForm.value.fixed
-        )
+    const ppmp = String(
+        newItemForm.value.ppmp ?? ''
+    ).trim()
 
-    const currentlyAvailable =
-        Number(
+    const remarks = String(
+        newItemForm.value.remarks ?? ''
+    ).trim()
+
+    const isSupplies =
+        activeTab.value === 'supplies'
+
+    const hasFixedValue =
+        isSupplies
+        && newItemForm.value.fixed !== ''
+        && newItemForm.value.fixed !== null
+        && newItemForm.value.fixed !== undefined
+
+    const fixedValue = hasFixedValue
+        ? Number(newItemForm.value.fixed)
+        : null
+
+    const currentlyAvailable = isSupplies
+        ? Number(
             newItemForm.value.currently_available
         )
+        : null
 
-    const quarters = [
-        ...new Set(
-            newItemForm.value.quarters
-        ),
-    ].filter(
-        (quarter) =>
+    const quarters = isSupplies
+        ? [
+            ...new Set(
+                newItemForm.value.quarters
+            ),
+        ].filter((quarter) =>
             quarterValues.includes(quarter)
-    )
-
-    const ppmp =
-        String(
-            newItemForm.value.ppmp ?? ''
-        ).trim()
-
-    const remarks =
-        String(
-            newItemForm.value.remarks ?? ''
-        ).trim()
+        )
+        : []
 
     if (!itemName) {
         addItemErrors.value.item =
@@ -463,45 +559,48 @@ const addNewItem = () => {
             'Unit of measure is required.'
     }
 
-    if (
-        newItemForm.value.fixed === ''
-        || newItemForm.value.fixed === null
-        || newItemForm.value.fixed === undefined
-    ) {
-        addItemErrors.value.fixed =
-            'Fixed value is required.'
-    } else if (
-        !Number.isFinite(fixedValue)
-        || fixedValue < 0
-    ) {
-        addItemErrors.value.fixed =
-            'Enter a valid fixed value.'
-    }
+    /*
+     * Supplies use the full stock workflow.
+     * ICT & Other Items are PPMP reference rows only:
+     * Item + Unit + PPMP 2027 + Remarks.
+     */
+    if (isSupplies) {
+        /*
+         * Fixed Value is OPTIONAL.
+         * If there is no usable Fixed Value, Quantity Released starts
+         * at 0 and accumulates releases performed through the system.
+         * If Fixed Value exists, Quantity Released uses Fixed - Current.
+         */
+        if (
+            hasFixedValue
+            && (
+                !Number.isFinite(fixedValue)
+                || fixedValue < 0
+            )
+        ) {
+            addItemErrors.value.fixed =
+                'Enter a valid fixed value or leave it blank.'
+        }
 
-    if (
-        newItemForm.value.currently_available === ''
-        || newItemForm.value.currently_available === null
-        || newItemForm.value.currently_available === undefined
-    ) {
-        addItemErrors.value.currently_available =
-            'Currently available quantity is required.'
-    } else if (
-        !Number.isFinite(currentlyAvailable)
-        || currentlyAvailable < 0
-    ) {
-        addItemErrors.value.currently_available =
-            'Enter a valid currently available quantity.'
-    } else if (
-        Number.isFinite(fixedValue)
-        && currentlyAvailable > fixedValue
-    ) {
-        addItemErrors.value.currently_available =
-            'Currently available cannot be greater than the fixed value.'
-    }
+        if (
+            newItemForm.value.currently_available === ''
+            || newItemForm.value.currently_available === null
+            || newItemForm.value.currently_available === undefined
+        ) {
+            addItemErrors.value.currently_available =
+                'Currently available quantity is required.'
+        } else if (
+            !Number.isFinite(currentlyAvailable)
+            || currentlyAvailable < 0
+        ) {
+            addItemErrors.value.currently_available =
+                'Enter a valid currently available quantity.'
+        }
 
-    if (!quarters.length) {
-        addItemErrors.value.quarters =
-            'Select at least one applicable quarter.'
+        if (!quarters.length) {
+            addItemErrors.value.quarters =
+                'Select at least one applicable quarter.'
+        }
     }
 
     const duplicateExists =
@@ -538,9 +637,23 @@ const addNewItem = () => {
             category: activeTab.value,
             item: itemName,
             unit,
-            fixed_value: fixedValue,
-            currently_available: currentlyAvailable,
-            quarters,
+
+            // Supplies only.
+            fixed_value:
+                isSupplies
+                    ? fixedValue
+                    : null,
+
+            currently_available:
+                isSupplies
+                    ? currentlyAvailable
+                    : null,
+
+            quarters:
+                isSupplies
+                    ? quarters
+                    : [],
+
             ppmp,
             remarks,
         },
@@ -602,6 +715,8 @@ const filteredItems = computed(() => {
             item.unit === unitFilter.value
 
         const matchesQuarter =
+            activeTab.value !== 'supplies'
+            ||
             quarterFilter.value === 'all'
             ||
             inferredItemQuarters(item)
@@ -627,7 +742,7 @@ const filteredItems = computed(() => {
 const unitStockSummary = computed(() => {
     const groups = new Map()
 
-    currentItems.value
+    suppliesItems.value
         .filter((item) =>
             itemMatchesQuarter(
                 item,
@@ -648,42 +763,62 @@ const unitStockSummary = computed(() => {
                 groups.set(unit, {
                     unit,
                     itemCount: 0,
-                    configuredItemCount: 0,
-                    totalFixed: 0,
+                    trackedItemCount: 0,
                     totalCurrent: 0,
+                    totalReleased: 0,
                 })
             }
 
-            const group = groups.get(unit)
-            const fixedValue = Number(item.fixed)
+            const group =
+                groups.get(unit)
+
             const currentValue =
                 currentAvailableValue(item)
+
+            const releasedValue =
+                quantityReleasedValue(item)
 
             group.itemCount += 1
 
             /*
-             * Percentage is based only on rows that have both:
-             *   Fixed Value + Currently Available.
+             * Remaining % is now based on ACTUAL stock movement:
              *
-             * Quantity Released is NOT stored/added here.
-             * MySQL derives it as Fixed - Currently Available.
+             * Currently Available
+             * ------------------------------- x 100
+             * Currently Available + Released
+             *
+             * This works for BOTH:
+             *
+             * 1. Items with Fixed Value
+             *    Released = Fixed - Current
+             *
+             * 2. Items without Fixed Value
+             *    Released = tracked_released
+             *
+             * Therefore Fixed Value is NOT used directly
+             * by the graph anymore.
              */
-            if (
-                Number.isFinite(fixedValue)
-                && fixedValue > 0
-                && currentValue !== null
-            ) {
-                group.configuredItemCount += 1
-                group.totalFixed += fixedValue
-                group.totalCurrent += Math.max(
-                    0,
-                    currentValue
-                )
+            if (currentValue !== null) {
+                group.trackedItemCount += 1
+
+                group.totalCurrent +=
+                    Math.max(
+                        0,
+                        currentValue
+                    )
+
+                group.totalReleased +=
+                    Math.max(
+                        0,
+                        Number(
+                            releasedValue ?? 0
+                        )
+                    )
             }
         })
 
     const unitOrder = new Map(
-        unitOptions.value.map(
+        suppliesUnitOptions.map(
             (unit, index) => [
                 unit.value,
                 index,
@@ -696,26 +831,35 @@ const unitStockSummary = computed(() => {
             const remaining =
                 group.totalCurrent
 
-            const percentRemaining =
-                group.totalFixed > 0
-                    ? Math.max(
-                        0,
-                        Math.min(
-                            100,
-                            Math.round(
-                                (
-                                    group.totalCurrent
-                                    / group.totalFixed
+            const accountedTotal =
+                group.totalCurrent
+                + group.totalReleased
+
+            let percentRemaining = null
+
+            if (group.trackedItemCount > 0) {
+                percentRemaining =
+                    accountedTotal > 0
+                        ? Math.max(
+                            0,
+                            Math.min(
+                                100,
+                                Math.round(
+                                    (
+                                        group.totalCurrent
+                                        / accountedTotal
+                                    )
+                                    * 100
                                 )
-                                * 100
                             )
                         )
-                    )
-                    : null
+                        : 0
+            }
 
             return {
                 ...group,
                 remaining,
+                accountedTotal,
                 percentRemaining,
             }
         })
@@ -1138,50 +1282,76 @@ const currentAvailableValue = (item) => {
         : null
 }
 
-const quantityReleasedValue = (item) => {
-    const generated =
-        item?.total_released
-
-    if (
-        generated !== null
-        && generated !== undefined
-        && String(generated).trim() !== ''
-    ) {
-        const quantity = Number(generated)
-
-        if (Number.isFinite(quantity)) {
-            return Math.max(
-                0,
-                quantity
-            )
-        }
-    }
-
-    const fixedValue =
+const hasFixedBaseline = (item) => {
+    const raw =
         item?.fixed
-
-    const currentlyAvailable =
-        currentAvailableValue(item)
+        ?? item?.fixed_value
 
     if (
-        fixedValue === null
-        || fixedValue === undefined
-        || fixedValue === ''
-        || currentlyAvailable === null
+        raw === null
+        || raw === undefined
+        || String(raw).trim() === ''
     ) {
-        return null
+        return false
     }
 
-    const fixed = Number(fixedValue)
+    const value = Number(raw)
 
-    if (!Number.isFinite(fixed)) {
-        return null
+    return Number.isFinite(value)
+        && value > 0
+}
+
+const quantityReleasedValue = (item) => {
+    /*
+     * WITH a usable Fixed Value:
+     * Quantity Released = Fixed Value - Currently Available.
+     */
+    if (hasFixedBaseline(item)) {
+        const generated =
+            item?.total_released
+
+        if (
+            generated !== null
+            && generated !== undefined
+            && String(generated).trim() !== ''
+        ) {
+            const quantity = Number(generated)
+
+            if (Number.isFinite(quantity)) {
+                return Math.max(0, quantity)
+            }
+        }
+
+        const fixed = Number(
+            item?.fixed
+            ?? item?.fixed_value
+        )
+
+        const currentlyAvailable =
+            currentAvailableValue(item)
+
+        if (currentlyAvailable === null) {
+            return null
+        }
+
+        return Math.max(
+            0,
+            fixed - currentlyAvailable
+        )
     }
 
-    return Math.max(
-        0,
-        fixed - currentlyAvailable
+    /*
+     * WITHOUT a usable Fixed Value (NULL/blank/0):
+     * Quantity Released is tracked from system releases only.
+     * New rows start at 0.
+     */
+    const tracked = Number(
+        item?.tracked_released ?? 0
     )
+
+    return Number.isFinite(tracked)
+        ? Math.max(0, tracked)
+        : 0
 }
 
 /*
@@ -1245,6 +1415,12 @@ const editFixedValue = computed(() => {
         : null
 })
 
+const editHasFixedBaseline = computed(() => {
+    return hasFixedBaseline(
+        editingItem.value
+    )
+})
+
 const editCurrentAvailable = computed(() => {
     return currentAvailableValue(
         editingItem.value
@@ -1271,8 +1447,11 @@ const editRemainingQuantity = computed(() => {
 })
 
 const editTotalReleasedAfter = computed(() => {
-    if (editFixedValue.value === null) {
-        return null
+    if (!editHasFixedBaseline.value) {
+        return (
+            editTotalReleased.value
+            + editReleaseQuantity.value
+        )
     }
 
     return Math.max(
@@ -1289,12 +1468,13 @@ const openEditItemModal = (item) => {
 
     editingItem.value = item
 
+    /*
+     * Every release is a NEW transaction.
+     * Do not preload the previous/item remarks.
+     */
     editItemForm.value = {
         releaseQuantity: '',
-        remarks:
-            String(
-                item.remarks ?? ''
-            ),
+        remarks: '',
     }
 
     editItemErrors.value = {}
@@ -1358,22 +1538,98 @@ const saveEditItem = () => {
      * The controller only needs the release quantity,
      * then it subtracts that value from currently_available.
      */
+    /*
+     * Calculate the expected next values for immediate UI feedback.
+     * The DB remains the source of truth; router.reload() follows.
+     */
+    const nextCurrent =
+        Math.max(
+            0,
+            editCurrentAvailable.value
+            - releaseQuantity
+        )
+
+    const nextTrackedReleased =
+        editHasFixedBaseline.value
+            ? Number(
+                item.tracked_released ?? 0
+            )
+            : (
+                Number(
+                    item.tracked_released ?? 0
+                )
+                + releaseQuantity
+            )
+
+    const nextGeneratedReleased =
+        editHasFixedBaseline.value
+            ? Math.max(
+                0,
+                Number(editFixedValue.value)
+                - nextCurrent
+            )
+            : null
+
+    const releaseRemarks =
+        String(
+            editItemForm.value.remarks ?? ''
+        ).trim()
+
     router.put(
         `/dts/inventory/${item.id}`,
         {
             release_quantity:
                 releaseQuantity,
 
+            /*
+             * Transaction remark only.
+             * Controller stores this in History,
+             * not as the item's permanent remarks.
+             */
             remarks:
-                String(
-                    editItemForm.value.remarks ?? ''
-                ).trim(),
+                releaseRemarks,
         },
         {
             preserveScroll: true,
 
             onSuccess: () => {
+                /*
+                 * Update the visible row immediately so:
+                 * - Currently Available changes
+                 * - Remaining bar changes
+                 * - Quantity Released changes
+                 */
+                updateLocalInventoryItem(
+                    item.id,
+                    {
+                        currently_available:
+                            nextCurrent,
+
+                        tracked_released:
+                            Math.max(
+                                0,
+                                nextTrackedReleased
+                            ),
+
+                        total_released:
+                            nextGeneratedReleased,
+                    }
+                )
+
                 closeEditItemModal()
+
+                /*
+                 * Force a fresh copy from Laravel/MySQL.
+                 * This guarantees the local values are replaced
+                 * by the authoritative generated/tracked values.
+                 */
+                router.reload({
+                    only: [
+                        'inventoryItems',
+                    ],
+                    preserveScroll: true,
+                    preserveState: true,
+                })
             },
 
             onError: (errors) => {
@@ -1501,15 +1757,40 @@ const displayInventoryItem = (item) => {
 }
 
 const remainingPercent = (item) => {
-    const displayItem = displayInventoryItem(item)
-    const fixedValue = Number(displayItem?.fixed)
-    const remaining = differenceValue(displayItem)
+    const displayItem =
+        displayInventoryItem(item)
 
-    if (
-        !Number.isFinite(fixedValue)
-        || fixedValue <= 0
-        || remaining === null
-    ) {
+    const current =
+        currentAvailableValue(displayItem)
+
+    if (current === null) {
+        return 0
+    }
+
+    const released =
+        Math.max(
+            0,
+            Number(
+                quantityReleasedValue(
+                    displayItem
+                ) ?? 0
+            )
+        )
+
+    /*
+     * Same rule as the Stock by Unit graph:
+     *
+     * Current
+     * -------------------- x 100
+     * Current + Released
+     *
+     * No direct dependency on Fixed Value.
+     */
+    const accountedTotal =
+        Math.max(0, current)
+        + released
+
+    if (accountedTotal <= 0) {
         return 0
     }
 
@@ -1518,7 +1799,11 @@ const remainingPercent = (item) => {
         Math.min(
             100,
             Math.round(
-                (remaining / fixedValue) * 100
+                (
+                    Math.max(0, current)
+                    / accountedTotal
+                )
+                * 100
             )
         )
     )
@@ -1702,7 +1987,10 @@ const remainingBarClass = (item) => {
                                
 
                                 <span
-                                    v-if="quarterFilter !== 'all'"
+                                    v-if="
+                                        activeTab === 'supplies'
+                                        && quarterFilter !== 'all'
+                                    "
                                     class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700"
                                 >
                                     {{ quarterFilter.toUpperCase() }}
@@ -1711,7 +1999,14 @@ const remainingBarClass = (item) => {
                            
                         </div>
 
-                        <div class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 xl:w-[790px] xl:grid-cols-[minmax(0,1fr)_150px_150px]">
+                        <div
+                            class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2"
+                            :class="
+                                activeTab === 'supplies'
+                                    ? 'xl:w-[790px] xl:grid-cols-[minmax(0,1fr)_150px_150px]'
+                                    : 'xl:w-[620px] xl:grid-cols-[minmax(0,1fr)_150px]'
+                            "
+                        >
                             <!-- SEARCH -->
                             <div class="relative sm:col-span-2 xl:col-span-1">
                                 <svg
@@ -1754,6 +2049,7 @@ const remainingBarClass = (item) => {
                             </select>
 
                             <select
+                                v-if="activeTab === 'supplies'"
                                 v-model="quarterFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -1771,6 +2067,7 @@ const remainingBarClass = (item) => {
 
                 <!-- STOCK BY UNIT VERTICAL BAR GRAPH -->
                 <div
+                    v-if="activeTab === 'supplies'"
                     class="border-b border-slate-200 bg-slate-50/60 px-5 py-4 sm:px-6"
                 >
                     <div
@@ -1791,7 +2088,7 @@ const remainingBarClass = (item) => {
                             </div>
 
                             <p class="mt-1 text-[10px] font-semibold text-slate-400">
-                                Currently available ÷ Fixed Value by unit. Click a bar to filter the table.
+                                Remaining stock based on Currently Available in SPD and Quantity Released. Click a bar to filter the table.
                             </p>
                         </div>
 
@@ -1869,6 +2166,12 @@ const remainingBarClass = (item) => {
                                 </p>
 
                                 <p
+                                    class="mt-0.5 text-[9px] font-bold text-slate-500 sm:text-[10px]"
+                                >
+                                    {{ summary.totalReleased }} released
+                                </p>
+
+                                <p
                                     class="mt-0.5 text-[9px] font-bold text-black sm:text-[10px]"
                                 >
                                     {{ summary.itemCount }} item(s)
@@ -1908,7 +2211,7 @@ const remainingBarClass = (item) => {
                 </div>
 
                 <!-- DESKTOP LEDGER -->
-                <div class="hidden overflow-hidden lg:block">
+                <div v-if="activeTab === 'supplies'" class="hidden overflow-hidden lg:block">
                     <table class="w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
@@ -1985,7 +2288,7 @@ const remainingBarClass = (item) => {
                                 <!-- FIXED -->
                                 <td class="px-2 py-3 text-center align-middle">
                                     <span
-                                        v-if="item.fixed !== null && item.fixed !== undefined"
+                                        v-if="hasFixedBaseline(item)"
                                         class="text-sm font-black tabular-nums text-slate-800"
                                     >
                                         {{ item.fixed }}
@@ -2006,6 +2309,8 @@ const remainingBarClass = (item) => {
                                             ?? '—'
                                         }}
                                     </span>
+
+                                   
                                 </td>
 
                                 <!-- CURRENTLY AVAILABLE -->
@@ -2155,8 +2460,114 @@ const remainingBarClass = (item) => {
                     </table>
                 </div>
 
-                <!-- MOBILE LEDGER CARDS -->
-                <div class="space-y-3 p-4 lg:hidden">
+                
+                <!-- ICT & OTHER ITEMS — SIMPLE PPMP TABLE -->
+                <div
+                    v-if="activeTab === 'ict'"
+                    class="hidden overflow-hidden lg:block"
+                >
+                    <table class="w-full table-fixed">
+                        <thead class="bg-blue-500 text-white">
+                            <tr>
+                                <th class="w-[44%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Item
+                                </th>
+
+                                <th class="w-[14%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Unit of Measure
+                                </th>
+
+                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    PPMP for 2027
+                                </th>
+
+                                <th class="w-[26%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Remarks
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="item in paginatedItems"
+                                :key="`ict-${item.id || item.item}`"
+                                class="bg-white transition hover:bg-blue-50/35"
+                            >
+                                <td class="px-4 py-4 align-middle">
+                                    <p class="break-words text-xs font-black leading-5 text-slate-900">
+                                        {{ item.item }}
+                                    </p>
+                                </td>
+
+                                <td class="px-3 py-4 text-center align-middle">
+                                    <span
+                                        class="inline-flex rounded-lg border px-2.5 py-1 text-[9px] font-black"
+                                        :class="unitBadgeClass(item.unit)"
+                                    >
+                                        {{ item.unit || '—' }}
+                                    </span>
+                                </td>
+
+                                <td class="px-3 py-4 text-center align-middle">
+                                    <span
+                                        v-if="String(item.ppmp || '').trim()"
+                                        class="inline-flex min-w-10 justify-center rounded-lg border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-black text-blue-700"
+                                    >
+                                        {{ item.ppmp }}
+                                    </span>
+
+                                    <span
+                                        v-else
+                                        class="text-xs font-semibold text-slate-300"
+                                    >
+                                        —
+                                    </span>
+                                </td>
+
+                                <td class="px-4 py-4 align-middle">
+                                    <p
+                                        v-if="String(item.remarks || '').trim()"
+                                        class="break-words text-[11px] font-semibold leading-5 text-slate-600"
+                                    >
+                                        {{ item.remarks }}
+                                    </p>
+
+                                    <span
+                                        v-else
+                                        class="text-xs font-semibold text-slate-300"
+                                    >
+                                        —
+                                    </span>
+                                </td>
+                            </tr>
+
+                            <tr v-if="!paginatedItems.length">
+                                <td colspan="4" class="px-6 py-16 text-center">
+                                    <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                                        <svg
+                                            class="h-5 w-5"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                            aria-hidden="true"
+                                        >
+                                            <circle cx="11" cy="11" r="8" />
+                                            <path d="m21 21-4.35-4.35" />
+                                        </svg>
+                                    </div>
+
+                                    <p class="mt-4 text-sm font-black text-slate-700">
+                                        No ICT or other items found
+                                    </p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+<!-- MOBILE LEDGER CARDS -->
+                <div v-if="activeTab === 'supplies'" class="space-y-3 p-4 lg:hidden">
                     <article
                         v-for="item in paginatedItems"
                         :key="`mobile-${activeTab}-${item.id || item.item}`"
@@ -2203,7 +2614,7 @@ const remainingBarClass = (item) => {
                                 </p>
 
                                 <p class="mt-1 text-base font-black tabular-nums text-slate-900">
-                                    {{ item.fixed ?? '—' }}
+                                    {{ hasFixedBaseline(item) ? item.fixed : '—' }}
                                 </p>
                             </div>
 
@@ -2220,6 +2631,7 @@ const remainingBarClass = (item) => {
                                         ?? '—'
                                     }}
                                 </p>
+
                             </div>
 
                             <div class="bg-slate-50 p-3 text-center">
@@ -2234,7 +2646,12 @@ const remainingBarClass = (item) => {
                         </div>
 
                         <div
-                            v-if="differenceValue(displayInventoryItem(item)) !== null"
+                            v-if="
+                                differenceValue(displayInventoryItem(item)) !== null
+                                && item.fixed !== null
+                                && item.fixed !== undefined
+                                && Number(item.fixed) > 0
+                            "
                             class="px-4 pt-4"
                         >
                             <div class="h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -2341,7 +2758,66 @@ const remainingBarClass = (item) => {
                     </div>
                 </div>
 
-                <!-- COMPACT PAGINATION -->
+                
+                <!-- ICT & OTHER ITEMS — MOBILE -->
+                <div
+                    v-if="activeTab === 'ict'"
+                    class="space-y-3 p-4 lg:hidden"
+                >
+                    <article
+                        v-for="item in paginatedItems"
+                        :key="`mobile-ict-${item.id || item.item}`"
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div class="border-b border-slate-100 px-4 py-4">
+                            <div class="flex items-start justify-between gap-3">
+                                <p class="min-w-0 break-words text-sm font-black leading-5 text-slate-900">
+                                    {{ item.item }}
+                                </p>
+
+                                <span
+                                    class="shrink-0 rounded-md border px-2 py-1 text-[9px] font-black"
+                                    :class="unitBadgeClass(item.unit)"
+                                >
+                                    {{ item.unit || '—' }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="space-y-3 p-4">
+                            <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
+                                    PPMP for 2027
+                                </p>
+
+                                <p class="mt-1 whitespace-pre-line break-words text-sm font-black leading-5 text-blue-950">
+                                    {{ String(item.ppmp || '').trim() || '—' }}
+                                </p>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
+                                    Remarks
+                                </p>
+
+                                <p class="mt-1 break-words text-xs font-semibold leading-5 text-slate-600">
+                                    {{ String(item.remarks || '').trim() || '—' }}
+                                </p>
+                            </div>
+                        </div>
+                    </article>
+
+                    <div
+                        v-if="!paginatedItems.length"
+                        class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
+                    >
+                        <p class="text-sm font-black text-slate-700">
+                            No ICT or other items found
+                        </p>
+                    </div>
+                </div>
+
+<!-- COMPACT PAGINATION -->
                 <div class="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/80 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
                     <p class="text-xs font-semibold text-slate-500">
                         Showing
@@ -2441,6 +2917,19 @@ const remainingBarClass = (item) => {
 
 
                     <div
+                        v-if="activeTab === 'ict'"
+                        class="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
+                    >
+                        <p class="text-xs font-black text-blue-800">
+                            ICT & Other Items · PPMP 2027
+                        </p>
+                        <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700/80">
+                            Item, Unit of Measure, PPMP for 2027, and Remarks only.
+                            Stock monitoring and release fields are for Supplies.
+                        </p>
+                    </div>
+
+                    <div
                         class="grid grid-cols-1 gap-5 md:grid-cols-2"
                     >
                         <!-- ITEM -->
@@ -2535,11 +3024,12 @@ const remainingBarClass = (item) => {
 
 
                         <!-- FIXED -->
-                        <div>
+                        <div v-if="activeTab === 'supplies'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
                                 Fixed Value
+                                <span class="font-semibold text-slate-400">(Optional)</span>
                             </label>
 
                             <input
@@ -2549,7 +3039,7 @@ const remainingBarClass = (item) => {
                                 type="number"
                                 min="0"
                                 step="1"
-                                placeholder="Enter fixed value"
+                                placeholder="Leave blank if baseline was not provided"
                                 class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-black text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
                                 :class="
                                     addItemErrors.fixed
@@ -2573,12 +3063,12 @@ const remainingBarClass = (item) => {
                                 v-else
                                 class="mt-2 text-[10px] font-semibold text-slate-400"
                             >
-                                Starting/reference quantity used to compute Quantity Released.
+                                Optional. If left blank, Quantity Released starts at 0 and accumulates every release made in the system.
                             </p>
                         </div>
 
                         <!-- CURRENTLY AVAILABLE -->
-                        <div>
+                        <div v-if="activeTab === 'supplies'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
@@ -2636,13 +3126,26 @@ const remainingBarClass = (item) => {
                                 <p
                                     class="mt-0.5 text-[9px] font-semibold text-slate-400"
                                 >
-                                    Fixed Value − Currently Available
+                                    {{
+                                        newItemForm.fixed === ''
+                                            || newItemForm.fixed === null
+                                            || newItemForm.fixed === undefined
+                                            || Number(newItemForm.fixed) <= 0
+                                            ? 'Starts at 0 · accumulates releases made in the system'
+                                            : 'Fixed Value − Currently Available'
+                                    }}
                                 </p>
                             </div>
                         </div>
 
                         <!-- PPMP -->   
-                        <div>
+                        <div
+                            :class="
+                                activeTab === 'ict'
+                                    ? 'md:col-span-2'
+                                    : ''
+                            "
+                        >
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
@@ -2662,7 +3165,7 @@ const remainingBarClass = (item) => {
 
 
                     <!-- QUARTERS -->
-                    <div>
+                    <div v-if="activeTab === 'supplies'">
                         <div
                             class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
                         >
@@ -2840,7 +3343,7 @@ const remainingBarClass = (item) => {
                             <span>
                                 Fixed Value:
                                 <strong class="text-slate-800">
-                                    {{ editFixedValue ?? '—' }}
+                                    {{ editHasFixedBaseline ? editFixedValue : '—' }}
                                 </strong>
                             </span>
                         </div>
@@ -2874,7 +3377,14 @@ const remainingBarClass = (item) => {
                             <p
                                 class="mt-1 text-2xl font-black tabular-nums text-blue-700"
                             >
-                                {{ editTotalReleased }}
+                                {{ editTotalReleased ?? '—' }}
+                            </p>
+
+                            <p
+                                v-if="!editHasFixedBaseline"
+                                class="mt-1 text-[9px] font-bold leading-3 text-slate-400"
+                            >
+                                System-tracked total · each release adds to this number.
                             </p>
                         </div>
 

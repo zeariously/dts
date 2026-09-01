@@ -551,7 +551,7 @@ const emit = defineEmits([
                             :class="navLinkClass(isInventoryActive)"
                         >
                             <span class="flex items-center gap-3">
-                                <span>Inventory</span>
+                                <!-- <span>Inventory</span> -->
                             </span>
                         </Link>
 
