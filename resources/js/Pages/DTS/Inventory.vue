@@ -1231,6 +1231,80 @@ const historyRemarksText = (history) => {
     return newRemarks || 'Remarks removed'
 }
 
+const historyHasDetailedChanges = (history) => {
+    return (
+        Array.isArray(history?.changes)
+        && history.changes.length > 0
+    )
+}
+
+const historyActionLabel = (history) => {
+    if (history?.action === 'release') {
+        return 'Released stock'
+    }
+
+    if (history?.action === 'edit') {
+        return 'Edited item'
+    }
+
+    return 'Updated inventory'
+}
+
+const historyChangeValue = (change, value) => {
+    if (
+        value === null
+        || value === undefined
+        || String(value).trim() === ''
+    ) {
+        return '—'
+    }
+
+    const field =
+        String(change?.field || '')
+
+    if (field === 'quarters') {
+        const quarters =
+            Array.isArray(value)
+                ? value
+                : []
+
+        return quarters.length
+            ? quarters
+                .map((quarter) =>
+                    String(quarter).toUpperCase()
+                )
+                .join(', ')
+            : '—'
+    }
+
+    if (field === 'category') {
+        const category =
+            String(value)
+                .trim()
+                .toLowerCase()
+
+        return category === 'ict'
+            ? 'ICT & Other Items'
+            : category === 'supplies'
+                ? 'Supplies'
+                : String(value)
+    }
+
+    if (
+        [
+            'inventory_year',
+            'fixed_value',
+            'currently_available',
+            'release_quantity',
+        ].includes(field)
+        && !Number.isNaN(Number(value))
+    ) {
+        return Number(value).toLocaleString()
+    }
+
+    return String(value)
+}
+
 /*
 |--------------------------------------------------------------------------
 | STOCK HELPERS
@@ -1409,7 +1483,10 @@ const openFullEditModal = (item) => {
                 ? ''
                 : normalized.currently_available,
         quarters: [...inferredItemQuarters(normalized)],
-        remarks: String(normalized.remarks || ''),
+
+        // Always start Edit Remarks blank.
+        // Previous remarks should not be preloaded into a new edit session.
+        remarks: '',
     }
 
     fullEditErrors.value = {}
@@ -4105,7 +4182,11 @@ const remainingBarClass = (item) => {
                                         <p
                                             class="text-[10px] font-semibold text-slate-400"
                                         >
-                                            Updated inventory
+                                            {{
+                                                historyActionLabel(
+                                                    history
+                                                )
+                                            }}
                                         </p>
                                     </div>
                                 </div>
@@ -4124,8 +4205,75 @@ const remainingBarClass = (item) => {
                             <div
                                 class="mt-3 space-y-2 pl-10"
                             >
+                                <!-- FULL FIELD-BY-FIELD AUDIT -->
                                 <div
-                                    v-if="historyReleasedChanged(history)"
+                                    v-if="historyHasDetailedChanges(history)"
+                                    class="space-y-2"
+                                >
+                                    <div
+                                        v-for="(change, changeIndex) in history.changes"
+                                        :key="`history-${history.id}-change-${changeIndex}`"
+                                        class="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                                    >
+                                        <p
+                                            class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                                        >
+                                            {{ change.label }}
+                                        </p>
+
+                                        <div
+                                            v-if="change.single"
+                                            class="mt-1 break-words text-xs font-black text-blue-700"
+                                        >
+                                            {{
+                                                historyChangeValue(
+                                                    change,
+                                                    change.new
+                                                )
+                                            }}
+                                        </div>
+
+                                        <div
+                                            v-else
+                                            class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+                                        >
+                                            <span
+                                                class="break-words font-semibold text-slate-500"
+                                            >
+                                                {{
+                                                    historyChangeValue(
+                                                        change,
+                                                        change.old
+                                                    )
+                                                }}
+                                            </span>
+
+                                            <span
+                                                class="font-black text-slate-300"
+                                            >
+                                                →
+                                            </span>
+
+                                            <span
+                                                class="break-words font-black text-blue-700"
+                                            >
+                                                {{
+                                                    historyChangeValue(
+                                                        change,
+                                                        change.new
+                                                    )
+                                                }}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- LEGACY HISTORY FALLBACK -->
+                                <div
+                                    v-if="
+                                        !historyHasDetailedChanges(history)
+                                        && historyReleasedChanged(history)
+                                    "
                                     class="flex items-center gap-2 text-xs"
                                 >
                                     <span
@@ -4150,7 +4298,10 @@ const remainingBarClass = (item) => {
                                 </div>
 
                                 <div
-                                    v-if="historyRemarksChanged(history)"
+                                    v-if="
+                                        !historyHasDetailedChanges(history)
+                                        && historyRemarksChanged(history)
+                                    "
                                     class="text-xs"
                                 >
                                     <span
@@ -4172,7 +4323,8 @@ const remainingBarClass = (item) => {
 
                                 <p
                                     v-if="
-                                        !historyReleasedChanged(history)
+                                        !historyHasDetailedChanges(history)
+                                        && !historyReleasedChanged(history)
                                         && !historyRemarksChanged(history)
                                     "
                                     class="text-xs font-semibold text-slate-400"

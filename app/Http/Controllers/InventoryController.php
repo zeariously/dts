@@ -154,6 +154,14 @@ class InventoryController extends Controller
                 ->lockForUpdate()
                 ->firstOrFail();
 
+            /*
+             * Full audit snapshot BEFORE any edit/release changes.
+             * This lets History record Item Name, Unit, Year, Quarter(s),
+             * Fixed Value, Currently Available, Remarks, etc.
+             */
+            $historyOldData =
+                $this->inventoryHistorySnapshot($item);
+
             $category =
                 strtolower(trim((string) $item->category));
 
@@ -479,6 +487,16 @@ class InventoryController extends Controller
             $item->save();
             $item->refresh();
 
+            /*
+             * Full audit snapshot AFTER save so generated/casted values are
+             * normalized before comparing the record.
+             */
+            $historyNewData =
+                $this->inventoryHistorySnapshot($item);
+
+            $fullRecordChanged =
+                $historyOldData !== $historyNewData;
+
             /**
              * ========================================================
              * HISTORY
@@ -490,7 +508,8 @@ class InventoryController extends Controller
              * - system-tracked items
              */
             if (
-                $currentChanged
+                $fullRecordChanged
+                || $currentChanged
                 || $remarksChanged
                 || $historyRemarksChanged
             ) {
@@ -501,6 +520,42 @@ class InventoryController extends Controller
 
                 $historyTable =
                     $history->getTable();
+
+                /*
+                 * New full-audit columns. Schema checks keep the controller
+                 * backward-compatible while deploying the migration.
+                 */
+                if (
+                    Schema::hasColumn(
+                        $historyTable,
+                        'action'
+                    )
+                ) {
+                    $history->action =
+                        $isRelease
+                            ? 'release'
+                            : 'edit';
+                }
+
+                if (
+                    Schema::hasColumn(
+                        $historyTable,
+                        'old_data'
+                    )
+                ) {
+                    $history->old_data =
+                        $historyOldData;
+                }
+
+                if (
+                    Schema::hasColumn(
+                        $historyTable,
+                        'new_data'
+                    )
+                ) {
+                    $history->new_data =
+                        $historyNewData;
+                }
 
                 if (
                     Schema::hasColumn(
@@ -649,6 +704,22 @@ class InventoryController extends Controller
             ->histories()
             ->get()
             ->map(function ($history) {
+                $oldData =
+                    is_array($history->old_data ?? null)
+                        ? $history->old_data
+                        : [];
+
+                $newData =
+                    is_array($history->new_data ?? null)
+                        ? $history->new_data
+                        : [];
+
+                $changes =
+                    $this->inventoryHistoryChanges(
+                        $oldData,
+                        $newData
+                    );
+
                 $oldCurrent =
                     $history->old_currently_available
                     ?? $history->old_available
@@ -661,9 +732,90 @@ class InventoryController extends Controller
                     ?? $history->legacy_new_available
                     ?? null;
 
+                $action =
+                    $history->action
+                    ?? null;
+
+                /*
+                 * A release is an action rather than a directly editable
+                 * field, so expose the exact released quantity as a
+                 * synthetic history change.
+                 */
+                if (
+                    $action === 'release'
+                    && $oldCurrent !== null
+                    && $newCurrent !== null
+                    && (int) $oldCurrent > (int) $newCurrent
+                ) {
+                    array_unshift(
+                        $changes,
+                        [
+                            'field' =>
+                                'release_quantity',
+
+                            'label' =>
+                                'Quantity Released',
+
+                            'old' =>
+                                null,
+
+                            'new' =>
+                                (int) $oldCurrent
+                                - (int) $newCurrent,
+
+                            'single' =>
+                                true,
+                        ]
+                    );
+                }
+
+                /*
+                 * Release remarks are transaction-only and do not modify the
+                 * permanent inventory_items.remarks field, so add them to
+                 * the detailed changes explicitly.
+                 */
+                if (
+                    $action === 'release'
+                    && trim(
+                        (string) (
+                            $history->new_remarks
+                            ?? ''
+                        )
+                    ) !== ''
+                ) {
+                    $changes[] = [
+                        'field' =>
+                            'remarks',
+
+                        'label' =>
+                            'Remarks',
+
+                        'old' =>
+                            null,
+
+                        'new' =>
+                            $history->new_remarks,
+
+                        'single' =>
+                            true,
+                    ];
+                }
+
                 return [
                     'id' =>
                         $history->id,
+
+                    'action' =>
+                        $action,
+
+                    'changes' =>
+                        $changes,
+
+                    'old_data' =>
+                        $oldData,
+
+                    'new_data' =>
+                        $newData,
 
                     'old_currently_available' =>
                         $oldCurrent,
@@ -736,6 +888,155 @@ class InventoryController extends Controller
             'histories' =>
                 $histories,
         ]);
+    }
+
+    /**
+     * Return only user-visible/editable inventory values for audit history.
+     *
+     * Internal/generated fields are deliberately excluded so History stays
+     * understandable to users and does not show implementation noise.
+     */
+    private function inventoryHistorySnapshot(
+        InventoryItem $item
+    ): array {
+        $quarters =
+            is_array($item->quarters)
+                ? $item->quarters
+                : [];
+
+        $quarterOrder = [
+            'q1' => 1,
+            'q2' => 2,
+            'q3' => 3,
+            'q4' => 4,
+        ];
+
+        $quarters = array_values(
+            array_unique(
+                array_filter(
+                    array_map(
+                        fn ($quarter) =>
+                            strtolower(
+                                trim((string) $quarter)
+                            ),
+                        $quarters
+                    ),
+                    fn ($quarter) =>
+                        array_key_exists(
+                            $quarter,
+                            $quarterOrder
+                        )
+                )
+            )
+        );
+
+        usort(
+            $quarters,
+            fn ($a, $b) =>
+                $quarterOrder[$a]
+                <=>
+                $quarterOrder[$b]
+        );
+
+        return [
+            'category' =>
+                strtolower(
+                    trim((string) $item->category)
+                ),
+
+            'item' =>
+                trim((string) $item->item),
+
+            'unit' =>
+                strtoupper(
+                    trim((string) $item->unit)
+                ),
+
+            'inventory_year' =>
+                $item->inventory_year !== null
+                    ? (int) $item->inventory_year
+                    : null,
+
+            'quarters' =>
+                $quarters,
+
+            'fixed_value' =>
+                $item->fixed_value !== null
+                    ? (int) $item->fixed_value
+                    : null,
+
+            'currently_available' =>
+                $item->currently_available !== null
+                    ? (int) $item->currently_available
+                    : null,
+
+            'remarks' =>
+                $item->remarks !== null
+                    ? (string) $item->remarks
+                    : null,
+        ];
+    }
+
+    /**
+     * Convert old/new audit snapshots into a clean list of changed fields.
+     */
+    private function inventoryHistoryChanges(
+        array $oldData,
+        array $newData
+    ): array {
+        if (
+            empty($oldData)
+            || empty($newData)
+        ) {
+            return [];
+        }
+
+        $fields = [
+            'category' => 'Category',
+            'item' => 'Item Name',
+            'unit' => 'Unit',
+            'inventory_year' => 'Inventory Year',
+            'quarters' => 'Quarter(s)',
+            'fixed_value' => 'Fixed Value',
+            'currently_available' =>
+                'Currently Available in SPD',
+            'remarks' => 'Remarks',
+        ];
+
+        $changes = [];
+
+        foreach ($fields as $field => $label) {
+            $oldValue =
+                $oldData[$field]
+                ?? null;
+
+            $newValue =
+                $newData[$field]
+                ?? null;
+
+            if ($oldValue === $newValue) {
+                continue;
+            }
+
+            $changes[] = [
+                'field' =>
+                    $field,
+
+                'label' =>
+                    $label,
+
+                'old' =>
+                    $oldValue,
+
+                'new' =>
+                    $newValue,
+
+                'single' =>
+                    false,
+            ];
+        }
+
+        return $changes;
     }
 
     public function destroy(
