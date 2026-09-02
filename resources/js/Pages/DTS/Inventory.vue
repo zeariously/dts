@@ -2535,13 +2535,6 @@ const remainingBarClass = (item) => {
                                             ?? '—'
                                         }}
                                     </span>
-
-                                    <p
-                                        v-if="!hasFixedBaseline(item)"
-                                        class="mt-1 text-[8px] font-bold leading-3 text-slate-400"
-                                    >
-                                        System tracked
-                                    </p>
                                 </td>
 
                                 <!-- CURRENTLY AVAILABLE -->
