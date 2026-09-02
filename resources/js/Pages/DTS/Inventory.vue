@@ -3705,15 +3705,7 @@ const remainingBarClass = (item) => {
                         <p v-if="fullEditErrors.quarters" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.quarters }}</p>
                     </div>
 
-                    <div
-                        v-if="fullEditForm.category === 'supplies'"
-                        class="sm:col-span-2 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
-                    >
-                        <p class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500">Quantity Released</p>
-                        <p class="mt-1 text-xs font-semibold leading-5 text-blue-800">
-                            Automatic/read-only. Use the separate <strong>Release</strong> action to release stock.
-                        </p>
-                    </div>
+                
 
                     <div class="sm:col-span-2">
                         <label class="mb-2 block text-sm font-black text-slate-800">Remarks</label>
