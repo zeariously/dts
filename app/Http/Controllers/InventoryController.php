@@ -16,9 +16,14 @@ class InventoryController extends Controller
     /**
      * Inventory page.
      */
-    public function index()
+    public function index(Request $request)
     {
         return Inertia::render('DTS/Inventory', [
+            'canManageInventory' =>
+                $this->canManageInventory(
+                    $request->user()
+                ),
+
             'inventoryItems' => InventoryItem::query()
                 ->orderByRaw("
                     CASE
@@ -48,6 +53,10 @@ class InventoryController extends Controller
      */
     public function store(Request $request)
     {
+        $this->authorizeInventoryManagement(
+            $request
+        );
+
         $validated = $request->validate([
             'category' => 'required|in:supplies,ict',
             'item' => 'required|string|max:255',
@@ -97,6 +106,10 @@ class InventoryController extends Controller
         Request $request,
         InventoryItem $inventoryItem
     ) {
+        $this->authorizeInventoryManagement(
+            $request
+        );
+
         $validated = $request->validate([
             'release_quantity' =>
                 'sometimes|required|integer|min:1',
@@ -1039,9 +1052,50 @@ class InventoryController extends Controller
         return $changes;
     }
 
+    /**
+     * Role 3 is the only role that can manage Inventory.
+     *
+     * DTS primarily stores the role in "rights". Fallbacks are included for
+     * accounts exposing role/role_number.
+     */
+    private function canManageInventory(
+        $user
+    ): bool {
+        if (!$user) {
+            return false;
+        }
+
+        $role =
+            $user->rights
+            ?? $user->role
+            ?? $user->role_number
+            ?? null;
+
+        return trim(
+            (string) $role
+        ) === '3';
+    }
+
+    private function authorizeInventoryManagement(
+        Request $request
+    ): void {
+        abort_unless(
+            $this->canManageInventory(
+                $request->user()
+            ),
+            403,
+            'You have view-only access to the Inventory module.'
+        );
+    }
+
     public function destroy(
+        Request $request,
         InventoryItem $inventoryItem
     ) {
+        $this->authorizeInventoryManagement(
+            $request
+        );
+
         $inventoryItem->delete();
 
         return back()->with(

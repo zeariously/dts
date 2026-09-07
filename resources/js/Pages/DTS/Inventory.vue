@@ -12,7 +12,16 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+
+    canManageInventory: {
+        type: Boolean,
+        default: false,
+    },
 })
+
+const canManageInventory = computed(() =>
+    Boolean(props.canManageInventory)
+)
 
 const activeTab = ref('supplies')
 const search = ref('')
@@ -461,6 +470,10 @@ const resetNewItemForm = () => {
 }
 
 const openAddItemModal = () => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     resetNewItemForm()
     showAddItemModal.value = true
 }
@@ -478,6 +491,10 @@ const toggleAllNewItemQuarters = (event) => {
 }
 
 const addNewItem = () => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     addItemErrors.value = {}
 
     const itemName = String(
@@ -1460,6 +1477,10 @@ const toggleAllFullEditQuarters = () => {
 }
 
 const openFullEditModal = (item) => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     if (!item?.id) {
         return
     }
@@ -1500,6 +1521,10 @@ const closeFullEditModal = () => {
 }
 
 const saveFullEditItem = () => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     const original = fullEditingItem.value
 
     if (!original?.id) {
@@ -1729,6 +1754,10 @@ const releaseTotalReleasedAfter = computed(() => {
 })
 
 const openReleaseItemModal = (item) => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     if (!item?.id) {
         return
     }
@@ -1761,6 +1790,10 @@ const closeReleaseItemModal = () => {
 }
 
 const saveReleaseItem = () => {
+    if (!canManageInventory.value) {
+        return
+    }
+
     const item = releasingItem.value
 
     if (!item?.id) {
@@ -2111,6 +2144,849 @@ const remainingBarClass = (item) => {
     return 'bg-slate-300'
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| GENERATE INVENTORY REPORT
+|--------------------------------------------------------------------------
+|
+| Uses the CURRENT Inventory filters:
+| - active category/tab
+| - Inventory Year
+| - Quarter
+| - Unit
+| - Search
+|
+| Opens a clean print view that can be printed or saved as PDF.
+|
+*/
+
+const escapeReportHtml = (value) => {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;')
+}
+
+const reportNumber = (value) => {
+    if (
+        value === null
+        || value === undefined
+        || String(value).trim() === ''
+    ) {
+        return '—'
+    }
+
+    const number = Number(value)
+
+    return Number.isFinite(number)
+        ? number.toLocaleString()
+        : escapeReportHtml(value)
+}
+
+const reportQuarterText = (item) => {
+    const quarters =
+        inferredItemQuarters(item)
+
+    return quarters.length
+        ? quarters
+            .map((quarter) =>
+                quarter.toUpperCase()
+            )
+            .join(', ')
+        : '—'
+}
+
+const generateInventoryReport = () => {
+    const rows =
+        filteredItems.value
+
+    if (!rows.length) {
+        window.alert(
+            'No inventory records match the selected report filters.'
+        )
+        return
+    }
+
+    const categoryLabel =
+        activeTab.value === 'supplies'
+            ? 'Supplies'
+            : 'ICT & Other Items'
+
+    const quarterLabel =
+        quarterFilter.value === 'all'
+            ? 'All Quarters'
+            : quarterFilter.value.toUpperCase()
+
+    const unitLabel =
+        unitFilter.value === 'all'
+            ? 'All Units'
+            : unitFilter.value
+
+    const searchLabel =
+        search.value.trim()
+            ? escapeReportHtml(
+                search.value.trim()
+            )
+            : 'None'
+
+    const generatedAt =
+        new Date().toLocaleString(
+            'en-PH',
+            {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+            }
+        )
+
+    /*
+    |----------------------------------------------------------------------
+    | REPORT SUMMARY
+    |----------------------------------------------------------------------
+    |
+    | Totals are grouped BY UNIT so unlike measurements such as BOX,
+    | PIECE, REAM, PACK, etc. are never incorrectly added together.
+    |
+    */
+    const unitSummaryMap = new Map()
+
+    rows.forEach((item) => {
+        const unit =
+            String(item.unit || 'UNSPECIFIED')
+                .trim()
+                .toUpperCase()
+                || 'UNSPECIFIED'
+
+        if (!unitSummaryMap.has(unit)) {
+            unitSummaryMap.set(
+                unit,
+                {
+                    unit,
+                    itemCount: 0,
+                    fixedTotal: 0,
+                    releasedTotal: 0,
+                    currentTotal: 0,
+                    fixedCount: 0,
+                    currentCount: 0,
+                }
+            )
+        }
+
+        const summary =
+            unitSummaryMap.get(unit)
+
+        summary.itemCount += 1
+
+        if (activeTab.value === 'supplies') {
+            const fixed =
+                item.fixed !== null
+                && item.fixed !== undefined
+                    ? Number(item.fixed)
+                    : (
+                        item.fixed_value !== null
+                        && item.fixed_value !== undefined
+                            ? Number(item.fixed_value)
+                            : null
+                    )
+
+            const released =
+                Number(
+                    quantityReleasedValue(item)
+                )
+
+            const current =
+                currentAvailableValue(item)
+
+            if (
+                fixed !== null
+                && Number.isFinite(fixed)
+            ) {
+                summary.fixedTotal += fixed
+                summary.fixedCount += 1
+            }
+
+            if (Number.isFinite(released)) {
+                summary.releasedTotal += released
+            }
+
+            if (
+                current !== null
+                && current !== undefined
+                && Number.isFinite(Number(current))
+            ) {
+                summary.currentTotal += Number(current)
+                summary.currentCount += 1
+            }
+        }
+    })
+
+    const unitSummaries =
+        Array.from(
+            unitSummaryMap.values()
+        ).sort((a, b) =>
+            a.unit.localeCompare(b.unit)
+        )
+
+    const summaryUnitCount =
+        unitSummaries.length
+
+    const suppliesSummaryRows =
+        unitSummaries
+            .map((summary) => {
+                const accounted =
+                    summary.currentTotal
+                    + summary.releasedTotal
+
+                const remainingPercent =
+                    accounted > 0
+                        ? Math.round(
+                            (
+                                summary.currentTotal
+                                / accounted
+                            )
+                            * 100
+                        )
+                        : null
+
+                return `
+                    <tr>
+                        <td>${escapeReportHtml(summary.unit)}</td>
+                        <td class="number">${summary.itemCount.toLocaleString()}</td>
+                        <td class="number">${
+                            summary.fixedCount > 0
+                                ? summary.fixedTotal.toLocaleString()
+                                : '—'
+                        }</td>
+                        <td class="number">${summary.releasedTotal.toLocaleString()}</td>
+                        <td class="number">${summary.currentTotal.toLocaleString()}</td>
+                        <td class="number">${
+                            remainingPercent !== null
+                                ? `${remainingPercent}%`
+                                : '—'
+                        }</td>
+                    </tr>
+                `
+            })
+            .join('')
+
+    const ictSummaryRows =
+        unitSummaries
+            .map((summary) => `
+                <tr>
+                    <td>${escapeReportHtml(summary.unit)}</td>
+                    <td class="number">${summary.itemCount.toLocaleString()}</td>
+                </tr>
+            `)
+            .join('')
+
+    const summaryHtml =
+        activeTab.value === 'supplies'
+            ? `
+                <section class="summary-section">
+                    <div class="summary-heading">
+                        <div>
+                            <p class="summary-eyebrow">Report Summary</p>
+                            <h2>Stock Summary by Unit</h2>
+                        </div>
+
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <span class="summary-card-label">Line Items</span>
+                                <strong>${rows.length.toLocaleString()}</strong>
+                            </div>
+
+                            <div class="summary-card">
+                                <span class="summary-card-label">Units Represented</span>
+                                <strong>${summaryUnitCount.toLocaleString()}</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <p class="summary-note">
+                        Stock quantities are summarized per unit of measure so BOX, PIECE, REAM, PACK, and other units are not combined incorrectly.
+                    </p>
+
+                    <table class="summary-table">
+                        <thead>
+                            <tr>
+                                <th>Unit</th>
+                                <th class="number">Line Items</th>
+                                <th class="number">Fixed Value</th>
+                                <th class="number">Quantity Released</th>
+                                <th class="number">Currently Available</th>
+                                <th class="number">Remaining</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${suppliesSummaryRows}
+                        </tbody>
+                    </table>
+                </section>
+            `
+            : `
+                <section class="summary-section">
+                    <div class="summary-heading">
+                        <div>
+                            <p class="summary-eyebrow">Report Summary</p>
+                            <h2>ICT & Other Items Summary</h2>
+                        </div>
+
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <span class="summary-card-label">Line Items</span>
+                                <strong>${rows.length.toLocaleString()}</strong>
+                            </div>
+
+                            <div class="summary-card">
+                                <span class="summary-card-label">Units Represented</span>
+                                <strong>${summaryUnitCount.toLocaleString()}</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <table class="summary-table compact-summary">
+                        <thead>
+                            <tr>
+                                <th>Unit</th>
+                                <th class="number">Line Items</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${ictSummaryRows}
+                        </tbody>
+                    </table>
+                </section>
+            `
+
+    const suppliesHeader = `
+        <tr>
+            <th>Item</th>
+            <th>Unit</th>
+            <th>Quarter(s)</th>
+            <th class="number">Fixed Value</th>
+            <th class="number">Quantity Released</th>
+            <th class="number">Currently Available in SPD</th>
+            <th>Remarks</th>
+        </tr>
+    `
+
+    const ictHeader = `
+        <tr>
+            <th>Item</th>
+            <th>Unit</th>
+            <th>Quarter(s)</th>
+            <th>Remarks</th>
+        </tr>
+    `
+
+    const reportRows = rows
+        .map((item) => {
+            const itemName =
+                escapeReportHtml(
+                    item.item || '—'
+                )
+
+            const unit =
+                escapeReportHtml(
+                    item.unit || '—'
+                )
+
+            const quarters =
+                escapeReportHtml(
+                    reportQuarterText(item)
+                )
+
+            const remarks =
+                escapeReportHtml(
+                    String(
+                        item.remarks || ''
+                    ).trim() || '—'
+                )
+
+            if (activeTab.value === 'supplies') {
+                const fixed =
+                    item.fixed !== null
+                    && item.fixed !== undefined
+                        ? reportNumber(item.fixed)
+                        : (
+                            item.fixed_value !== null
+                            && item.fixed_value !== undefined
+                                ? reportNumber(
+                                    item.fixed_value
+                                )
+                                : '—'
+                        )
+
+                const released =
+                    reportNumber(
+                        quantityReleasedValue(item)
+                    )
+
+                const current =
+                    reportNumber(
+                        currentAvailableValue(item)
+                    )
+
+                return `
+                    <tr>
+                        <td class="item">${itemName}</td>
+                        <td>${unit}</td>
+                        <td>${quarters}</td>
+                        <td class="number">${fixed}</td>
+                        <td class="number">${released}</td>
+                        <td class="number current">${current}</td>
+                        <td class="remarks">${remarks}</td>
+                    </tr>
+                `
+            }
+
+            return `
+                <tr>
+                    <td class="item">${itemName}</td>
+                    <td>${unit}</td>
+                    <td>${quarters}</td>
+                    <td class="remarks">${remarks}</td>
+                </tr>
+            `
+        })
+        .join('')
+
+    const reportWindow =
+        window.open(
+            '',
+            '_blank',
+            'width=1400,height=900'
+        )
+
+    if (!reportWindow) {
+        window.alert(
+            'The report window was blocked. Please allow pop-ups for this site and try again.'
+        )
+        return
+    }
+
+    const reportHtml = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+    <title>Inventory Report - ${escapeReportHtml(categoryLabel)} ${yearFilter.value}</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 28px;
+            background: #ffffff;
+            color: #0f172a;
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+            font-size: 11px;
+        }
+
+        .report {
+            max-width: 1500px;
+            margin: 0 auto;
+        }
+
+        .header {
+            border-bottom: 2px solid #1d4ed8;
+            padding-bottom: 14px;
+            margin-bottom: 14px;
+        }
+
+        .agency {
+            margin: 0;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 5px 0 0;
+            font-size: 22px;
+            line-height: 1.15;
+            color: #0f172a;
+        }
+
+        .subtitle {
+            margin: 5px 0 0;
+            color: #475569;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .filters {
+            display: grid;
+            grid-template-columns:
+                repeat(5, minmax(0, 1fr));
+            gap: 8px;
+            margin: 0 0 14px;
+        }
+
+        .filter {
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+
+        .filter-label {
+            display: block;
+            color: #64748b;
+            font-size: 8px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .filter-value {
+            display: block;
+            margin-top: 3px;
+            color: #0f172a;
+            font-size: 10px;
+            font-weight: 700;
+            word-break: break-word;
+        }
+
+        .summary-section {
+            margin: 0 0 18px;
+            padding: 14px;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            background: #f8fbff;
+        }
+
+        .summary-heading {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 10px;
+        }
+
+        .summary-eyebrow {
+            margin: 0 0 3px;
+            color: #2563eb;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: 0.10em;
+            text-transform: uppercase;
+        }
+
+        .summary-heading h2 {
+            margin: 0;
+            color: #0f172a;
+            font-size: 15px;
+            line-height: 1.2;
+        }
+
+        .summary-cards {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .summary-card {
+            min-width: 100px;
+            padding: 7px 10px;
+            border: 1px solid #dbeafe;
+            border-radius: 6px;
+            background: #ffffff;
+            text-align: center;
+        }
+
+        .summary-card-label {
+            display: block;
+            color: #64748b;
+            font-size: 7px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .summary-card strong {
+            display: block;
+            margin-top: 2px;
+            color: #1d4ed8;
+            font-size: 15px;
+            line-height: 1.1;
+        }
+
+        .summary-note {
+            margin: 0 0 9px;
+            color: #64748b;
+            font-size: 8px;
+            line-height: 1.4;
+        }
+
+        .summary-table {
+            margin-bottom: 0;
+            background: #ffffff;
+            font-size: 9px;
+        }
+
+        .summary-table th,
+        .summary-table td {
+            padding: 5px 7px;
+        }
+
+        .compact-summary {
+            max-width: 520px;
+        }
+
+        .detail-heading {
+            margin: 0 0 7px;
+            color: #0f172a;
+            font-size: 13px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        th,
+        td {
+            border: 1px solid #94a3b8;
+            padding: 7px 8px;
+            vertical-align: top;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        th {
+            background: #eff6ff;
+            color: #1e3a8a;
+            font-size: 9px;
+            font-weight: 800;
+            text-align: left;
+            text-transform: uppercase;
+        }
+
+        td.item {
+            font-weight: 700;
+        }
+
+        th.number,
+        td.number {
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+
+        td.current {
+            font-weight: 800;
+        }
+
+        td.remarks {
+            white-space: pre-wrap;
+        }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            margin-top: 12px;
+            padding-top: 9px;
+            border-top: 1px solid #cbd5e1;
+            color: #64748b;
+            font-size: 9px;
+        }
+
+        .print-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .print-button {
+            border: 0;
+            border-radius: 7px;
+            background: #2563eb;
+            color: white;
+            padding: 9px 14px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        @page {
+            size: A4 landscape;
+            margin: 10mm;
+        }
+
+        @media print {
+            body {
+                padding: 0;
+                font-size: 9px;
+            }
+
+            .print-actions {
+                display: none !important;
+            }
+
+            .report {
+                max-width: none;
+            }
+
+            thead {
+                display: table-header-group;
+            }
+
+            tr {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
+            .filters {
+                grid-template-columns:
+                    repeat(5, minmax(0, 1fr));
+            }
+
+            .summary-section {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
+            .summary-heading {
+                margin-bottom: 7px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="report">
+        <div class="print-actions">
+            <button
+                type="button"
+                class="print-button"
+                onclick="window.print()"
+            >
+                Print / Save as PDF
+            </button>
+        </div>
+
+        <header class="header">
+            <p class="agency">
+                Department of Science and Technology · Document Tracking System
+            </p>
+
+            <h1>
+                Inventory Monitoring Report
+            </h1>
+
+            <p class="subtitle">
+                ${escapeReportHtml(categoryLabel)}
+            </p>
+        </header>
+
+        <section class="filters">
+            <div class="filter">
+                <span class="filter-label">
+                    Inventory Year
+                </span>
+                <span class="filter-value">
+                    ${escapeReportHtml(yearFilter.value)}
+                </span>
+            </div>
+
+            <div class="filter">
+                <span class="filter-label">
+                    Quarter
+                </span>
+                <span class="filter-value">
+                    ${escapeReportHtml(quarterLabel)}
+                </span>
+            </div>
+
+            <div class="filter">
+                <span class="filter-label">
+                    Unit
+                </span>
+                <span class="filter-value">
+                    ${escapeReportHtml(unitLabel)}
+                </span>
+            </div>
+
+            <div class="filter">
+                <span class="filter-label">
+                    Search
+                </span>
+                <span class="filter-value">
+                    ${searchLabel}
+                </span>
+            </div>
+
+            <div class="filter">
+                <span class="filter-label">
+                    Generated
+                </span>
+                <span class="filter-value">
+                    ${escapeReportHtml(generatedAt)}
+                </span>
+            </div>
+        </section>
+
+        ${summaryHtml}
+
+        <h2 class="detail-heading">
+            Detailed Inventory
+        </h2>
+
+        <table>
+            <thead>
+                ${
+                    activeTab.value === 'supplies'
+                        ? suppliesHeader
+                        : ictHeader
+                }
+            </thead>
+
+            <tbody>
+                ${reportRows}
+            </tbody>
+        </table>
+
+        <footer class="footer">
+            <span>
+                Inventory Monitoring · ${escapeReportHtml(categoryLabel)}
+            </span>
+
+            <span>
+                Generated ${escapeReportHtml(generatedAt)}
+            </span>
+        </footer>
+    </div>
+</body>
+</html>
+    `
+
+    reportWindow.document.open()
+    reportWindow.document.write(
+        reportHtml
+    )
+    reportWindow.document.close()
+    reportWindow.focus()
+}
+
 </script>
 
 <template>
@@ -2155,14 +3031,49 @@ const remainingBarClass = (item) => {
                        
                     </div>
 
-                    <button
-                        type="button"
-                        class="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-500 px-5 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-100"
-                        @click="openAddItemModal"
+                    <div
+                        class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"
                     >
-                        <span class="text-lg leading-none">+</span>
-                        <span>Add Item</span>
-                    </button>
+                        <button
+                            type="button"
+                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 text-sm font-black text-blue-700 transition hover:bg-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                            @click="generateInventoryReport"
+                        >
+                            <svg
+                                class="h-4 w-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                            >
+                                <path d="M6 9V2h12v7" />
+                                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                                <rect x="6" y="14" width="12" height="8" />
+                            </svg>
+
+                            <span>Generate Report</span>
+                        </button>
+
+                        <button
+                            v-if="canManageInventory"
+                            type="button"
+                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 px-5 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                            @click="openAddItemModal"
+                        >
+                            <span class="text-lg leading-none">+</span>
+                            <span>Add Item</span>
+                        </button>
+
+                        <div
+                            v-if="!canManageInventory"
+                            class="inline-flex h-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-xs font-black text-slate-500"
+                        >
+                            View Only
+                        </div>
+                    </div>
                 </div>
 
                 <!-- SEGMENTED TABS -->
@@ -2535,6 +3446,13 @@ const remainingBarClass = (item) => {
                                             ?? '—'
                                         }}
                                     </span>
+
+                                    <p
+                                        v-if="!hasFixedBaseline(item)"
+                                        class="mt-1 text-[8px] font-bold leading-3 text-slate-400"
+                                    >
+                                        System tracked
+                                    </p>
                                 </td>
 
                                 <!-- CURRENTLY AVAILABLE -->
@@ -2599,7 +3517,7 @@ const remainingBarClass = (item) => {
                                 <!-- ACTION -->
                                 <td class="px-2 py-3 text-center align-middle">
                                     <div class="flex flex-wrap items-center justify-center gap-1.5">
-                                        <button
+                                        <button v-if="canManageInventory"
                                             type="button"
                                             class="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-slate-700 transition hover:bg-slate-50"
                                             @click="openFullEditModal(item)"
@@ -2607,7 +3525,7 @@ const remainingBarClass = (item) => {
                                             Edit
                                         </button>
 
-                                        <button
+                                        <button v-if="canManageInventory"
                                             type="button"
                                             class="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[9px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
                                             :disabled="
@@ -2766,7 +3684,7 @@ const remainingBarClass = (item) => {
 
 
                                 <td class="px-3 py-4 text-center align-middle">
-                                    <button
+                                    <button v-if="canManageInventory"
                                         type="button"
                                         class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
                                         @click="openFullEditModal(item)"
@@ -2918,7 +3836,7 @@ const remainingBarClass = (item) => {
                             </div>
 
                             <div class="flex justify-end gap-2">
-                                <button
+                                <button v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
                                     @click="openFullEditModal(item)"
@@ -2926,7 +3844,7 @@ const remainingBarClass = (item) => {
                                     Edit
                                 </button>
 
-                                <button
+                                <button v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
                                     :disabled="
@@ -3046,7 +3964,7 @@ const remainingBarClass = (item) => {
 
 
                             <div class="flex justify-end">
-                                <button
+                                <button v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
                                     @click="openFullEditModal(item)"
@@ -3110,7 +4028,7 @@ const remainingBarClass = (item) => {
 
         <!-- ADD ITEM MODAL -->
         <div
-            v-if="showAddItemModal"
+            v-if="canManageInventory && showAddItemModal"
             class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/65 p-0 backdrop-blur-sm sm:items-center sm:p-4"
             @click.self="
                 closeAddItemModal
@@ -3564,7 +4482,7 @@ const remainingBarClass = (item) => {
 
         <!-- FULL EDIT ITEM MODAL -->
         <div
-            v-if="showFullEditModal && fullEditingItem"
+            v-if="canManageInventory && showFullEditModal && fullEditingItem"
             class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
             @click.self="closeFullEditModal"
         >
@@ -3698,7 +4616,15 @@ const remainingBarClass = (item) => {
                         <p v-if="fullEditErrors.quarters" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.quarters }}</p>
                     </div>
 
-                
+                    <div
+                        v-if="fullEditForm.category === 'supplies'"
+                        class="sm:col-span-2 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
+                    >
+                        <p class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500">Quantity Released</p>
+                        <p class="mt-1 text-xs font-semibold leading-5 text-blue-800">
+                            Automatic/read-only. Use the separate <strong>Release</strong> action to release stock.
+                        </p>
+                    </div>
 
                     <div class="sm:col-span-2">
                         <label class="mb-2 block text-sm font-black text-slate-800">Remarks</label>
@@ -3728,7 +4654,7 @@ const remainingBarClass = (item) => {
 
         <!-- RELEASE ITEM MODAL -->
         <div
-            v-if="showReleaseItemModal"
+            v-if="canManageInventory && showReleaseItemModal"
             class="fixed inset-0 z-[65] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-sm sm:items-center sm:p-4"
             @click.self="closeReleaseItemModal"
         >
