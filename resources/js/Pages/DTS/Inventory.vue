@@ -38,6 +38,15 @@ const inventoryHistories = ref([])
 const historyLoading = ref(false)
 const historyError = ref('')
 
+/*
+|--------------------------------------------------------------------------
+| DELETE ITEM
+|--------------------------------------------------------------------------
+*/
+const showDeleteItemModal = ref(false)
+const deletingItem = ref(null)
+const deleteItemProcessing = ref(false)
+
 const showReleaseItemModal = ref(false)
 const releasingItem = ref(null)
 const releaseItemErrors = ref({})
@@ -1474,6 +1483,61 @@ const toggleAllFullEditQuarters = () => {
         allFullEditQuartersSelected.value
             ? []
             : [...quarterValues]
+}
+
+const openDeleteItemModal = (item) => {
+    if (!canManageInventory.value || !item?.id) {
+        return
+    }
+
+    deletingItem.value =
+        normalizeInventoryItem(item)
+
+    showDeleteItemModal.value = true
+}
+
+const closeDeleteItemModal = () => {
+    if (deleteItemProcessing.value) {
+        return
+    }
+
+    showDeleteItemModal.value = false
+    deletingItem.value = null
+}
+
+const confirmDeleteItem = () => {
+    if (
+        !canManageInventory.value
+        || !deletingItem.value?.id
+        || deleteItemProcessing.value
+    ) {
+        return
+    }
+
+    deleteItemProcessing.value = true
+
+    router.delete(
+        `/dts/inventory/${deletingItem.value.id}`,
+        {
+            preserveScroll: true,
+
+            onSuccess: () => {
+                showDeleteItemModal.value = false
+                deletingItem.value = null
+                currentPage.value = 1
+
+                router.reload({
+                    only: ['inventoryItems'],
+                    preserveScroll: true,
+                    preserveState: true,
+                })
+            },
+
+            onFinish: () => {
+                deleteItemProcessing.value = false
+            },
+        }
+    )
 }
 
 const openFullEditModal = (item) => {
@@ -3558,6 +3622,32 @@ const generateInventoryReport = () => {
                                                 <path d="M19 11a7 7 0 1 0 1 4" />
                                             </svg>
                                         </button>
+
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            title="Delete Item"
+                                            aria-label="Delete Item"
+                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100"
+                                            @click="openDeleteItemModal(item)"
+                                        >
+                                            <svg
+                                                class="h-4 w-4"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M3 6h18" />
+                                                <path d="M8 6V4h8v2" />
+                                                <path d="M19 6l-1 14H6L5 6" />
+                                                <path d="M10 11v5" />
+                                                <path d="M14 11v5" />
+                                            </svg>
+                                        </button>
                                     </div>
                                 </td>
                             </tr>
@@ -3684,13 +3774,42 @@ const generateInventoryReport = () => {
 
 
                                 <td class="px-3 py-4 text-center align-middle">
-                                    <button v-if="canManageInventory"
-                                        type="button"
-                                        class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                        @click="openFullEditModal(item)"
-                                    >
-                                        Edit
-                                    </button>
+                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                            @click="openFullEditModal(item)"
+                                        >
+                                            Edit
+                                        </button>
+
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            title="Delete Item"
+                                            aria-label="Delete Item"
+                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+                                            @click="openDeleteItemModal(item)"
+                                        >
+                                            <svg
+                                                class="h-4 w-4"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M3 6h18" />
+                                                <path d="M8 6V4h8v2" />
+                                                <path d="M19 6l-1 14H6L5 6" />
+                                                <path d="M10 11v5" />
+                                                <path d="M14 11v5" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
 
@@ -3877,6 +3996,32 @@ const generateInventoryReport = () => {
                                         <path d="M19 11a7 7 0 1 0 1 4" />
                                     </svg>
                                 </button>
+
+                                <button
+                                    v-if="canManageInventory"
+                                    type="button"
+                                    title="Delete Item"
+                                    aria-label="Delete Item"
+                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+                                    @click="openDeleteItemModal(item)"
+                                >
+                                    <svg
+                                        class="h-5 w-5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M3 6h18" />
+                                        <path d="M8 6V4h8v2" />
+                                        <path d="M19 6l-1 14H6L5 6" />
+                                        <path d="M10 11v5" />
+                                        <path d="M14 11v5" />
+                                    </svg>
+                                </button>
                             </div>
                         </div>
                     </article>
@@ -3963,13 +4108,23 @@ const generateInventoryReport = () => {
                             </div>
 
 
-                            <div class="flex justify-end">
-                                <button v-if="canManageInventory"
+                            <div class="flex justify-end gap-2">
+                                <button
+                                    v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
                                     @click="openFullEditModal(item)"
                                 >
                                     Edit
+                                </button>
+
+                                <button
+                                    v-if="canManageInventory"
+                                    type="button"
+                                    class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
+                                    @click="openDeleteItemModal(item)"
+                                >
+                                    Delete
                                 </button>
                             </div>
                         </div>
@@ -4904,6 +5059,76 @@ const generateInventoryReport = () => {
 
 
         <!-- HISTORY MODAL -->
+        <!-- DELETE ITEM CONFIRMATION MODAL -->
+        <div
+            v-if="canManageInventory && showDeleteItemModal && deletingItem"
+            class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+            @click.self="closeDeleteItemModal"
+        >
+            <div class="w-full max-w-md overflow-hidden rounded-3xl bg-white shadow-2xl">
+                <div class="border-b border-rose-100 bg-rose-50 px-5 py-5 sm:px-6">
+                    <div class="flex items-start gap-4">
+                        <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-rose-100 text-rose-700">
+                            <svg
+                                class="h-5 w-5"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                            >
+                                <path d="M3 6h18" />
+                                <path d="M8 6V4h8v2" />
+                                <path d="M19 6l-1 14H6L5 6" />
+                                <path d="M10 11v5" />
+                                <path d="M14 11v5" />
+                            </svg>
+                        </div>
+
+                        <div class="min-w-0">
+                            <p class="text-[10px] font-black uppercase tracking-[0.15em] text-rose-600">
+                                Delete Inventory Item
+                            </p>
+
+                            <h3 class="mt-1 break-words text-lg font-black text-slate-900">
+                                {{ deletingItem.item || 'Inventory Item' }}
+                            </h3>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-5 sm:p-6">
+                    <p class="text-sm font-semibold leading-6 text-slate-600">
+                        Are you sure you want to permanently delete this inventory item?
+                    </p>
+
+                  
+
+                    <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                        <button
+                            type="button"
+                            :disabled="deleteItemProcessing"
+                            class="h-11 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            @click="closeDeleteItemModal"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="button"
+                            :disabled="deleteItemProcessing"
+                            class="h-11 rounded-xl bg-rose-600 px-6 text-sm font-black text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            @click="confirmDeleteItem"
+                        >
+                            {{ deleteItemProcessing ? 'Deleting...' : 'Delete Item' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div
             v-if="showHistoryModal"
             class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]"

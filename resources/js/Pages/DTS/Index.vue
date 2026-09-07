@@ -5295,7 +5295,7 @@ const submitEntryDateUpdate = () => {
                                     class="border-b border-slate-200 px-4 py-4 font-bold"
                                     :class="isRoleTwo ? 'w-[15%]' : 'w-[22%]'"
                                 >
-                                    {{ documentAgencyColumnLabel }}
+                                    TO
                                 </th>
 
                                 <th
@@ -5349,16 +5349,7 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="px-4 py-5 align-top">
                                     <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
-                                        <!-- <span class="block">
-                                            {{ documentAgencyDisplay(doc) }}
-                                        </span> -->
-
-                                        <span
-                                            v-if="documentAgencyAbbrev(doc)"
-                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
-                                        >
-                                            ({{ documentAgencyAbbrev(doc) }})
-                                        </span>
+                                        {{ documentToDisplay(doc) }}
                                     </div>
                                 </td>
 

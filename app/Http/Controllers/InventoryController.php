@@ -1052,7 +1052,12 @@ class InventoryController extends Controller
         return $changes;
     }
 
-    
+    /**
+     * Role 3 is the only role that can manage Inventory.
+     *
+     * DTS primarily stores the role in "rights". Fallbacks are included for
+     * accounts exposing role/role_number.
+     */
     private function canManageInventory(
         $user
     ): bool {
@@ -1071,6 +1076,10 @@ class InventoryController extends Controller
         ) === '3';
     }
 
+    /**
+     * The backend is the actual security boundary.
+     * Non-role-3 users receive HTTP 403 on Inventory writes.
+     */
     private function authorizeInventoryManagement(
         Request $request
     ): void {
@@ -1091,6 +1100,11 @@ class InventoryController extends Controller
             $request
         );
 
+        /*
+         * Delete related inventory history first so the item can be removed
+         * safely even when the foreign key is not configured with CASCADE.
+         */
+        $inventoryItem->histories()->delete();
         $inventoryItem->delete();
 
         return back()->with(
