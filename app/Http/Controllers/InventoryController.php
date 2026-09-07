@@ -1052,12 +1052,7 @@ class InventoryController extends Controller
         return $changes;
     }
 
-    /**
-     * Role 3 is the only role that can manage Inventory.
-     *
-     * DTS primarily stores the role in "rights". Fallbacks are included for
-     * accounts exposing role/role_number.
-     */
+    
     private function canManageInventory(
         $user
     ): bool {

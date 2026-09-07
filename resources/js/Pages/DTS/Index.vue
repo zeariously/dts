@@ -5284,27 +5284,52 @@ const submitEntryDateUpdate = () => {
                     <table class="w-full min-w-[1000px] table-fixed text-left text-sm">
                         <thead class="bg-slate-50 text-slate-700">
                             <tr>
-                                <th class="w-[10%] border-b border-slate-200 px-4 py-4 font-bold">
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 font-bold"
+                                    :class="isRoleTwo ? 'w-[9%]' : 'w-[10%]'"
+                                >
                                     DOC ID
                                 </th>
 
-                                <th class="w-[22%] border-b border-slate-200 px-4 py-4 font-bold">
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 font-bold"
+                                    :class="isRoleTwo ? 'w-[15%]' : 'w-[22%]'"
+                                >
                                     {{ documentAgencyColumnLabel }}
                                 </th>
 
-                                <th class="w-[30%] border-b border-slate-200 px-4 py-4 font-bold">
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 font-bold"
+                                    :class="isRoleTwo ? 'w-[22%]' : 'w-[30%]'"
+                                >
                                     SUBJECT
                                 </th>
 
-                                <th class="w-[12%] border-b border-slate-200 px-4 py-4 text-center font-bold">
+                                <th
+                                    v-if="isRoleTwo"
+                                    class="w-[24%] border-b border-slate-200 px-4 py-4 font-bold"
+                                >
+                                    REGARDING
+                                </th>
+
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 text-center font-bold"
+                                    :class="isRoleTwo ? 'w-[10%]' : 'w-[12%]'"
+                                >
                                     STATUS
                                 </th>
 
-                                <th class="w-[16%] border-b border-slate-200 px-4 py-4 font-bold">
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 font-bold"
+                                    :class="isRoleTwo ? 'w-[12%]' : 'w-[16%]'"
+                                >
                                     DATE SENT
                                 </th>
 
-                                <th class="w-[10%] border-b border-slate-200 px-4 py-4 text-center font-bold">
+                                <th
+                                    class="border-b border-slate-200 px-4 py-4 text-center font-bold"
+                                    :class="isRoleTwo ? 'w-[8%]' : 'w-[10%]'"
+                                >
                                     ACTION
                                 </th>
                             </tr>
@@ -5324,9 +5349,9 @@ const submitEntryDateUpdate = () => {
 
                                 <td class="px-4 py-5 align-top">
                                     <div class="whitespace-normal break-words text-sm font-bold leading-6 text-slate-800">
-                                        <span class="block">
+                                        <!-- <span class="block">
                                             {{ documentAgencyDisplay(doc) }}
-                                        </span>
+                                        </span> -->
 
                                         <span
                                             v-if="documentAgencyAbbrev(doc)"
@@ -5340,6 +5365,15 @@ const submitEntryDateUpdate = () => {
                                 <td class="px-4 py-5 align-top">
                                     <div class="whitespace-normal break-words text-sm font-semibold leading-6 text-slate-800">
                                         {{ doc.subject || 'No subject' }}
+                                    </div>
+                                </td>
+
+                                <td
+                                    v-if="isRoleTwo"
+                                    class="px-4 py-5 align-top"
+                                >
+                                    <div class="whitespace-pre-line break-words text-sm font-semibold leading-6 text-slate-800">
+                                        {{ doc.regarding || '-' }}
                                     </div>
                                 </td>
 
@@ -5378,7 +5412,10 @@ const submitEntryDateUpdate = () => {
                             </tr>
 
                             <tr v-if="rows.length === 0">
-                                <td colspan="6" class="px-7 py-14 text-center">
+                                <td
+                                    :colspan="isRoleTwo ? 7 : 6"
+                                    class="px-7 py-14 text-center"
+                                >
                                     <div class="text-lg font-semibold text-slate-700">
                                         No documents found
                                     </div>
