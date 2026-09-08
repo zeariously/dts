@@ -5103,9 +5103,6 @@ const generateInventoryReport = () => {
                     <p class="text-sm font-semibold leading-6 text-slate-600">
                         Are you sure you want to permanently delete this inventory item?
                     </p>
-
-                  
-
                     <div class="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                         <button
                             type="button"
