@@ -60,7 +60,7 @@ class InventoryController extends Controller
      * OTHER ITEMS
      * - Furniture / Fixtures / Emergency Kits / Token and Giveaways:
      *   Item, Count (stored in currently_available), Location, Remarks.
-     * - Emergency Kits keep Count but do not use the Release action.
+     * - All Other Items use Count, Release, and History.
      */
     public function store(Request $request)
     {
@@ -473,6 +473,7 @@ class InventoryController extends Controller
                     'ict',
                     'furniture',
                     'fixtures',
+                    'emergency_kits',
                     'token_giveaways',
                 ];
 
@@ -896,12 +897,8 @@ class InventoryController extends Controller
                 $item->quarter_stock = null;
                 $item->fixed_value = null;
 
-                if ($finalCategory === 'emergency_kits') {
-                    $item->tracked_released = 0;
-                } else {
-                    $item->tracked_released =
-                        (int) ($item->tracked_released ?? 0);
-                }
+                $item->tracked_released =
+                    (int) ($item->tracked_released ?? 0);
             } elseif ($finalCategory === 'ict') {
                 $item->location = null;
                 $item->fixed_value = null;
@@ -2523,10 +2520,7 @@ class InventoryController extends Controller
             $request
         );
 
-        /*
-         * Delete related inventory history first so the item can be removed
-         * safely even when the foreign key is not configured with CASCADE.
-         */
+       
         $inventoryItem->histories()->delete();
         $inventoryItem->delete();
 

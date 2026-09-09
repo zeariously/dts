@@ -1607,11 +1607,9 @@ const otherCategoryHasCount = (category) => {
 }
 
 const otherCategoryCanRelease = (category) => {
-    return [
-        'furniture',
-        'fixtures',
-        'token_giveaways',
-    ].includes(category)
+    return otherCategoryValues.includes(
+        category
+    )
 }
 
 const currentOtherCategoryHasCount = computed(() =>
