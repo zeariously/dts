@@ -106,18 +106,11 @@ const isRoleTwo = computed(() => {
 })
 
 const canShowReturnedCard = computed(() => {
-    /*
-     * Returned card is visible only to Role 3.
-     * It contains documents returned by Role 2 accounts.
-     */
+  
     return userRights.value === '3'
 })
 
-/*
- * Report rule:
- * Role 2 must not see Returned records in the generated report,
- * including the preview table, summary cards, and printed output.
- */
+
 const canShowReturnedInReport = computed(() => {
     return userRights.value !== '2'
 })
@@ -144,19 +137,16 @@ const currentPersonnelIds = computed(() => {
 })
 
 const canManageDts = computed(() => {
-    // Role 3 only has manage/staff actions in this page.
-    // Role 1 and Role 4 should behave like Role 2 here.
+    
     return ['3'].includes(userRights.value)
 })
 
 const canReceiveDts = computed(() => {
-    // Roles 1, 2, and 4 have the same document receiving/viewing actions.
-    // Role 3 can also receive because it is the manage/staff role.
+   
     return ['1', '2', '3', '4'].includes(userRights.value)
 })
 
 const isViewerAccount = computed(() => {
-    // Auto notification popup applies to viewer-style roles.
     return ['1', '2', '4'].includes(userRights.value)
 })
 const flashSuccess = computed(() => {
@@ -186,19 +176,10 @@ const firstErrorMessage = computed(() => {
 })
 
 
-/*
- * Separate automatic 3-day reminder modal.
- * This does not change or consume the notification bell items.
- */
+
 const showAutomaticReminderModal = ref(false)
 
-/*
- * Automatic reminder behavior:
- * - Prompts immediately on every fresh login.
- * - "Remind Me in 15 Minutes" snoozes it only for the current login session.
- * - After 15 minutes, it opens again when unresolved reminders still exist.
- * - A new Laravel login session invalidates any previous snooze.
- */
+
 const AUTOMATIC_REMINDER_SNOOZE_MINUTES = 15
 const automaticReminderSnoozedUntil = ref(0)
 let automaticReminderSnoozeTimer = null
@@ -236,7 +217,6 @@ const clearAutomaticReminderSnooze = () => {
     try {
         window.localStorage.removeItem(automaticReminderSnoozeStorageKey.value)
     } catch (error) {
-        // The in-memory snooze has already been cleared.
     }
 }
 
@@ -273,10 +253,7 @@ const loadAutomaticReminderSnooze = () => {
 
     const currentSessionToken = currentReminderSessionToken.value
 
-    /*
-     * Without a session token, do not reuse an old snooze.
-     * This guarantees that the reminder can still prompt on page load.
-     */
+    
     if (!currentSessionToken) {
         clearAutomaticReminderSnooze()
         return
@@ -291,10 +268,7 @@ const loadAutomaticReminderSnooze = () => {
         const savedSessionToken = String(savedSnooze?.sessionToken || '')
         const savedUntil = Number(savedSnooze?.snoozedUntil || 0)
 
-        /*
-         * A fresh login has a different hashed Laravel session token.
-         * Discard the old snooze so the reminder opens immediately.
-         */
+       
         if (
             savedSessionToken !== currentSessionToken
             || !Number.isFinite(savedUntil)
@@ -331,20 +305,13 @@ const remindAutomaticReminderIn15Minutes = () => {
             })
         )
     } catch (error) {
-        // The in-memory snooze still works while the component remains loaded.
     }
 
     closeAutomaticReminderModal()
     scheduleAutomaticReminderAfterSnooze()
 }
 
-/*
- * Reminder sound:
- * - Plays a short three-tone chime whenever the automatic reminder opens.
- * - Uses Web Audio, so no MP3/WAV file is required.
- * - If the browser blocks autoplay, it plays after the user's first click or
- *   keypress while the reminder modal is still open.
- */
+
 let automaticReminderAudioContext = null
 let automaticReminderSoundPending = false
 let automaticReminderSoundPlayedForCurrentOpen = false
@@ -422,7 +389,6 @@ const unlockAutomaticReminderSound = async () => {
             await playAutomaticReminderSound()
         }
     } catch (error) {
-        // The next user interaction can try again.
     }
 }
 
@@ -485,10 +451,7 @@ const openAutomaticReminderModal = () => {
 }
 
 const closeAutomaticReminderModal = () => {
-    /*
-     * Close only hides the current modal.
-     * "Remind Me in 15 Minutes" applies the timed snooze.
-     */
+    
     showAutomaticReminderModal.value = false
     automaticReminderSoundPending = false
     automaticReminderSoundPlayedForCurrentOpen = false
@@ -548,10 +511,7 @@ onMounted(() => {
         window.addEventListener('keydown', unlockAutomaticReminderSound)
     }
 
-    /*
-     * Prompt immediately after a fresh login when unresolved reminders exist.
-     * During the same login, respect an active 15-minute snooze.
-     */
+    
     if (
         hasAutomaticStatusReminders.value
         && !isAutomaticReminderSnoozed()
@@ -584,10 +544,7 @@ watch(
             return
         }
 
-        /*
-         * Receive, Transfer, Return, filters, and other Inertia actions must
-         * not reopen the reminder while its 15-minute snooze is active.
-         */
+       
         if (isAutomaticReminderSnoozed()) {
             showAutomaticReminderModal.value = false
             scheduleAutomaticReminderAfterSnooze()
@@ -642,10 +599,7 @@ const closeTransferNotificationModal = () => {
 watch(
     transferNotifications,
     () => {
-        /*
-         * Do not auto-open the notification modal.
-         * Notifications should stay in the bell and open only when the user clicks it.
-         */
+            
         showTransferNotificationModal.value = false
     },
     { immediate: false }

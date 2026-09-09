@@ -29,7 +29,11 @@ class InventoryController extends Controller
                     CASE
                         WHEN LOWER(TRIM(category)) = 'supplies' THEN 1
                         WHEN LOWER(TRIM(category)) = 'ict' THEN 2
-                        ELSE 3
+                        WHEN LOWER(TRIM(category)) = 'furniture' THEN 3
+                        WHEN LOWER(TRIM(category)) = 'fixtures' THEN 4
+                        WHEN LOWER(TRIM(category)) = 'emergency_kits' THEN 5
+                        WHEN LOWER(TRIM(category)) = 'token_giveaways' THEN 6
+                        ELSE 7
                     END
                 ")
                 ->orderBy('item')
@@ -38,7 +42,7 @@ class InventoryController extends Controller
     }
 
     /**
-     * Add a new Supplies or ICT & Other Items record.
+     * Add a new Supplies, ICT, or Other Items record.
      *
      * SUPPLIES
      * - Fixed Value is optional.
@@ -48,8 +52,15 @@ class InventoryController extends Controller
      * - If Fixed Value is missing / 0:
      *      tracked_released starts at 0 and future releases accumulate there.
      *
-     * ICT & OTHER ITEMS
-     * - Item, Unit, Inventory Year, Quarter(s), Remarks.
+     * ICT
+     * - Normal items: Item, Unit, Count, Inventory Year, Quarter(s), Remarks.
+     * - Subscription: Unit = MONTH or YEAR and currently_available stores duration.
+     * - History is supported for ICT changes.
+     *
+     * OTHER ITEMS
+     * - Furniture / Fixtures / Emergency Kits / Token and Giveaways:
+     *   Item, Count (stored in currently_available), Location, Remarks.
+     * - Emergency Kits keep Count but do not use the Release action.
      */
     public function store(Request $request)
     {
@@ -58,32 +69,102 @@ class InventoryController extends Controller
         );
 
         $validated = $request->validate([
-            'category' => 'required|in:supplies,ict',
+            'category' => 'required|in:supplies,ict,furniture,fixtures,emergency_kits,token_giveaways',
             'item' => 'required|string|max:255',
-            'unit' => 'required|string|max:50',
-            'inventory_year' => 'required|integer|min:2026|max:2100',
+            'location' =>
+                'required_if:category,furniture,fixtures,emergency_kits,token_giveaways|nullable|string|max:255',
+            'unit' =>
+                'required_if:category,supplies,ict|nullable|string|max:50',
+            'inventory_year' =>
+                'required_if:category,supplies,ict|nullable|integer|min:2026|max:2100',
             'fixed_value' => 'nullable|integer|min:0',
             'currently_available' =>
-                'required_if:category,supplies|nullable|integer|min:0',
+                'required_if:category,furniture,fixtures,emergency_kits,token_giveaways|nullable|integer|min:0',
             'quarters' =>
-                'required|array|min:1',
+                'required_if:category,supplies,ict|nullable|array|min:1',
             'quarters.*' => 'in:q1,q2,q3,q4',
+            'quarter_stock' =>
+                'required_if:category,supplies,ict|nullable|array',
+            'quarter_stock.*' =>
+                'array',
+            'quarter_stock.*.current' =>
+                'required|integer|min:0',
             'remarks' => 'nullable|string',
         ]);
 
         $validated['category'] =
             strtolower(trim($validated['category']));
 
-        $validated['unit'] =
-            strtoupper(trim($validated['unit']));
+        $otherCategories = [
+            'furniture',
+            'fixtures',
+            'emergency_kits',
+            'token_giveaways',
+        ];
 
-        /*
-         * ICT & Other Items do not use the stock/release workflow,
-         * but they still belong to an Inventory Year + Quarter(s).
-         */
-        if ($validated['category'] === 'ict') {
+        $isOtherItem =
+            in_array(
+                $validated['category'],
+                $otherCategories,
+                true
+            );
+
+        if ($isOtherItem) {
+            /*
+             * Compatibility-only internal values.
+             * These are NEVER shown or filtered in the Other Items UI.
+             * The existing schema requires Unit / Year / Quarter values.
+             */
+            $validated['location'] =
+                trim((string) $validated['location']);
+
+            $validated['currently_available'] =
+                (int) $validated['currently_available'];
+
+            $validated['unit'] = 'N/A';
+            $validated['inventory_year'] =
+                max(2026, (int) now()->year);
+            $validated['quarters'] = [
+                'q1',
+                'q2',
+                'q3',
+                'q4',
+            ];
+
             $validated['fixed_value'] = null;
-            $validated['currently_available'] = null;
+            $validated['quarter_stock'] = null;
+        } else {
+            $validated['location'] = null;
+
+            $validated['unit'] =
+                strtoupper(trim($validated['unit']));
+
+            $quarters =
+                $this->normalizedQuarterList(
+                    $validated['quarters'] ?? []
+                );
+
+            $quarterStock =
+                $this->buildQuarterStock(
+                    $quarters,
+                    $validated['quarter_stock'] ?? [],
+                    null
+                );
+
+            $validated['quarters'] =
+                $quarters;
+
+            $validated['quarter_stock'] =
+                $quarterStock;
+
+            $validated['currently_available'] =
+                $this->quarterStockCurrentTotal(
+                    $quarterStock
+                );
+
+            if ($validated['category'] !== 'supplies') {
+                $validated['fixed_value'] = null;
+            }
         }
 
         /*
@@ -114,11 +195,20 @@ class InventoryController extends Controller
             'release_quantity' =>
                 'sometimes|required|integer|min:1',
 
+            'release_destination' =>
+                'sometimes|nullable|string|max:255',
+
+            'release_quarter' =>
+                'sometimes|nullable|in:q1,q2,q3,q4',
+
             'category' =>
-                'sometimes|required|in:supplies,ict',
+                'sometimes|required|in:supplies,ict,furniture,fixtures,emergency_kits,token_giveaways',
 
             'item' =>
                 'sometimes|required|string|max:255',
+
+            'location' =>
+                'sometimes|nullable|string|max:255',
 
             'unit' =>
                 'sometimes|required|string|max:50',
@@ -137,6 +227,15 @@ class InventoryController extends Controller
 
             'quarters.*' =>
                 'in:q1,q2,q3,q4',
+
+            'quarter_stock' =>
+                'sometimes|nullable|array',
+
+            'quarter_stock.*' =>
+                'array',
+
+            'quarter_stock.*.current' =>
+                'required|integer|min:0',
 
             'remarks' =>
                 'sometimes|nullable|string',
@@ -224,6 +323,16 @@ class InventoryController extends Controller
                     )
                     : '';
 
+            $releaseDestination =
+                $isRelease
+                    ? trim(
+                        (string) (
+                            $validated['release_destination']
+                            ?? ''
+                        )
+                    )
+                    : '';
+
             if (!$isRelease) {
                 $targetCategory = strtolower(
                     trim((string) ($validated['category'] ?? $item->category))
@@ -231,6 +340,28 @@ class InventoryController extends Controller
 
                 $targetItemName = trim(
                     (string) ($validated['item'] ?? $item->item)
+                );
+
+                $otherCategories = [
+                    'furniture',
+                    'fixtures',
+                    'emergency_kits',
+                    'token_giveaways',
+                ];
+
+                $targetIsOther =
+                    in_array(
+                        $targetCategory,
+                        $otherCategories,
+                        true
+                    );
+
+                $targetLocation = trim(
+                    (string) (
+                        $validated['location']
+                        ?? $item->location
+                        ?? ''
+                    )
                 );
 
                 $targetUnit = strtoupper(
@@ -244,19 +375,47 @@ class InventoryController extends Controller
                 );
 
                 if (
-                    $targetCategory === 'supplies'
+                    $targetIsOther
+                    && $targetLocation === ''
+                ) {
+                    throw ValidationException::withMessages([
+                        'location' =>
+                            'Location is required for Other Items.',
+                    ]);
+                }
+
+
+                $targetRequiresCount =
+                    in_array(
+                        $targetCategory,
+                        [
+                            'furniture',
+                            'fixtures',
+                            'emergency_kits',
+                            'token_giveaways',
+                        ],
+                        true
+                    );
+
+                $targetItemCount =
+                    $validated['currently_available']
+                    ?? $item->currently_available
+                    ?? null;
+
+                if (
+                    $targetRequiresCount
                     && (
-                        !array_key_exists('currently_available', $validated)
-                        || $validated['currently_available'] === null
+                        $targetItemCount === null
+                        || (int) $targetItemCount < 0
                     )
                 ) {
                     throw ValidationException::withMessages([
                         'currently_available' =>
-                            'Currently Available is required for Supplies.',
+                            'Count is required for this category.',
                     ]);
                 }
 
-                $duplicateExists = InventoryItem::query()
+                $duplicateQuery = InventoryItem::query()
                     ->where('id', '!=', $item->id)
                     ->whereRaw(
                         'LOWER(TRIM(category)) = ?',
@@ -265,26 +424,43 @@ class InventoryController extends Controller
                     ->whereRaw(
                         'LOWER(TRIM(item)) = ?',
                         [strtolower($targetItemName)]
-                    )
-                    ->whereRaw(
-                        'UPPER(TRIM(unit)) = ?',
-                        [$targetUnit]
-                    )
-                    ->where('inventory_year', $targetYear)
-                    ->exists();
+                    );
 
-                if ($duplicateExists) {
+                if ($targetIsOther) {
+                    $duplicateQuery->whereRaw(
+                        'LOWER(TRIM(COALESCE(location, ""))) = ?',
+                        [strtolower($targetLocation)]
+                    );
+                } else {
+                    $duplicateQuery
+                        ->whereRaw(
+                            'UPPER(TRIM(unit)) = ?',
+                            [$targetUnit]
+                        )
+                        ->where(
+                            'inventory_year',
+                            $targetYear
+                        );
+                }
+
+                if ($duplicateQuery->exists()) {
                     throw ValidationException::withMessages([
                         'item' =>
-                            "This item and unit already exist for {$targetYear}.",
+                            $targetIsOther
+                                ? 'This item already exists in the same location.'
+                                : "This item and unit already exist for {$targetYear}.",
                     ]);
                 }
             }
-
             /**
              * ========================================================
-             * RELEASE SUPPLY
+             * RELEASE QUANTITY / DURATION
              * ========================================================
+             *
+             * Supplies + ICT are quarter-aware.
+             * Releases automatically use the latest assigned quarter.
+             * Previous quarter balances remain historical snapshots.
+             * Other counted items keep their existing global Count flow.
              */
             if (
                 array_key_exists(
@@ -292,54 +468,225 @@ class InventoryController extends Controller
                     $validated
                 )
             ) {
-                if ($category !== 'supplies') {
+                $releaseableCategories = [
+                    'supplies',
+                    'ict',
+                    'furniture',
+                    'fixtures',
+                    'token_giveaways',
+                ];
+
+                if (
+                    !in_array(
+                        $category,
+                        $releaseableCategories,
+                        true
+                    )
+                ) {
                     throw ValidationException::withMessages([
                         'release_quantity' =>
-                            'Release tracking applies to Supplies only.',
+                            'This inventory category does not use quantity release tracking.',
                     ]);
                 }
 
-                if ($oldCurrent === null) {
+                /*
+                 * Supplies only need quantity + optional remarks.
+                 * ICT and counted Other Items still require destination.
+                 */
+                if (
+                    $category !== 'supplies'
+                    && $releaseDestination === ''
+                ) {
                     throw ValidationException::withMessages([
-                        'release_quantity' =>
-                            'Currently Available is not configured for this item.',
+                        'release_destination' =>
+                            'Released To / Destination is required.',
                     ]);
                 }
 
                 $releaseQuantity =
                     (int) $validated['release_quantity'];
 
-                if ($releaseQuantity > $oldCurrent) {
-                    throw ValidationException::withMessages([
-                        'release_quantity' =>
-                            "Only {$oldCurrent} item(s) are currently available.",
-                    ]);
-                }
+                $usesQuarterStock =
+                    in_array(
+                        $category,
+                        ['supplies', 'ict'],
+                        true
+                    );
 
-                $item->currently_available =
-                    $oldCurrent - $releaseQuantity;
+                if ($usesQuarterStock) {
+                    $assignedQuarters =
+                        $this->normalizedQuarterList(
+                            is_array($item->quarters)
+                                ? $item->quarters
+                                : []
+                        );
 
-                /*
-                 * HYBRID QUANTITY RELEASED LOGIC
-                 *
-                 * A usable Fixed Value means a positive baseline.
-                 * Example: Fixed 30, Current 11 => Released 19.
-                 * MySQL generates total_released automatically.
-                 *
-                 * If Fixed Value is NULL / blank / 0, there is no usable
-                 * historical baseline. In that case, every release made
-                 * through the system is accumulated in tracked_released.
-                 *
-                 * Example:
-                 *   Current 4, tracked 0
-                 *   release 2 => Current 2, tracked 2
-                 *   release 1 => Current 1, tracked 3
-                 */
-                $hasFixedBaseline =
-                    $item->fixed_value !== null
-                    && (int) $item->fixed_value > 0;
+                    $storedQuarterStock =
+                        $this->normalizedStoredQuarterStock(
+                            $item->quarter_stock
+                        );
 
-                if (!$hasFixedBaseline) {
+                    /*
+                     * No quarter selector in the UI.
+                     * Release always uses the latest ACTIVE quarter.
+                     * Zero future quarters in All Quarters are ignored.
+                     */
+                    $releaseQuarter =
+                        $this->latestActiveQuarter(
+                            $storedQuarterStock,
+                            $assignedQuarters
+                        )
+                        ?? '';
+
+                    if ($releaseQuarter === '') {
+                        throw ValidationException::withMessages([
+                            'release_quantity' =>
+                                'No active quarter is available for this item.',
+                        ]);
+                    }
+
+                    /*
+                     * Legacy single-quarter item:
+                     * safely initialize its quarter from the old global balance.
+                     *
+                     * Legacy multi-quarter item:
+                     * cannot be split accurately, so force one-time Edit setup.
+                     */
+                    if (empty($storedQuarterStock)) {
+                        if (
+                            count($assignedQuarters) !== 1
+                        ) {
+                            throw ValidationException::withMessages([
+                                'release_quarter' =>
+                                    'Set the remaining quantity for each quarter in Edit before releasing this legacy multi-quarter item.',
+                            ]);
+                        }
+
+                        $onlyQuarter =
+                            $assignedQuarters[0];
+
+                        $legacyCurrent =
+                            $oldCurrent ?? 0;
+
+                        $legacyReleased =
+                            max(
+                                0,
+                                (int) $oldDisplayedReleased
+                            );
+
+                        $storedQuarterStock = [
+                            $onlyQuarter => [
+                                'opening' =>
+                                    $legacyCurrent
+                                    + $legacyReleased,
+                                'current' =>
+                                    $legacyCurrent,
+                                'released' =>
+                                    $legacyReleased,
+                            ],
+                        ];
+                    }
+
+                    $quarterEntry =
+                        $storedQuarterStock[
+                            $releaseQuarter
+                        ]
+                        ?? null;
+
+                    if (!$quarterEntry) {
+                        throw ValidationException::withMessages([
+                            'release_quarter' =>
+                                'Set the balance for this quarter in Edit before releasing.',
+                        ]);
+                    }
+
+                    $quarterCurrent =
+                        (int) (
+                            $quarterEntry['current']
+                            ?? 0
+                        );
+
+                    if (
+                        $releaseQuantity
+                        > $quarterCurrent
+                    ) {
+                        throw ValidationException::withMessages([
+                            'release_quantity' =>
+                                "Only {$quarterCurrent} available in "
+                                . strtoupper($releaseQuarter)
+                                . '.',
+                        ]);
+                    }
+
+                    $quarterReleased =
+                        (int) (
+                            $quarterEntry['released']
+                            ?? 0
+                        );
+
+                    $quarterEntry['current'] =
+                        $quarterCurrent
+                        - $releaseQuantity;
+
+                    $quarterEntry['released'] =
+                        $quarterReleased
+                        + $releaseQuantity;
+
+                    $quarterEntry['opening'] =
+                        (int) (
+                            $quarterEntry['opening']
+                            ?? (
+                                $quarterCurrent
+                                + $quarterReleased
+                            )
+                        );
+
+                    $storedQuarterStock[
+                        $releaseQuarter
+                    ] =
+                        $quarterEntry;
+
+                    $item->quarter_stock =
+                        $storedQuarterStock;
+
+                    $item->currently_available =
+                        $this->quarterStockCurrentTotal(
+                            $storedQuarterStock
+                        );
+
+                    $hasFixedBaseline =
+                        $category === 'supplies'
+                        && $item->fixed_value !== null
+                        && (int) $item->fixed_value > 0;
+
+                    if (!$hasFixedBaseline) {
+                        $item->tracked_released =
+                            $this->quarterStockReleasedTotal(
+                                $storedQuarterStock
+                            );
+                    }
+                } else {
+                    if ($oldCurrent === null) {
+                        throw ValidationException::withMessages([
+                            'release_quantity' =>
+                                'Available quantity is not configured for this item.',
+                        ]);
+                    }
+
+                    if (
+                        $releaseQuantity
+                        > $oldCurrent
+                    ) {
+                        throw ValidationException::withMessages([
+                            'release_quantity' =>
+                                "Only {$oldCurrent} available.",
+                        ]);
+                    }
+
+                    $item->currently_available =
+                        $oldCurrent
+                        - $releaseQuantity;
+
                     $item->tracked_released =
                         $oldTrackedReleased
                         + $releaseQuantity;
@@ -361,6 +708,13 @@ class InventoryController extends Controller
                     trim($validated['item']);
             }
 
+            if (array_key_exists('location', $validated)) {
+                $item->location =
+                    $validated['location'] !== null
+                        ? trim((string) $validated['location'])
+                        : null;
+            }
+
             if (array_key_exists('unit', $validated)) {
                 $item->unit =
                     strtoupper(trim($validated['unit']));
@@ -377,8 +731,8 @@ class InventoryController extends Controller
             }
 
             /*
-             * Direct stock correction is allowed only when this is not
-             * a release request. It does NOT change tracked_released.
+             * Direct aggregate correction is legacy-only.
+             * Quarter-aware Supplies/ICT use quarter_stock instead.
              */
             if (
                 !array_key_exists(
@@ -390,6 +744,11 @@ class InventoryController extends Controller
                     'currently_available',
                     $validated
                 )
+                &&
+                !array_key_exists(
+                    'quarter_stock',
+                    $validated
+                )
             ) {
                 $item->currently_available =
                     $validated['currently_available'];
@@ -397,7 +756,69 @@ class InventoryController extends Controller
 
             if (array_key_exists('quarters', $validated)) {
                 $item->quarters =
-                    $validated['quarters'];
+                    $this->normalizedQuarterList(
+                        $validated['quarters']
+                    );
+            }
+
+            if (
+                !$isRelease
+                && array_key_exists(
+                    'quarter_stock',
+                    $validated
+                )
+            ) {
+                $targetCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $validated['category']
+                                ?? $item->category
+                            )
+                        )
+                    );
+
+                if (
+                    in_array(
+                        $targetCategory,
+                        ['supplies', 'ict'],
+                        true
+                    )
+                ) {
+                    $targetQuarters =
+                        $this->normalizedQuarterList(
+                            is_array($item->quarters)
+                                ? $item->quarters
+                                : []
+                        );
+
+                    $newQuarterStock =
+                        $this->buildQuarterStock(
+                            $targetQuarters,
+                            $validated['quarter_stock'],
+                            $item
+                        );
+
+                    $item->quarter_stock =
+                        $newQuarterStock;
+
+                    $item->currently_available =
+                        $this->quarterStockCurrentTotal(
+                            $newQuarterStock
+                        );
+
+                    $newHasFixedBaseline =
+                        $targetCategory === 'supplies'
+                        && $item->fixed_value !== null
+                        && (int) $item->fixed_value > 0;
+
+                    if (!$newHasFixedBaseline) {
+                        $item->tracked_released =
+                            $this->quarterStockReleasedTotal(
+                                $newQuarterStock
+                            );
+                    }
+                }
             }
 
             if (!$isRelease) {
@@ -434,16 +855,64 @@ class InventoryController extends Controller
                     $validated['remarks'];
             }
 
+            $finalCategory =
+                strtolower(
+                    trim((string) $item->category)
+                );
+
+            $otherCategories = [
+                'furniture',
+                'fixtures',
+                'emergency_kits',
+                'token_giveaways',
+            ];
+
+            $finalIsOther =
+                in_array(
+                    $finalCategory,
+                    $otherCategories,
+                    true
+                );
+
             /*
-             * ICT does not use stock/release fields.
+             * Other Items are location-based only.
+             * Keep schema-compatibility values internally, but they are
+             * intentionally hidden from the Other Items UI.
              */
-            if (
-                strtolower(trim((string) $item->category))
-                === 'ict'
-            ) {
+            if ($finalIsOther) {
+                $item->currently_available =
+                    (int) ($item->currently_available ?? 0);
+
+                $item->unit = 'N/A';
+                $item->inventory_year =
+                    $item->inventory_year
+                    ?? max(2026, (int) now()->year);
+                $item->quarters = [
+                    'q1',
+                    'q2',
+                    'q3',
+                    'q4',
+                ];
+                $item->quarter_stock = null;
                 $item->fixed_value = null;
-                $item->currently_available = null;
-                $item->tracked_released = 0;
+
+                if ($finalCategory === 'emergency_kits') {
+                    $item->tracked_released = 0;
+                } else {
+                    $item->tracked_released =
+                        (int) ($item->tracked_released ?? 0);
+                }
+            } elseif ($finalCategory === 'ict') {
+                $item->location = null;
+                $item->fixed_value = null;
+                $item->currently_available =
+                    $item->currently_available !== null
+                        ? (int) $item->currently_available
+                        : 0;
+                $item->tracked_released =
+                    (int) ($item->tracked_released ?? 0);
+            } else {
+                $item->location = null;
             }
 
             $newCurrent =
@@ -506,6 +975,51 @@ class InventoryController extends Controller
              */
             $historyNewData =
                 $this->inventoryHistorySnapshot($item);
+
+            /*
+             * Release destination is transaction-only metadata.
+             * Store it inside new_data JSON so no new history column
+             * or migration is required.
+             */
+            if (
+                $isRelease
+                && $category !== 'supplies'
+                && $releaseDestination !== ''
+            ) {
+                $historyNewData['release_destination'] =
+                    $releaseDestination;
+            }
+
+            if (
+                $isRelease
+                && in_array(
+                    $category,
+                    ['supplies', 'ict'],
+                    true
+                )
+            ) {
+                $releaseHistoryQuarters =
+                    $this->normalizedQuarterList(
+                        is_array($item->quarters)
+                            ? $item->quarters
+                            : []
+                    );
+
+                if (!empty($releaseHistoryQuarters)) {
+                    $historyReleaseQuarter =
+                        $this->latestActiveQuarter(
+                            is_array($item->quarter_stock)
+                                ? $item->quarter_stock
+                                : [],
+                            $releaseHistoryQuarters
+                        );
+
+                    if ($historyReleaseQuarter) {
+                        $historyNewData['release_quarter'] =
+                            $historyReleaseQuarter;
+                    }
+                }
+            }
 
             $fullRecordChanged =
                 $historyOldData !== $historyNewData;
@@ -750,6 +1264,94 @@ class InventoryController extends Controller
                     ?? null;
 
                 /*
+                 * When a quarter is newly activated, show the exact
+                 * quantity entered by the user instead of only showing
+                 * the resulting aggregate Currently Available value.
+                 *
+                 * This does NOT restore the removed "Quarter Balances"
+                 * history row.
+                 */
+                if ($action !== 'release') {
+                    $oldQuarterStock =
+                        is_array(
+                            $oldData['quarter_stock']
+                            ?? null
+                        )
+                            ? $oldData['quarter_stock']
+                            : [];
+
+                    $newQuarterStock =
+                        is_array(
+                            $newData['quarter_stock']
+                            ?? null
+                        )
+                            ? $newData['quarter_stock']
+                            : [];
+
+                    foreach (
+                        ['q1', 'q2', 'q3', 'q4']
+                        as $quarter
+                    ) {
+                        $oldEntry =
+                            is_array(
+                                $oldQuarterStock[$quarter]
+                                ?? null
+                            )
+                                ? $oldQuarterStock[$quarter]
+                                : [];
+
+                        $newEntry =
+                            is_array(
+                                $newQuarterStock[$quarter]
+                                ?? null
+                            )
+                                ? $newQuarterStock[$quarter]
+                                : [];
+
+                        $oldAdded =
+                            max(
+                                0,
+                                (int) (
+                                    $oldEntry['added']
+                                    ?? 0
+                                )
+                            );
+
+                        $newAdded =
+                            max(
+                                0,
+                                (int) (
+                                    $newEntry['added']
+                                    ?? 0
+                                )
+                            );
+
+                        /*
+                         * New quarter activation / newly added stock.
+                         */
+                        if ($newAdded > $oldAdded) {
+                            $changes[] = [
+                                'field' =>
+                                    'quarter_quantity_added',
+
+                                'label' =>
+                                    'Quantity Added · '
+                                    . strtoupper($quarter),
+
+                                'old' =>
+                                    null,
+
+                                'new' =>
+                                    $newAdded - $oldAdded,
+
+                                'single' =>
+                                    true,
+                            ];
+                        }
+                    }
+                }
+
+                /*
                  * A release is an action rather than a directly editable
                  * field, so expose the exact released quantity as a
                  * synthetic history change.
@@ -760,6 +1362,39 @@ class InventoryController extends Controller
                     && $newCurrent !== null
                     && (int) $oldCurrent > (int) $newCurrent
                 ) {
+                    $historyCategory =
+                        strtolower(
+                            trim(
+                                (string) (
+                                    $newData['category']
+                                    ?? $oldData['category']
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    $historyUnit =
+                        strtoupper(
+                            trim(
+                                (string) (
+                                    $newData['unit']
+                                    ?? $oldData['unit']
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    $releaseLabel =
+                        $historyCategory === 'ict'
+                            && $historyUnit === 'MONTH'
+                                ? 'Month(s) Released'
+                                : (
+                                    $historyCategory === 'ict'
+                                    && $historyUnit === 'YEAR'
+                                        ? 'Year(s) Released'
+                                        : 'Quantity Released'
+                                );
+
                     array_unshift(
                         $changes,
                         [
@@ -767,7 +1402,7 @@ class InventoryController extends Controller
                                 'release_quantity',
 
                             'label' =>
-                                'Quantity Released',
+                                $releaseLabel,
 
                             'old' =>
                                 null,
@@ -780,6 +1415,33 @@ class InventoryController extends Controller
                                 true,
                         ]
                     );
+                }
+
+                if (
+                    $action === 'release'
+                    && trim(
+                        (string) (
+                            $newData['release_destination']
+                            ?? ''
+                        )
+                    ) !== ''
+                ) {
+                    $changes[] = [
+                        'field' =>
+                            'release_destination',
+
+                        'label' =>
+                            'Released To / Destination',
+
+                        'old' =>
+                            null,
+
+                        'new' =>
+                            $newData['release_destination'],
+
+                        'single' =>
+                            true,
+                    ];
                 }
 
                 /*
@@ -951,27 +1613,66 @@ class InventoryController extends Controller
                 $quarterOrder[$b]
         );
 
+        $category =
+            strtolower(
+                trim((string) $item->category)
+            );
+
+        $isOtherItem =
+            in_array(
+                $category,
+                [
+                    'furniture',
+                    'fixtures',
+                    'emergency_kits',
+                    'token_giveaways',
+                ],
+                true
+            );
+
         return [
             'category' =>
-                strtolower(
-                    trim((string) $item->category)
-                ),
+                $category,
 
             'item' =>
                 trim((string) $item->item),
 
-            'unit' =>
-                strtoupper(
-                    trim((string) $item->unit)
-                ),
-
-            'inventory_year' =>
-                $item->inventory_year !== null
-                    ? (int) $item->inventory_year
+            'location' =>
+                $isOtherItem
+                    ? (
+                        $item->location !== null
+                            ? trim((string) $item->location)
+                            : null
+                    )
                     : null,
 
+            'unit' =>
+                $isOtherItem
+                    ? null
+                    : strtoupper(
+                        trim((string) $item->unit)
+                    ),
+
+            'inventory_year' =>
+                $isOtherItem
+                    ? null
+                    : (
+                        $item->inventory_year !== null
+                            ? (int) $item->inventory_year
+                            : null
+                    ),
+
             'quarters' =>
-                $quarters,
+                $isOtherItem
+                    ? []
+                    : $quarters,
+
+            'quarter_stock' =>
+                $isOtherItem
+                    ? []
+                    : $this->normalizedStoredQuarterStock(
+                        $item->quarter_stock
+                    ),
 
             'fixed_value' =>
                 $item->fixed_value !== null
@@ -1004,15 +1705,67 @@ class InventoryController extends Controller
             return [];
         }
 
+        $historyCategory =
+            strtolower(
+                trim(
+                    (string) (
+                        $newData['category']
+                        ?? $oldData['category']
+                        ?? ''
+                    )
+                )
+            );
+
+        $countedOtherCategories = [
+            'furniture',
+            'fixtures',
+            'emergency_kits',
+            'token_giveaways',
+        ];
+
+        $historyUnit =
+            strtoupper(
+                trim(
+                    (string) (
+                        $newData['unit']
+                        ?? $oldData['unit']
+                        ?? ''
+                    )
+                )
+            );
+
+        if ($historyCategory === 'ict') {
+            if ($historyUnit === 'MONTH') {
+                $currentAvailableLabel =
+                    'Month(s)';
+            } elseif ($historyUnit === 'YEAR') {
+                $currentAvailableLabel =
+                    'Year(s)';
+            } else {
+                $currentAvailableLabel =
+                    'Count';
+            }
+        } else {
+            $currentAvailableLabel =
+                in_array(
+                    $historyCategory,
+                    $countedOtherCategories,
+                    true
+                )
+                    ? 'Count'
+                    : 'Currently Available in SPD';
+        }
+
         $fields = [
             'category' => 'Category',
             'item' => 'Item Name',
+            'location' => 'Location',
             'unit' => 'Unit',
             'inventory_year' => 'Inventory Year',
             'quarters' => 'Quarter(s)',
             'fixed_value' => 'Fixed Value',
             'currently_available' =>
-                'Currently Available in SPD',
+                $currentAvailableLabel,
             'remarks' => 'Remarks',
         ];
 
@@ -1050,6 +1803,676 @@ class InventoryController extends Controller
         }
 
         return $changes;
+    }
+
+    /**
+     * Normalize assigned quarter names.
+     */
+    private function normalizedQuarterList(
+        mixed $quarters
+    ): array {
+        $allowed = [
+            'q1',
+            'q2',
+            'q3',
+            'q4',
+        ];
+
+        if (!is_array($quarters)) {
+            return [];
+        }
+
+        $normalized =
+            array_values(
+                array_unique(
+                    array_filter(
+                        array_map(
+                            fn ($quarter) =>
+                                strtolower(
+                                    trim(
+                                        (string) $quarter
+                                    )
+                                ),
+                            $quarters
+                        ),
+                        fn ($quarter) =>
+                            in_array(
+                                $quarter,
+                                $allowed,
+                                true
+                            )
+                    )
+                )
+            );
+
+        usort(
+            $normalized,
+            fn ($a, $b) =>
+                array_search(
+                    $a,
+                    $allowed,
+                    true
+                )
+                <=>
+                array_search(
+                    $b,
+                    $allowed,
+                    true
+                )
+        );
+
+        return $normalized;
+    }
+
+    private function quarterStockEntryHasActivity(
+        array $entry
+    ): bool {
+        foreach (
+            [
+                'opening',
+                'carryover',
+                'added',
+                'current',
+                'released',
+            ]
+            as $field
+        ) {
+            if (
+                (int) (
+                    $entry[$field]
+                    ?? 0
+                ) > 0
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Return the latest quarter that has actual stock activity.
+     * Completely zero future quarters are dormant.
+     */
+    private function latestActiveQuarter(
+        array $quarterStock,
+        array $assignedQuarters = []
+    ): ?string {
+        $normalized =
+            $this->normalizedStoredQuarterStock(
+                $quarterStock
+            );
+
+        $latest = null;
+
+        foreach (
+            ['q1', 'q2', 'q3', 'q4']
+            as $quarter
+        ) {
+            if (
+                isset($normalized[$quarter])
+                && $this->quarterStockEntryHasActivity(
+                    $normalized[$quarter]
+                )
+            ) {
+                $latest = $quarter;
+            }
+        }
+
+        if ($latest !== null) {
+            return $latest;
+        }
+
+        $assigned =
+            $this->normalizedQuarterList(
+                $assignedQuarters
+            );
+
+        return !empty($assigned)
+            ? $assigned[0]
+            : null;
+    }
+
+    /**
+     * Clean a stored quarter_stock JSON value.
+     */
+    private function normalizedStoredQuarterStock(
+        mixed $quarterStock
+    ): array {
+        if (!is_array($quarterStock)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach (
+            ['q1', 'q2', 'q3', 'q4']
+            as $quarter
+        ) {
+            $entry =
+                $quarterStock[$quarter]
+                ?? null;
+
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            if (
+                !array_key_exists(
+                    'current',
+                    $entry
+                )
+            ) {
+                continue;
+            }
+
+            $current =
+                max(
+                    0,
+                    (int) $entry['current']
+                );
+
+            $released =
+                max(
+                    0,
+                    (int) (
+                        $entry['released']
+                        ?? 0
+                    )
+                );
+
+            $opening =
+                max(
+                    0,
+                    (int) (
+                        $entry['opening']
+                        ?? (
+                            $current
+                            + $released
+                        )
+                    )
+                );
+
+            $carryover =
+                max(
+                    0,
+                    (int) (
+                        $entry['carryover']
+                        ?? 0
+                    )
+                );
+
+            $added =
+                max(
+                    0,
+                    (int) (
+                        $entry['added']
+                        ?? max(
+                            0,
+                            $opening
+                            - $carryover
+                        )
+                    )
+                );
+
+            $normalized[$quarter] = [
+                'opening' =>
+                    $opening,
+
+                'carryover' =>
+                    $carryover,
+
+                'added' =>
+                    $added,
+
+                'current' =>
+                    $current,
+
+                'released' =>
+                    $released,
+            ];
+        }
+
+        /*
+         * Repair the carryover chain for ACTIVE quarters only.
+         * Completely zero entries are future/dormant quarters and
+         * must not automatically become active just because the item
+         * is assigned to All Quarters.
+         */
+        $previousCurrent = 0;
+        $hasPreviousActive = false;
+
+        foreach (
+            ['q1', 'q2', 'q3', 'q4']
+            as $quarter
+        ) {
+            if (!isset($normalized[$quarter])) {
+                continue;
+            }
+
+            $entry =
+                $normalized[$quarter];
+
+            if (
+                !$this->quarterStockEntryHasActivity(
+                    $entry
+                )
+            ) {
+                $normalized[$quarter] = [
+                    'opening' => 0,
+                    'carryover' => 0,
+                    'added' => 0,
+                    'current' => 0,
+                    'released' => 0,
+                ];
+
+                continue;
+            }
+
+            $released =
+                max(
+                    0,
+                    (int) (
+                        $entry['released']
+                        ?? 0
+                    )
+                );
+
+            $storedCarryover =
+                max(
+                    0,
+                    (int) (
+                        $entry['carryover']
+                        ?? 0
+                    )
+                );
+
+            $storedOpening =
+                max(
+                    0,
+                    (int) (
+                        $entry['opening']
+                        ?? 0
+                    )
+                );
+
+            $added =
+                max(
+                    0,
+                    (int) (
+                        $entry['added']
+                        ?? max(
+                            0,
+                            $storedOpening
+                            - $storedCarryover
+                        )
+                    )
+                );
+
+            $carryover =
+                $hasPreviousActive
+                    ? $previousCurrent
+                    : 0;
+
+            $opening =
+                $carryover
+                + $added;
+
+            $current =
+                max(
+                    0,
+                    $opening
+                    - $released
+                );
+
+            $normalized[$quarter] = [
+                'opening' =>
+                    $opening,
+
+                'carryover' =>
+                    $carryover,
+
+                'added' =>
+                    $added,
+
+                'current' =>
+                    $current,
+
+                'released' =>
+                    $released,
+            ];
+
+            $previousCurrent =
+                $current;
+
+            $hasPreviousActive =
+                true;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Build quarter balances for Add/Edit.
+     */
+    private function buildQuarterStock(
+        array $quarters,
+        mixed $rawQuarterStock,
+        ?InventoryItem $item = null
+    ): array {
+        $raw =
+            is_array($rawQuarterStock)
+                ? $rawQuarterStock
+                : [];
+
+        $existing =
+            $item
+                ? $this->normalizedStoredQuarterStock(
+                    $item->quarter_stock
+                )
+                : [];
+
+        $legacyReleased = 0;
+
+        if (
+            $item
+            && empty($existing)
+            && count($quarters) === 1
+        ) {
+            $legacyCurrent =
+                $item->currently_available !== null
+                    ? (int) $item->currently_available
+                    : 0;
+
+            $hasFixedBaseline =
+                $item->fixed_value !== null
+                && (int) $item->fixed_value > 0;
+
+            $legacyReleased =
+                $hasFixedBaseline
+                    ? max(
+                        0,
+                        (int) $item->fixed_value
+                        - $legacyCurrent
+                    )
+                    : max(
+                        0,
+                        (int) (
+                            $item->tracked_released
+                            ?? 0
+                        )
+                    );
+        }
+
+        $result = [];
+        $previousCurrent = 0;
+
+        foreach ($quarters as $quarter) {
+            $rawEntry =
+                $raw[$quarter]
+                ?? [];
+
+            if (
+                !is_array($rawEntry)
+                || !array_key_exists(
+                    'current',
+                    $rawEntry
+                )
+            ) {
+                throw ValidationException::withMessages([
+                    "quarter_stock.{$quarter}.current" =>
+                        'Enter the quantity for '
+                        . strtoupper($quarter)
+                        . '.',
+                ]);
+            }
+
+            $rawValue =
+                (int) $rawEntry['current'];
+
+            if ($rawValue < 0) {
+                throw ValidationException::withMessages([
+                    "quarter_stock.{$quarter}.current" =>
+                        'Quarter quantity cannot be negative.',
+                ]);
+            }
+
+            $existingEntry =
+                $existing[$quarter]
+                ?? null;
+
+            $existingStarted =
+                is_array($existingEntry)
+                && $this->quarterStockEntryHasActivity(
+                    $existingEntry
+                );
+
+            $activateRequested =
+                filter_var(
+                    $rawEntry['activate']
+                    ?? false,
+                    FILTER_VALIDATE_BOOLEAN
+                );
+
+            /*
+             * EXISTING ACTIVE QUARTER:
+             * rawValue is a remaining-balance correction.
+             */
+            if ($existingStarted) {
+                $released =
+                    max(
+                        0,
+                        (int) (
+                            $existingEntry[
+                                'released'
+                            ]
+                            ?? 0
+                        )
+                    );
+
+                $carryover =
+                    max(
+                        0,
+                        (int) (
+                            $existingEntry[
+                                'carryover'
+                            ]
+                            ?? 0
+                        )
+                    );
+
+                $opening =
+                    $rawValue
+                    + $released;
+
+                $added =
+                    max(
+                        0,
+                        $opening
+                        - $carryover
+                    );
+
+                $result[$quarter] = [
+                    'opening' =>
+                        $opening,
+
+                    'carryover' =>
+                        $carryover,
+
+                    'added' =>
+                        $added,
+
+                    'current' =>
+                        $rawValue,
+
+                    'released' =>
+                        $released,
+                ];
+
+                $previousCurrent =
+                    $rawValue;
+
+                continue;
+            }
+
+            /*
+             * EXISTING DORMANT FUTURE QUARTER:
+             * Keep it zero until the user actually enters/activates it.
+             *
+             * Entering a positive new quantity automatically activates
+             * it. The frontend also sends activate=true when the user
+             * edits/toggles a dormant quarter, including a zero-addition
+             * carryover-only activation.
+             */
+            if (
+                is_array($existingEntry)
+                && !$activateRequested
+                && $rawValue === 0
+            ) {
+                $result[$quarter] = [
+                    'opening' => 0,
+                    'carryover' => 0,
+                    'added' => 0,
+                    'current' => 0,
+                    'released' => 0,
+                ];
+
+                /*
+                 * Do NOT change previousCurrent. The next activated
+                 * quarter still carries from the latest active quarter.
+                 */
+                continue;
+            }
+
+            /*
+             * LEGACY SINGLE QUARTER:
+             * rawValue is still the old remaining balance.
+             */
+            if (
+                $item
+                && empty($existing)
+                && count($quarters) === 1
+            ) {
+                $opening =
+                    $rawValue
+                    + $legacyReleased;
+
+                $result[$quarter] = [
+                    'opening' =>
+                        $opening,
+
+                    'carryover' =>
+                        0,
+
+                    'added' =>
+                        $opening,
+
+                    'current' =>
+                        $rawValue,
+
+                    'released' =>
+                        $legacyReleased,
+                ];
+
+                $previousCurrent =
+                    $rawValue;
+
+                continue;
+            }
+
+            /*
+             * NEW QUARTER:
+             * rawValue is NEW stock for this quarter.
+             * Previous quarter remaining is automatically carried
+             * forward and is NOT deducted from the historical quarter.
+             *
+             * Example:
+             * Q1 remaining = 10
+             * Q2 new stock = 25
+             * Q2 opening/current = 35
+             * Q1 historical remaining stays 10.
+             */
+            $carryover =
+                max(
+                    0,
+                    (int) $previousCurrent
+                );
+
+            $added =
+                $rawValue;
+
+            $opening =
+                $carryover
+                + $added;
+
+            $result[$quarter] = [
+                'opening' =>
+                    $opening,
+
+                'carryover' =>
+                    $carryover,
+
+                'added' =>
+                    $added,
+
+                'current' =>
+                    $opening,
+
+                'released' =>
+                    0,
+            ];
+
+            $previousCurrent =
+                $opening;
+        }
+
+        return $result;
+    }
+
+    private function quarterStockCurrentTotal(
+        array $quarterStock
+    ): int {
+        $normalized =
+            $this->normalizedStoredQuarterStock(
+                $quarterStock
+            );
+
+        $latestQuarter =
+            $this->latestActiveQuarter(
+                $normalized
+            );
+
+        if ($latestQuarter === null) {
+            return 0;
+        }
+
+        return max(
+            0,
+            (int) (
+                $normalized[
+                    $latestQuarter
+                ]['current']
+                ?? 0
+            )
+        );
+    }
+
+    private function quarterStockReleasedTotal(
+        array $quarterStock
+    ): int {
+        return array_sum(
+            array_map(
+                fn ($entry) =>
+                    max(
+                        0,
+                        (int) (
+                            $entry['released']
+                            ?? 0
+                        )
+                    ),
+                $quarterStock
+            )
+        );
     }
 
     /**

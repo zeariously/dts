@@ -1,6 +1,6 @@
 <script setup>
 import { Head, router } from '@inertiajs/vue3'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DTSLayout from '@/Layouts/DTSLayout.vue'
 
 defineOptions({
@@ -32,6 +32,555 @@ const currentPage = ref(1)
 
 const perPage = 8
 
+
+/*
+|--------------------------------------------------------------------------
+| ACCESSIBILITY PANEL
+|--------------------------------------------------------------------------
+|
+| Inventory-only accessibility controls inspired by the supplied design.
+| Preferences are stored in localStorage so they survive refreshes.
+|
+*/
+
+const ACCESSIBILITY_STORAGE_KEY =
+    'dts_inventory_accessibility_v1'
+
+const defaultAccessibilitySettings = {
+    textSize: 100,
+    highContrast: false,
+    grayscale: false,
+    highlightLinks: false,
+    readableFont: false,
+    bigCursor: false,
+    readingGuide: false,
+}
+
+const accessibilityOpen = ref(false)
+
+const accessibilitySettings = ref({
+    ...defaultAccessibilitySettings,
+})
+
+const readingGuideY = ref(0)
+
+let accessibilityTextObserver = null
+let accessibilityTextApplyFrame = null
+
+const accessibilityTextElements = new Set()
+
+const clampAccessibilityTextSize = (value) => {
+    const number = Number(value)
+
+    if (!Number.isFinite(number)) {
+        return 100
+    }
+
+    return Math.min(
+        200,
+        Math.max(
+            80,
+            Math.round(number / 10) * 10
+        )
+    )
+}
+
+const accessibilityRootClasses = computed(() => ({
+    'a11y-readable-font':
+        accessibilitySettings.value.readableFont,
+
+    'a11y-highlight-links':
+        accessibilitySettings.value.highlightLinks,
+
+    'a11y-big-cursor':
+        accessibilitySettings.value.bigCursor,
+}))
+
+const accessibilityVisualStyle = computed(() => {
+    const filters = []
+
+    if (accessibilitySettings.value.grayscale) {
+        filters.push('grayscale(1)')
+    }
+
+    if (accessibilitySettings.value.highContrast) {
+        filters.push('contrast(1.35) saturate(1.08)')
+    }
+
+    return {
+        filter:
+            filters.length
+                ? filters.join(' ')
+                : 'none',
+    }
+})
+
+const accessibilityOptionButtonClass = (key) => {
+    return accessibilitySettings.value[key]
+        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 ring-2 ring-indigo-100'
+        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+}
+
+const toggleAccessibilityPanel = () => {
+    accessibilityOpen.value =
+        !accessibilityOpen.value
+}
+
+const closeAccessibilityPanel = () => {
+    accessibilityOpen.value = false
+}
+
+const toggleAccessibilitySetting = (key) => {
+    if (
+        !Object.prototype.hasOwnProperty.call(
+            accessibilitySettings.value,
+            key
+        )
+        || key === 'textSize'
+    ) {
+        return
+    }
+
+    accessibilitySettings.value[key] =
+        !accessibilitySettings.value[key]
+}
+
+const decreaseAccessibilityTextSize = () => {
+    accessibilitySettings.value.textSize =
+        clampAccessibilityTextSize(
+            accessibilitySettings.value.textSize - 10
+        )
+}
+
+const increaseAccessibilityTextSize = () => {
+    accessibilitySettings.value.textSize =
+        clampAccessibilityTextSize(
+            accessibilitySettings.value.textSize + 10
+        )
+}
+
+const resetAccessibilitySettings = () => {
+    accessibilitySettings.value = {
+        ...defaultAccessibilitySettings,
+    }
+
+    accessibilityOpen.value = true
+}
+
+const saveAccessibilitySettings = () => {
+    if (typeof window === 'undefined') {
+        return
+    }
+
+    try {
+        window.localStorage.setItem(
+            ACCESSIBILITY_STORAGE_KEY,
+            JSON.stringify(
+                accessibilitySettings.value
+            )
+        )
+    } catch (error) {
+        // Accessibility still works for the current page session.
+    }
+}
+
+const loadAccessibilitySettings = () => {
+    if (typeof window === 'undefined') {
+        return
+    }
+
+    try {
+        const raw =
+            window.localStorage.getItem(
+                ACCESSIBILITY_STORAGE_KEY
+            )
+
+        if (!raw) {
+            return
+        }
+
+        const saved = JSON.parse(raw)
+
+        accessibilitySettings.value = {
+            ...defaultAccessibilitySettings,
+            ...saved,
+            textSize:
+                clampAccessibilityTextSize(
+                    saved?.textSize
+                ),
+        }
+    } catch (error) {
+        accessibilitySettings.value = {
+            ...defaultAccessibilitySettings,
+        }
+    }
+}
+
+const restoreAccessibilityElementFont = (element) => {
+    if (!(element instanceof HTMLElement)) {
+        return
+    }
+
+    const originalValue =
+        element.dataset.a11yOriginalFontSize ?? ''
+
+    const originalPriority =
+        element.dataset.a11yOriginalFontPriority ?? ''
+
+    if (originalValue) {
+        element.style.setProperty(
+            'font-size',
+            originalValue,
+            originalPriority
+        )
+    } else {
+        element.style.removeProperty('font-size')
+    }
+
+    delete element.dataset.a11yBaseFontSize
+    delete element.dataset.a11yOriginalFontSize
+    delete element.dataset.a11yOriginalFontPriority
+
+    accessibilityTextElements.delete(element)
+}
+
+const restoreAllAccessibilityTextSizes = () => {
+    accessibilityTextElements
+        .forEach((element) => {
+            restoreAccessibilityElementFont(element)
+        })
+
+    accessibilityTextElements.clear()
+}
+
+const isAccessibilityTextElement = (element) => {
+    if (!(element instanceof HTMLElement)) {
+        return false
+    }
+
+    /*
+     * Form controls display text even though they do not have
+     * normal text nodes inside them.
+     */
+    if (
+        element.matches(
+            'input, textarea, select, option'
+        )
+    ) {
+        return true
+    }
+
+    /*
+     * Scale an element only when it contains its OWN visible text.
+     *
+     * This prevents wrapper divs/cards/layout containers from getting
+     * a font-size override, which made the previous version feel like
+     * the whole interface was zooming.
+     */
+    return Array.from(
+        element.childNodes
+    ).some((node) => {
+        return (
+            node.nodeType === Node.TEXT_NODE
+            && String(
+                node.textContent || ''
+            ).trim() !== ''
+        )
+    })
+}
+
+const scaleAccessibilityElementFont = (
+    element,
+    scale
+) => {
+    if (
+        !(element instanceof HTMLElement)
+        || !isAccessibilityTextElement(element)
+    ) {
+        return
+    }
+
+    /*
+     * Do NOT resize the accessibility controller itself.
+     * Only the actual Inventory page content/modals should change.
+     */
+    if (
+        element.closest(
+            '.inventory-accessibility-ui'
+        )
+    ) {
+        return
+    }
+
+    if (
+        !element.dataset.a11yBaseFontSize
+    ) {
+        const computedFontSize =
+            Number.parseFloat(
+                window.getComputedStyle(
+                    element
+                ).fontSize
+            )
+
+        if (
+            !Number.isFinite(computedFontSize)
+            || computedFontSize <= 0
+        ) {
+            return
+        }
+
+        element.dataset.a11yBaseFontSize =
+            String(computedFontSize)
+
+        element.dataset.a11yOriginalFontSize =
+            element.style.getPropertyValue(
+                'font-size'
+            )
+
+        element.dataset.a11yOriginalFontPriority =
+            element.style.getPropertyPriority(
+                'font-size'
+            )
+
+        accessibilityTextElements.add(
+            element
+        )
+    }
+
+    const baseFontSize =
+        Number(
+            element.dataset.a11yBaseFontSize
+        )
+
+    if (!Number.isFinite(baseFontSize)) {
+        return
+    }
+
+    /*
+     * At 100%, restore the element exactly as it was.
+     * At another percentage, force the computed base size × scale.
+     *
+     * This intentionally handles BOTH:
+     * - Tailwind rem classes like text-sm / text-2xl
+     * - fixed pixel classes like text-[9px] / text-[10px]
+     */
+    if (scale === 1) {
+        const originalValue =
+            element.dataset.a11yOriginalFontSize ?? ''
+
+        const originalPriority =
+            element.dataset.a11yOriginalFontPriority ?? ''
+
+        if (originalValue) {
+            element.style.setProperty(
+                'font-size',
+                originalValue,
+                originalPriority
+            )
+        } else {
+            element.style.removeProperty(
+                'font-size'
+            )
+        }
+
+        return
+    }
+
+    element.style.setProperty(
+        'font-size',
+        `${Math.max(
+            1,
+            baseFontSize * scale
+        )}px`,
+        'important'
+    )
+}
+
+const applyAccessibilityTextSize = () => {
+    if (
+        typeof document === 'undefined'
+        || typeof window === 'undefined'
+    ) {
+        return
+    }
+
+    const root =
+        document.querySelector(
+            '.inventory-accessibility-root'
+        )
+
+    if (!root) {
+        return
+    }
+
+    const scale =
+        clampAccessibilityTextSize(
+            accessibilitySettings.value.textSize
+        ) / 100
+
+    /*
+     * Scale ONLY elements that directly render text.
+     *
+     * Containers/layout wrappers are deliberately ignored, so this
+     * changes literal font sizes instead of making the page feel zoomed.
+     *
+     * Each text element keeps its own original computed size as baseline,
+     * including Tailwind classes such as text-sm and text-[9px].
+     */
+    root.querySelectorAll('*')
+        .forEach((element) => {
+            scaleAccessibilityElementFont(
+                element,
+                scale
+            )
+        })
+}
+
+const scheduleAccessibilityTextSize = () => {
+    if (typeof window === 'undefined') {
+        return
+    }
+
+    if (accessibilityTextApplyFrame) {
+        window.cancelAnimationFrame(
+            accessibilityTextApplyFrame
+        )
+    }
+
+    accessibilityTextApplyFrame =
+        window.requestAnimationFrame(() => {
+            accessibilityTextApplyFrame = null
+            applyAccessibilityTextSize()
+        })
+}
+
+const startAccessibilityTextObserver = () => {
+    if (
+        typeof document === 'undefined'
+        || typeof MutationObserver === 'undefined'
+    ) {
+        return
+    }
+
+    const root =
+        document.querySelector(
+            '.inventory-accessibility-root'
+        )
+
+    if (!root) {
+        return
+    }
+
+    accessibilityTextObserver =
+        new MutationObserver(
+            (mutations) => {
+                const hasAddedContent =
+                    mutations.some(
+                        (mutation) =>
+                            mutation.addedNodes.length > 0
+                    )
+
+                if (hasAddedContent) {
+                    scheduleAccessibilityTextSize()
+                }
+            }
+        )
+
+    accessibilityTextObserver.observe(
+        root,
+        {
+            childList: true,
+            subtree: true,
+        }
+    )
+}
+
+const handleReadingGuidePointer = (event) => {
+    if (
+        !accessibilitySettings.value.readingGuide
+    ) {
+        return
+    }
+
+    readingGuideY.value =
+        Number(event?.clientY || 0)
+}
+
+const handleAccessibilityKeydown = (event) => {
+    if (event?.key === 'Escape') {
+        closeAccessibilityPanel()
+    }
+}
+
+watch(
+    accessibilitySettings,
+    () => {
+        saveAccessibilitySettings()
+        scheduleAccessibilityTextSize()
+    },
+    {
+        deep: true,
+    }
+)
+
+onMounted(() => {
+    loadAccessibilitySettings()
+
+    if (typeof window !== 'undefined') {
+        scheduleAccessibilityTextSize()
+        startAccessibilityTextObserver()
+        readingGuideY.value =
+            Math.round(
+                window.innerHeight / 2
+            )
+
+        window.addEventListener(
+            'pointermove',
+            handleReadingGuidePointer,
+            {
+                passive: true,
+            }
+        )
+
+        window.addEventListener(
+            'keydown',
+            handleAccessibilityKeydown
+        )
+    }
+})
+
+onBeforeUnmount(() => {
+    if (typeof window !== 'undefined') {
+        window.removeEventListener(
+            'pointermove',
+            handleReadingGuidePointer
+        )
+
+        window.removeEventListener(
+            'keydown',
+            handleAccessibilityKeydown
+        )
+    }
+
+    if (accessibilityTextObserver) {
+        accessibilityTextObserver.disconnect()
+        accessibilityTextObserver = null
+    }
+
+    if (
+        typeof window !== 'undefined'
+        && accessibilityTextApplyFrame
+    ) {
+        window.cancelAnimationFrame(
+            accessibilityTextApplyFrame
+        )
+
+        accessibilityTextApplyFrame = null
+    }
+
+    restoreAllAccessibilityTextSizes()
+})
+
 const showHistoryModal = ref(false)
 const historyItem = ref(null)
 const inventoryHistories = ref([])
@@ -53,6 +602,7 @@ const releaseItemErrors = ref({})
 
 const releaseItemForm = ref({
     releaseQuantity: '',
+    releaseDestination: '',
     remarks: '',
 })
 
@@ -62,11 +612,13 @@ const fullEditErrors = ref({})
 const fullEditForm = ref({
     category: 'supplies',
     item: '',
+    location: '',
     unit: '',
     inventory_year: 2026,
     fixed_value: '',
     currently_available: '',
     quarters: [],
+    quarter_stock: {},
     remarks: '',
 })
 
@@ -75,11 +627,13 @@ const addItemErrors = ref({})
 
 const newItemForm = ref({
     item: '',
+    location: '',
     unit: '',
     inventory_year: 2026,
     fixed: '',
     currently_available: '',
     quarters: [],
+    quarter_stock: {},
     remarks: '',
 })
 
@@ -162,6 +716,673 @@ const normalizeQuarters = (value) => {
     return []
 }
 
+const normalizeQuarterStock = (value) => {
+    let source = value
+
+    if (
+        typeof source === 'string'
+        && source.trim()
+    ) {
+        try {
+            source = JSON.parse(source)
+        } catch (error) {
+            source = {}
+        }
+    }
+
+    if (
+        !source
+        || Array.isArray(source)
+        || typeof source !== 'object'
+    ) {
+        return {}
+    }
+
+    const normalized = {}
+
+    quarterValues.forEach((quarter) => {
+        const entry = source?.[quarter]
+
+        if (
+            !entry
+            || typeof entry !== 'object'
+        ) {
+            return
+        }
+
+        const current =
+            Number(entry.current)
+
+        const released =
+            Number(entry.released ?? 0)
+
+        const opening =
+            Number(
+                entry.opening
+                ?? (
+                    Number.isFinite(current)
+                        ? current
+                        + (
+                            Number.isFinite(released)
+                                ? released
+                                : 0
+                        )
+                        : 0
+                )
+            )
+
+        if (
+            !Number.isFinite(current)
+            || current < 0
+        ) {
+            return
+        }
+
+        const normalizedOpening =
+            Number.isFinite(opening)
+                ? Math.max(0, opening)
+                : current
+
+        const carryover =
+            Number(entry.carryover ?? 0)
+
+        const normalizedCarryover =
+            Number.isFinite(carryover)
+                ? Math.max(0, carryover)
+                : 0
+
+        const added =
+            Number(
+                entry.added
+                ?? Math.max(
+                    0,
+                    normalizedOpening
+                    - normalizedCarryover
+                )
+            )
+
+        normalized[quarter] = {
+            opening:
+                normalizedOpening,
+            carryover:
+                normalizedCarryover,
+            added:
+                Number.isFinite(added)
+                    ? Math.max(0, added)
+                    : 0,
+            current:
+                Math.max(0, current),
+            released:
+                Number.isFinite(released)
+                    ? Math.max(0, released)
+                    : 0,
+        }
+    })
+
+    /*
+     * Repair the carryover chain for ACTIVE quarters only.
+     *
+     * A completely zero quarter is considered a FUTURE / DORMANT
+     * quarter. It must not become active merely because the item is
+     * assigned to All Quarters.
+     *
+     * Example:
+     * Q1 current = 10
+     * Q2 stored as added 25 / carryover 0
+     *
+     * Normalized Q2:
+     * carryover = 10
+     * opening = 35
+     * current = 35 - Q2 released
+     */
+    let previousCurrent = 0
+    let hasPreviousActive = false
+
+    quarterValues.forEach((quarter) => {
+        const entry = normalized[quarter]
+
+        if (!entry) {
+            return
+        }
+
+        if (!quarterEntryHasActivity(entry)) {
+            /*
+             * Future quarter. Keep it dormant at zero and DO NOT
+             * advance previousCurrent.
+             */
+            entry.opening = 0
+            entry.carryover = 0
+            entry.added = 0
+            entry.current = 0
+            entry.released = 0
+            return
+        }
+
+        const released =
+            Math.max(
+                0,
+                Number(entry.released ?? 0)
+            )
+
+        const storedCarryover =
+            Math.max(
+                0,
+                Number(entry.carryover ?? 0)
+            )
+
+        const storedOpening =
+            Math.max(
+                0,
+                Number(entry.opening ?? 0)
+            )
+
+        const storedAdded =
+            Math.max(
+                0,
+                Number(
+                    entry.added
+                    ?? Math.max(
+                        0,
+                        storedOpening
+                        - storedCarryover
+                    )
+                )
+            )
+
+        const carryover =
+            hasPreviousActive
+                ? previousCurrent
+                : 0
+
+        const opening =
+            carryover
+            + storedAdded
+
+        const current =
+            Math.max(
+                0,
+                opening - released
+            )
+
+        entry.carryover = carryover
+        entry.added = storedAdded
+        entry.opening = opening
+        entry.current = current
+        entry.released = released
+
+        previousCurrent = current
+        hasPreviousActive = true
+    })
+
+    return normalized
+}
+
+const hasQuarterStock = (item) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    if (!['supplies', 'ict'].includes(category)) {
+        return false
+    }
+
+    return (
+        Object.keys(
+            normalizeQuarterStock(
+                item?.quarter_stock
+            )
+        ).length > 0
+    )
+}
+
+const quarterEntryHasActivity = (entry) => {
+    if (!entry || typeof entry !== 'object') {
+        return false
+    }
+
+    return [
+        'opening',
+        'carryover',
+        'added',
+        'current',
+        'released',
+    ].some((field) => {
+        const value = Number(entry?.[field] ?? 0)
+
+        return (
+            Number.isFinite(value)
+            && value > 0
+        )
+    })
+}
+
+const sortedQuarterKeys = (quarters) => {
+    return [...new Set(
+        (quarters || [])
+            .map(
+                (quarter) =>
+                    String(quarter || '')
+                        .trim()
+                        .toLowerCase()
+            )
+            .filter(
+                (quarter) =>
+                    quarterValues.includes(quarter)
+            )
+    )].sort(
+        (a, b) =>
+            quarterValues.indexOf(a)
+            - quarterValues.indexOf(b)
+    )
+}
+
+const latestQuarterForItem = (item) => {
+    const stock =
+        normalizeQuarterStock(
+            item?.quarter_stock
+        )
+
+    const activeStockQuarters =
+        sortedQuarterKeys(
+            Object.keys(stock)
+                .filter(
+                    (quarter) =>
+                        quarterEntryHasActivity(
+                            stock[quarter]
+                        )
+                )
+        )
+
+    if (activeStockQuarters.length) {
+        return activeStockQuarters[
+            activeStockQuarters.length - 1
+        ]
+    }
+
+    const assigned =
+        sortedQuarterKeys(
+            inferredItemQuarters(item)
+        )
+
+    /*
+     * If quarter_stock exists but all future quarters are still zero,
+     * use the earliest assigned quarter as the initial active quarter.
+     * This prevents All Quarters from jumping straight to Q4.
+     */
+    if (
+        Object.keys(stock).length
+        && assigned.length
+    ) {
+        return assigned[0]
+    }
+
+    return assigned.length
+        ? assigned[
+            assigned.length - 1
+        ]
+        : ''
+}
+
+const visibleQuarterBalanceEntries = (item) => {
+    const stock =
+        normalizeQuarterStock(
+            item?.quarter_stock
+        )
+
+    let quarters =
+        sortedQuarterKeys(
+            Object.keys(stock)
+                .filter(
+                    (quarter) =>
+                        quarterEntryHasActivity(
+                            stock[quarter]
+                        )
+                )
+        )
+
+    /*
+     * Legacy one-quarter fallback so the user can still see the
+     * remaining balance before opening Edit.
+     */
+    if (!quarters.length) {
+        const inferred =
+            sortedQuarterKeys(
+                inferredItemQuarters(item)
+            )
+
+        if (inferred.length === 1) {
+            return [
+                {
+                    quarter:
+                        inferred[0],
+                    opening:
+                        Number(
+                            currentAvailableValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        )
+                        + Number(
+                            quantityReleasedValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        ),
+                    carryover: 0,
+                    added:
+                        Number(
+                            currentAvailableValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        )
+                        + Number(
+                            quantityReleasedValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        ),
+                    current:
+                        Number(
+                            currentAvailableValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        ),
+                    released:
+                        Number(
+                            quantityReleasedValue(
+                                item,
+                                inferred[0]
+                            )
+                            ?? 0
+                        ),
+                },
+            ]
+        }
+
+        return []
+    }
+
+    if (
+        quarterFilter.value !== 'all'
+        && quarters.includes(
+            quarterFilter.value
+        )
+    ) {
+        quarters = [
+            quarterFilter.value,
+        ]
+    }
+
+    return quarters.map(
+        (quarter) => ({
+            quarter,
+            ...stock[quarter],
+        })
+    )
+}
+
+const previousSelectedQuarter = (
+    quarters,
+    quarter
+) => {
+    const sorted =
+        sortedQuarterKeys(quarters)
+
+    const index =
+        sorted.indexOf(quarter)
+
+    return index > 0
+        ? sorted[index - 1]
+        : ''
+}
+
+const originalEditQuarterStock =
+    computed(() =>
+        normalizeQuarterStock(
+            fullEditingItem.value
+                ?.quarter_stock
+        )
+    )
+
+const isEditQuarterNew = (quarter) => {
+    const entry =
+        originalEditQuarterStock.value?.[
+            quarter
+        ]
+
+    return (
+        !entry
+        || !quarterEntryHasActivity(entry)
+    )
+}
+
+const projectedFormQuarterCurrent = (
+    form,
+    quarter,
+    existingStock = {}
+) => {
+    const quarters =
+        sortedQuarterKeys(
+            form?.quarters
+        )
+
+    let runningCurrent = 0
+
+    for (const value of quarters) {
+        const raw =
+            form?.quarter_stock?.[value]
+                ?.current
+
+        const numeric =
+            Number(raw)
+
+        if (
+            existingStock?.[value]
+            && quarterEntryHasActivity(
+                existingStock[value]
+            )
+        ) {
+            runningCurrent =
+                Number.isFinite(numeric)
+                    ? Math.max(0, numeric)
+                    : Number(
+                        existingStock[value]
+                            .current
+                        ?? 0
+                    )
+        } else {
+            const added =
+                Number.isFinite(numeric)
+                    ? Math.max(0, numeric)
+                    : 0
+
+            runningCurrent +=
+                added
+        }
+
+        if (value === quarter) {
+            return runningCurrent
+        }
+    }
+
+    return 0
+}
+
+const projectedQuarterCarryover = (
+    form,
+    quarter,
+    existingStock = {}
+) => {
+    const previous =
+        previousSelectedQuarter(
+            form?.quarters,
+            quarter
+        )
+
+    if (!previous) {
+        return 0
+    }
+
+    return projectedFormQuarterCurrent(
+        form,
+        previous,
+        existingStock
+    )
+}
+
+const quarterStockValue = (
+    item,
+    field,
+    selectedQuarter = quarterFilter.value
+) => {
+    const stock =
+        normalizeQuarterStock(
+            item?.quarter_stock
+        )
+
+    const stockQuarters =
+        Object.keys(stock)
+            .filter(
+                (quarter) =>
+                    quarterEntryHasActivity(
+                        stock[quarter]
+                    )
+            )
+
+    if (!stockQuarters.length) {
+        return null
+    }
+
+    if (
+        selectedQuarter !== 'all'
+        && quarterValues.includes(
+            selectedQuarter
+        )
+    ) {
+        const value =
+            Number(
+                stock?.[selectedQuarter]?.[field]
+            )
+
+        return Number.isFinite(value)
+            ? Math.max(0, value)
+            : 0
+    }
+
+    const ordered =
+        sortedQuarterKeys(
+            stockQuarters
+        )
+
+    /*
+     * Carryover means historical quarter balances are snapshots.
+     * Do NOT sum "current" across quarters or the carryover is
+     * double-counted. All Quarters uses the latest quarter's
+     * physical current balance.
+     */
+    if (
+        ['current', 'opening'].includes(
+            field
+        )
+    ) {
+        const latest =
+            ordered[
+                ordered.length - 1
+            ]
+
+        const value =
+            Number(
+                stock?.[latest]?.[field]
+            )
+
+        return Number.isFinite(value)
+            ? Math.max(0, value)
+            : 0
+    }
+
+    return ordered.reduce(
+        (total, quarter) => {
+            const value =
+                Number(
+                    stock?.[quarter]?.[field]
+                )
+
+            return total
+                + (
+                    Number.isFinite(value)
+                        ? Math.max(0, value)
+                        : 0
+                )
+        },
+        0
+    )
+}
+
+const quarterStockFormCurrent = (
+    form,
+    quarter
+) => {
+    return form?.quarter_stock?.[quarter]?.current
+        ?? ''
+}
+
+const setNewQuarterStockCurrent = (
+    quarter,
+    value
+) => {
+    newItemForm.value.quarter_stock = {
+        ...(newItemForm.value.quarter_stock || {}),
+        [quarter]: {
+            ...(
+                newItemForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+            ),
+            current: value,
+        },
+    }
+}
+
+const setEditQuarterStockCurrent = (
+    quarter,
+    value
+) => {
+    const originalEntry =
+        originalEditQuarterStock.value?.[
+            quarter
+        ]
+
+    const needsActivation =
+        !originalEntry
+        || !quarterEntryHasActivity(
+            originalEntry
+        )
+
+    fullEditForm.value.quarter_stock = {
+        ...(fullEditForm.value.quarter_stock || {}),
+        [quarter]: {
+            ...(
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+            ),
+            current: value,
+            ...(needsActivation
+                ? { activate: true }
+                : {}
+            ),
+        },
+    }
+}
+
 const normalizeInventoryItem = (item) => {
     const fixed =
         item.fixed_value !== null
@@ -235,6 +1456,12 @@ const normalizeInventoryItem = (item) => {
                 : 2026,
         quarters:
             normalizeQuarters(item.quarters),
+        quarter_stock:
+            normalizeQuarterStock(
+                item.quarter_stock
+            ),
+        location:
+            String(item.location ?? '').trim(),
         remarks:
             item.remarks ?? '',
     }
@@ -307,6 +1534,41 @@ const ictItems = computed(() =>
     )
 )
 
+const otherCategoryOptions = [
+    {
+        value: 'furniture',
+        label: 'Furniture',
+    },
+    {
+        value: 'fixtures',
+        label: 'Fixtures',
+    },
+    {
+        value: 'emergency_kits',
+        label: 'Emergency Kits',
+    },
+    {
+        value: 'token_giveaways',
+        label: 'Token and Giveaways',
+    },
+]
+
+const otherCategoryValues =
+    otherCategoryOptions.map(
+        (option) => option.value
+    )
+
+const otherCategoryFilter = ref('furniture')
+
+const otherItems = computed(() =>
+    normalizedInventoryItems.value.filter(
+        (item) =>
+            otherCategoryValues.includes(
+                item.category
+            )
+    )
+)
+
 /*
 |--------------------------------------------------------------------------
 | CURRENT DATA
@@ -314,15 +1576,123 @@ const ictItems = computed(() =>
 */
 
 const currentItems = computed(() => {
-    return activeTab.value === 'supplies'
-        ? suppliesItems.value
-        : ictItems.value
+    if (activeTab.value === 'supplies') {
+        return suppliesItems.value
+    }
+
+    if (activeTab.value === 'ict') {
+        return ictItems.value
+    }
+
+    return otherItems.value.filter(
+        (item) =>
+            item.category
+            === otherCategoryFilter.value
+    )
 })
 
+const currentOtherCategoryLabel = computed(() => {
+    return otherCategoryOptions.find(
+        (option) =>
+            option.value
+            === otherCategoryFilter.value
+    )?.label || 'Other Items'
+})
+
+
+const otherCategoryHasCount = (category) => {
+    return otherCategoryValues.includes(
+        category
+    )
+}
+
+const otherCategoryCanRelease = (category) => {
+    return [
+        'furniture',
+        'fixtures',
+        'token_giveaways',
+    ].includes(category)
+}
+
+const currentOtherCategoryHasCount = computed(() =>
+    otherCategoryHasCount(
+        otherCategoryFilter.value
+    )
+)
+
+const currentOtherCategoryCanRelease = computed(() =>
+    otherCategoryCanRelease(
+        otherCategoryFilter.value
+    )
+)
+
+
+const ictDurationUnit = (itemOrUnit) => {
+    const unit =
+        typeof itemOrUnit === 'string'
+            ? itemOrUnit
+            : itemOrUnit?.unit
+
+    const normalized =
+        String(unit || '')
+            .trim()
+            .toUpperCase()
+
+    return ['MONTH', 'YEAR'].includes(normalized)
+        ? normalized
+        : null
+}
+
+const isIctYearBased = (itemOrUnit) =>
+    ictDurationUnit(itemOrUnit) === 'YEAR'
+
+const isIctMonthBased = (itemOrUnit) =>
+    ictDurationUnit(itemOrUnit) === 'MONTH'
+
+const isIctSubscription = (itemOrUnit) =>
+    Boolean(ictDurationUnit(itemOrUnit))
+
+const ictQuantityLabel = (itemOrUnit) => {
+    if (isIctMonthBased(itemOrUnit)) {
+        return 'Month(s)'
+    }
+
+    if (isIctYearBased(itemOrUnit)) {
+        return 'Year(s)'
+    }
+
+    return 'Count'
+}
+
+const ictQuantityDisplay = (item) => {
+    const value =
+        currentAvailableValue(item)
+
+    if (value === null) {
+        return '—'
+    }
+
+    if (isIctMonthBased(item)) {
+        return `${value} ${value === 1 ? 'Month' : 'Months'}`
+    }
+
+    if (isIctYearBased(item)) {
+        return `${value} ${value === 1 ? 'Year' : 'Years'}`
+    }
+
+    return String(value)
+}
+
 const currentTitle = computed(() => {
-    return activeTab.value === 'supplies'
-        ? 'Supplies Inventory'
-        : 'ICT & Other Items'
+    if (activeTab.value === 'supplies') {
+        return 'Supplies Inventory'
+    }
+
+    if (activeTab.value === 'ict') {
+        return 'ICT'
+    }
+
+    return `Other Items · ${currentOtherCategoryLabel.value}`
 })
 
 const currentSubtitle = computed(() => {
@@ -347,12 +1717,20 @@ const ictUnitOptions = [
     { value: 'UNIT', label: 'Unit' },
     { value: 'LOT', label: 'Lot' },
     { value: 'PAX', label: 'Pax' },
+    { value: 'MONTH', label: 'Month (Subscription)' },
+    { value: 'YEAR', label: 'Year (Subscription)' },
 ]
 
 const unitOptions = computed(() => {
-    return activeTab.value === 'supplies'
-        ? suppliesUnitOptions
-        : ictUnitOptions
+    if (activeTab.value === 'supplies') {
+        return suppliesUnitOptions
+    }
+
+    if (activeTab.value === 'ict') {
+        return ictUnitOptions
+    }
+
+    return []
 })
 
 /*
@@ -463,6 +1841,7 @@ const itemMatchesQuarter = (
 const resetNewItemForm = () => {
     newItemForm.value = {
         item: '',
+            location: '',
         unit: '',
         inventory_year:
             Number(yearFilter.value) || 2026,
@@ -472,6 +1851,14 @@ const resetNewItemForm = () => {
             quarterFilter.value === 'all'
                 ? []
                 : [quarterFilter.value],
+        quarter_stock:
+            quarterFilter.value === 'all'
+                ? {}
+                : {
+                    [quarterFilter.value]: {
+                        current: '',
+                    },
+                },
         remarks: '',
     }
 
@@ -493,10 +1880,65 @@ const closeAddItemModal = () => {
 }
 
 const toggleAllNewItemQuarters = (event) => {
-    newItemForm.value.quarters =
+    const selected =
         event.target.checked
             ? [...quarterValues]
             : []
+
+    const nextStock = {}
+
+    selected.forEach((quarter) => {
+        nextStock[quarter] = {
+            current:
+                newItemForm.value
+                    .quarter_stock?.[quarter]
+                    ?.current
+                ?? '',
+        }
+    })
+
+    newItemForm.value.quarters =
+        selected
+
+    newItemForm.value.quarter_stock =
+        nextStock
+}
+
+const toggleNewItemQuarter = (
+    quarter,
+    checked
+) => {
+    const selected =
+        checked
+            ? [
+                ...new Set([
+                    ...newItemForm.value.quarters,
+                    quarter,
+                ]),
+            ]
+            : newItemForm.value.quarters
+                .filter(
+                    (value) =>
+                        value !== quarter
+                )
+
+    const nextStock = {}
+
+    selected.forEach((value) => {
+        nextStock[value] = {
+            current:
+                newItemForm.value
+                    .quarter_stock?.[value]
+                    ?.current
+                ?? '',
+        }
+    })
+
+    newItemForm.value.quarters =
+        selected
+
+    newItemForm.value.quarter_stock =
+        nextStock
 }
 
 const addNewItem = () => {
@@ -510,6 +1952,31 @@ const addNewItem = () => {
         newItemForm.value.item || ''
     ).trim()
 
+    const remarks = String(
+        newItemForm.value.remarks ?? ''
+    ).trim()
+
+    const isSupplies =
+        activeTab.value === 'supplies'
+
+    const isIct =
+        activeTab.value === 'ict'
+
+    const isOtherItems =
+        activeTab.value === 'other'
+
+    const category =
+        isOtherItems
+            ? otherCategoryFilter.value
+            : activeTab.value
+
+    const location = String(
+        newItemForm.value.location || ''
+    ).trim()
+
+    const requiresItemCount =
+        otherCategoryHasCount(category)
+
     const unit = String(
         newItemForm.value.unit || ''
     )
@@ -521,12 +1988,13 @@ const addNewItem = () => {
             newItemForm.value.inventory_year
         )
 
-    const remarks = String(
-        newItemForm.value.remarks ?? ''
-    ).trim()
-
-    const isSupplies =
-        activeTab.value === 'supplies'
+    const quarters = [
+        ...new Set(
+            newItemForm.value.quarters
+        ),
+    ].filter((quarter) =>
+        quarterValues.includes(quarter)
+    )
 
     const hasFixedValue =
         isSupplies
@@ -538,44 +2006,66 @@ const addNewItem = () => {
         ? Number(newItemForm.value.fixed)
         : null
 
-    const currentlyAvailable = isSupplies
-        ? Number(
-            newItemForm.value.currently_available
-        )
-        : null
-
-    /*
-     * Quarter assignment now applies to BOTH tabs.
-     */
-    const quarters = [
-        ...new Set(
-            newItemForm.value.quarters
-        ),
-    ].filter((quarter) =>
-        quarterValues.includes(quarter)
-    )
+    const currentlyAvailable =
+        isSupplies || isIct
+            ? Number(
+                newItemForm.value.currently_available
+            )
+            : null
 
     if (!itemName) {
         addItemErrors.value.item =
             'Item name is required.'
     }
 
-    if (!unit) {
-        addItemErrors.value.unit =
-            'Unit of measure is required.'
-    }
+    /*
+     * OTHER ITEMS
+     * Table fields = Item, Location, Remarks.
+     * Therefore Add Item uses those same user-facing fields only.
+     */
+    if (isOtherItems) {
+        if (!location) {
+            addItemErrors.value.location =
+                'Location is required.'
+        }
 
-    if (
-        !Number.isInteger(inventoryYear)
-        || inventoryYear < 2026
-    ) {
-        addItemErrors.value.inventory_year =
-            'Select a valid year from 2026 onwards.'
-    }
+        if (
+            requiresItemCount
+            && (
+                newItemForm.value.currently_available === ''
+                || newItemForm.value.currently_available === null
+                || newItemForm.value.currently_available === undefined
+                || !Number.isInteger(
+                    Number(
+                        newItemForm.value.currently_available
+                    )
+                )
+                || Number(
+                    newItemForm.value.currently_available
+                ) < 0
+            )
+        ) {
+            addItemErrors.value.currently_available =
+                'Enter a valid count.'
+        }
+    } else {
+        if (!unit) {
+            addItemErrors.value.unit =
+                'Unit of measure is required.'
+        }
 
-    if (!quarters.length) {
-        addItemErrors.value.quarters =
-            'Select at least one applicable quarter.'
+        if (
+            !Number.isInteger(inventoryYear)
+            || inventoryYear < 2026
+        ) {
+            addItemErrors.value.inventory_year =
+                'Select a valid year from 2026 onwards.'
+        }
+
+        if (!quarters.length) {
+            addItemErrors.value.quarters =
+                'Select at least one applicable quarter.'
+        }
     }
 
     if (isSupplies) {
@@ -589,46 +2079,102 @@ const addNewItem = () => {
             addItemErrors.value.fixed =
                 'Enter a valid fixed value or leave it blank.'
         }
-
-        if (
-            newItemForm.value.currently_available === ''
-            || newItemForm.value.currently_available === null
-            || newItemForm.value.currently_available === undefined
-        ) {
-            addItemErrors.value.currently_available =
-                'Currently available quantity is required.'
-        } else if (
-            !Number.isFinite(currentlyAvailable)
-            || currentlyAvailable < 0
-        ) {
-            addItemErrors.value.currently_available =
-                'Enter a valid currently available quantity.'
-        }
     }
 
-    /*
-     * Same item/unit can exist again in another year,
-     * but not twice inside the same year.
-     */
-    const duplicateExists =
-        currentItems.value.some((item) =>
-            Number(item.inventory_year)
-                === inventoryYear
-            &&
-            String(item.item || '')
-                .trim()
-                .toLowerCase()
-                === itemName.toLowerCase()
-            &&
-            String(item.unit || '')
-                .trim()
-                .toUpperCase()
-                === unit
+    if (isSupplies || isIct) {
+        quarters.forEach((quarter) => {
+            const raw =
+                newItemForm.value
+                    .quarter_stock?.[quarter]
+                    ?.current
+
+            const value =
+                Number(raw)
+
+            if (
+                raw === ''
+                || raw === null
+                || raw === undefined
+                || !Number.isInteger(value)
+                || value < 0
+            ) {
+                addItemErrors.value[
+                    `quarter_stock.${quarter}.current`
+                ] =
+                    `Enter the starting/current quantity for ${quarter.toUpperCase()}.`
+            }
+        })
+    }
+
+    const quarterStockPayload = {}
+
+    if (isSupplies || isIct) {
+        quarters.forEach((quarter) => {
+            const current =
+                Number(
+                    newItemForm.value
+                        .quarter_stock?.[quarter]
+                        ?.current
+                )
+
+            quarterStockPayload[quarter] = {
+                current,
+            }
+        })
+    }
+
+    const aggregateQuarterCurrent =
+        Object.values(
+            quarterStockPayload
+        ).reduce(
+            (total, entry) =>
+                total
+                + (
+                    Number.isFinite(
+                        Number(entry.current)
+                    )
+                        ? Number(entry.current)
+                        : 0
+                ),
+            0
         )
+
+    const duplicateExists =
+        normalizedInventoryItems.value.some((item) => {
+            if (
+                item.category !== category
+                || Number(item.id || 0) < 0
+                || String(item.item || '')
+                    .trim()
+                    .toLowerCase()
+                    !== itemName.toLowerCase()
+            ) {
+                return false
+            }
+
+            if (isOtherItems) {
+                return String(item.location || '')
+                    .trim()
+                    .toLowerCase()
+                    === location.toLowerCase()
+            }
+
+            return (
+                Number(item.inventory_year)
+                    === inventoryYear
+                &&
+                String(item.unit || '')
+                    .trim()
+                    .toUpperCase()
+                    === unit
+            )
+        })
 
     if (duplicateExists) {
         addItemErrors.value.item =
-            `This item and unit already exist for ${inventoryYear}.`
+            isOtherItems
+                ? 'This item already exists in the same location.'
+                : `This item and unit already exist for ${inventoryYear}.`
     }
 
     if (
@@ -639,34 +2185,47 @@ const addNewItem = () => {
         return
     }
 
+    const payload = {
+        category,
+        item: itemName,
+        remarks,
+    }
+
+    if (isOtherItems) {
+        payload.location = location
+        payload.currently_available =
+            requiresItemCount
+                ? Number(
+                    newItemForm.value.currently_available
+                )
+                : null
+    } else {
+        payload.unit = unit
+        payload.inventory_year = inventoryYear
+        payload.quarters = quarters
+        payload.location = null
+        payload.fixed_value =
+            isSupplies
+                ? fixedValue
+                : null
+        payload.quarter_stock =
+            quarterStockPayload
+
+        payload.currently_available =
+            aggregateQuarterCurrent
+    }
+
     router.post(
         '/dts/inventory',
-        {
-            category: activeTab.value,
-            item: itemName,
-            unit,
-            inventory_year:
-                inventoryYear,
-
-            fixed_value:
-                isSupplies
-                    ? fixedValue
-                    : null,
-
-            currently_available:
-                isSupplies
-                    ? currentlyAvailable
-                    : null,
-
-            quarters,
-            remarks,
-        },
+        payload,
         {
             preserveScroll: true,
 
             onSuccess: () => {
-                yearFilter.value =
-                    inventoryYear
+                if (!isOtherItems) {
+                    yearFilter.value =
+                        inventoryYear
+                }
 
                 search.value = ''
                 unitFilter.value = 'all'
@@ -696,6 +2255,30 @@ const filteredItems = computed(() => {
         search.value
             .trim()
             .toLowerCase()
+
+    /*
+     * Other Items are location-based records.
+     * No Year, Unit, or Quarter filtering applies to them.
+     */
+    if (activeTab.value === 'other') {
+        return currentItems.value.filter((item) => {
+            return (
+                !term
+                ||
+                String(item.item || '')
+                    .toLowerCase()
+                    .includes(term)
+                ||
+                String(item.location || '')
+                    .toLowerCase()
+                    .includes(term)
+                ||
+                String(item.remarks || '')
+                    .toLowerCase()
+                    .includes(term)
+            )
+        })
+    }
 
     return currentItems.value.filter((item) => {
         const matchesYear =
@@ -1047,6 +2630,20 @@ const switchTab = (tab) => {
     currentPage.value = 1
 }
 
+const switchOtherCategory = (category) => {
+    if (
+        !otherCategoryValues.includes(category)
+    ) {
+        return
+    }
+
+    otherCategoryFilter.value = category
+    search.value = ''
+    unitFilter.value = 'all'
+    quarterFilter.value = 'all'
+    currentPage.value = 1
+}
+
 watch(
     [
         search,
@@ -1288,6 +2885,28 @@ const historyChangeValue = (change, value) => {
     const field =
         String(change?.field || '')
 
+    if (field === 'quarter_stock') {
+        const stock =
+            normalizeQuarterStock(value)
+
+        const parts =
+            quarterValues
+                .filter(
+                    (quarter) =>
+                        stock?.[quarter]
+                )
+                .map((quarter) => {
+                    const entry =
+                        stock[quarter]
+
+                    return `${quarter.toUpperCase()}: ${entry.current} remaining / ${entry.released} released`
+                })
+
+        return parts.length
+            ? parts.join(' · ')
+            : '—'
+    }
+
     if (field === 'quarters') {
         const quarters =
             Array.isArray(value)
@@ -1309,11 +2928,18 @@ const historyChangeValue = (change, value) => {
                 .trim()
                 .toLowerCase()
 
-        return category === 'ict'
-            ? 'ICT & Other Items'
-            : category === 'supplies'
-                ? 'Supplies'
-                : String(value)
+        if (category === 'ict') {
+            return 'ICT'
+        }
+
+        if (category === 'supplies') {
+            return 'Supplies'
+        }
+
+        return otherCategoryOptions.find(
+            (option) =>
+                option.value === category
+        )?.label || String(value)
     }
 
     if (
@@ -1337,7 +2963,39 @@ const historyChangeValue = (change, value) => {
 |--------------------------------------------------------------------------
 */
 
-const currentAvailableValue = (item) => {
+const currentAvailableValue = (
+    item,
+    selectedQuarter = quarterFilter.value
+) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    if (
+        ['supplies', 'ict'].includes(category)
+        && hasQuarterStock(item)
+    ) {
+        return quarterStockValue(
+            item,
+            'current',
+            selectedQuarter
+        )
+    }
+
+    if (
+        ['supplies', 'ict'].includes(category)
+        && !hasQuarterStock(item)
+        && inferredItemQuarters(item).length > 1
+        && selectedQuarter !== 'all'
+    ) {
+        /*
+         * Legacy multi-quarter rows only have one old global balance.
+         * Do not pretend that same number belongs to every quarter.
+         */
+        return null
+    }
+
     const value =
         item?.currently_available
 
@@ -1375,11 +3033,35 @@ const hasFixedBaseline = (item) => {
         && value > 0
 }
 
-const quantityReleasedValue = (item) => {
-    /*
-     * WITH a usable Fixed Value:
-     * Quantity Released = Fixed Value - Currently Available.
-     */
+const quantityReleasedValue = (
+    item,
+    selectedQuarter = quarterFilter.value
+) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    if (
+        ['supplies', 'ict'].includes(category)
+        && hasQuarterStock(item)
+    ) {
+        return quarterStockValue(
+            item,
+            'released',
+            selectedQuarter
+        )
+    }
+
+    if (
+        ['supplies', 'ict'].includes(category)
+        && !hasQuarterStock(item)
+        && inferredItemQuarters(item).length > 1
+        && selectedQuarter !== 'all'
+    ) {
+        return null
+    }
+
     if (hasFixedBaseline(item)) {
         const generated =
             item?.total_released
@@ -1402,7 +3084,10 @@ const quantityReleasedValue = (item) => {
         )
 
         const currentlyAvailable =
-            currentAvailableValue(item)
+            currentAvailableValue(
+                item,
+                selectedQuarter
+            )
 
         if (currentlyAvailable === null) {
             return null
@@ -1414,11 +3099,6 @@ const quantityReleasedValue = (item) => {
         )
     }
 
-    /*
-     * WITHOUT a usable Fixed Value (NULL/blank/0):
-     * Quantity Released is tracked from system releases only.
-     * New rows start at 0.
-     */
     const tracked = Number(
         item?.tracked_released ?? 0
     )
@@ -1470,19 +3150,87 @@ const allFullEditQuartersSelected = computed(() => {
 })
 
 const toggleFullEditQuarter = (quarter) => {
-    const current = [...fullEditForm.value.quarters]
+    const current =
+        [...fullEditForm.value.quarters]
+
+    const adding =
+        !current.includes(quarter)
+
+    const nextQuarters =
+        adding
+            ? [...current, quarter]
+            : current.filter(
+                (value) =>
+                    value !== quarter
+            )
+
+    const nextStock = {}
+
+    nextQuarters.forEach((value) => {
+        const originalEntry =
+            originalEditQuarterStock.value?.[
+                value
+            ]
+
+        const needsActivation =
+            !originalEntry
+            || !quarterEntryHasActivity(
+                originalEntry
+            )
+
+        nextStock[value] = {
+            ...(
+                fullEditForm.value
+                    .quarter_stock?.[value]
+                || {}
+            ),
+            current:
+                fullEditForm.value
+                    .quarter_stock?.[value]
+                    ?.current
+                ?? '',
+            ...(needsActivation
+                ? { activate: true }
+                : {}
+            ),
+        }
+    })
 
     fullEditForm.value.quarters =
-        current.includes(quarter)
-            ? current.filter((value) => value !== quarter)
-            : [...current, quarter]
+        nextQuarters
+
+    fullEditForm.value.quarter_stock =
+        nextStock
 }
 
 const toggleAllFullEditQuarters = () => {
-    fullEditForm.value.quarters =
+    const nextQuarters =
         allFullEditQuartersSelected.value
             ? []
             : [...quarterValues]
+
+    const nextStock = {}
+
+    nextQuarters.forEach((quarter) => {
+        nextStock[quarter] = {
+            ...(
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+            ),
+            current:
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                    ?.current
+                ?? '',
+        }
+    })
+
+    fullEditForm.value.quarters =
+        nextQuarters
+
+    fullEditForm.value.quarter_stock =
+        nextStock
 }
 
 const openDeleteItemModal = (item) => {
@@ -1551,10 +3299,43 @@ const openFullEditModal = (item) => {
 
     const normalized = normalizeInventoryItem(item)
 
+    const normalizedQuarters =
+        inferredItemQuarters(normalized)
+
+    const storedQuarterStock =
+        normalizeQuarterStock(
+            normalized.quarter_stock
+        )
+
+    const editQuarterStock = {}
+
+    normalizedQuarters.forEach((quarter) => {
+        if (storedQuarterStock?.[quarter]) {
+            editQuarterStock[quarter] = {
+                ...storedQuarterStock[quarter],
+                current:
+                    storedQuarterStock[quarter]
+                        .current,
+            }
+
+            return
+        }
+
+        editQuarterStock[quarter] = {
+            current:
+                normalizedQuarters.length === 1
+                && normalized.currently_available !== null
+                && normalized.currently_available !== undefined
+                    ? normalized.currently_available
+                    : '',
+        }
+    })
+
     fullEditingItem.value = normalized
     fullEditForm.value = {
         category: normalized.category || 'supplies',
         item: String(normalized.item || ''),
+        location: String(normalized.location || ''),
         unit: String(normalized.unit || ''),
         inventory_year: Number(normalized.inventory_year) || 2026,
         fixed_value:
@@ -1567,7 +3348,9 @@ const openFullEditModal = (item) => {
             || normalized.currently_available === undefined
                 ? ''
                 : normalized.currently_available,
-        quarters: [...inferredItemQuarters(normalized)],
+        quarters: [...normalizedQuarters],
+        quarter_stock:
+            editQuarterStock,
 
         // Always start Edit Remarks blank.
         // Previous remarks should not be preloaded into a new edit session.
@@ -1605,6 +3388,16 @@ const saveFullEditItem = () => {
         fullEditForm.value.item || ''
     ).trim()
 
+    const isOtherItems =
+        otherCategoryValues.includes(category)
+
+    const location = String(
+        fullEditForm.value.location || ''
+    ).trim()
+
+    const requiresItemCount =
+        otherCategoryHasCount(category)
+
     const unit = String(
         fullEditForm.value.unit || ''
     ).trim().toUpperCase()
@@ -1620,6 +3413,7 @@ const saveFullEditItem = () => {
     )
 
     const isSupplies = category === 'supplies'
+    const isIct = category === 'ict'
 
     const fixedRaw = fullEditForm.value.fixed_value
     const hasFixed =
@@ -1640,7 +3434,13 @@ const saveFullEditItem = () => {
         ? Number(currentRaw)
         : null
 
-    if (!['supplies', 'ict'].includes(category)) {
+    if (
+        ![
+            'supplies',
+            'ict',
+            ...otherCategoryValues,
+        ].includes(category)
+    ) {
         fullEditErrors.value.category =
             'Select a valid category.'
     }
@@ -1650,19 +3450,49 @@ const saveFullEditItem = () => {
             'Item name is required.'
     }
 
-    if (!unit) {
-        fullEditErrors.value.unit =
-            'Unit of measure is required.'
-    }
+    if (isOtherItems) {
+        if (!location) {
+            fullEditErrors.value.location =
+                'Location is required.'
+        }
 
-    if (!Number.isInteger(inventoryYear) || inventoryYear < 2026) {
-        fullEditErrors.value.inventory_year =
-            'Select a valid year from 2026 onwards.'
-    }
+        if (
+            requiresItemCount
+            && (
+                fullEditForm.value.currently_available === ''
+                || fullEditForm.value.currently_available === null
+                || fullEditForm.value.currently_available === undefined
+                || !Number.isInteger(
+                    Number(
+                        fullEditForm.value.currently_available
+                    )
+                )
+                || Number(
+                    fullEditForm.value.currently_available
+                ) < 0
+            )
+        ) {
+            fullEditErrors.value.currently_available =
+                'Enter a valid count.'
+        }
+    } else {
+        if (!unit) {
+            fullEditErrors.value.unit =
+                'Unit of measure is required.'
+        }
 
-    if (!quarters.length) {
-        fullEditErrors.value.quarters =
-            'Select at least one applicable quarter.'
+        if (
+            !Number.isInteger(inventoryYear)
+            || inventoryYear < 2026
+        ) {
+            fullEditErrors.value.inventory_year =
+                'Select a valid year from 2026 onwards.'
+        }
+
+        if (!quarters.length) {
+            fullEditErrors.value.quarters =
+                'Select at least one applicable quarter.'
+        }
     }
 
     if (isSupplies) {
@@ -1673,57 +3503,156 @@ const saveFullEditItem = () => {
             fullEditErrors.value.fixed_value =
                 'Enter a valid Fixed Value or leave it blank.'
         }
-
-        if (
-            !hasCurrent
-            || !Number.isFinite(currentValue)
-            || currentValue < 0
-        ) {
-            fullEditErrors.value.currently_available =
-                'Currently Available is required.'
-        }
     }
 
-    const duplicateExists =
-        normalizedInventoryItems.value.some((item) =>
-            Number(item.id) !== Number(original.id)
-            && item.category === category
-            && Number(item.inventory_year) === inventoryYear
-            && String(item.item || '').trim().toLowerCase()
-                === itemName.toLowerCase()
-            && String(item.unit || '').trim().toUpperCase()
-                === unit
+    if (isSupplies || isIct) {
+        quarters.forEach((quarter) => {
+            const raw =
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                    ?.current
+
+            const value =
+                Number(raw)
+
+            if (
+                raw === ''
+                || raw === null
+                || raw === undefined
+                || !Number.isInteger(value)
+                || value < 0
+            ) {
+                fullEditErrors.value[
+                    `quarter_stock.${quarter}.current`
+                ] =
+                    `Enter the current quantity for ${quarter.toUpperCase()}.`
+            }
+        })
+    }
+
+    const quarterStockPayload = {}
+
+    if (isSupplies || isIct) {
+        quarters.forEach((quarter) => {
+            const existing =
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+
+            quarterStockPayload[quarter] = {
+                ...existing,
+                current:
+                    Number(
+                        existing.current
+                    ),
+            }
+        })
+    }
+
+    const aggregateQuarterCurrent =
+        Object.values(
+            quarterStockPayload
+        ).reduce(
+            (total, entry) =>
+                total
+                + (
+                    Number.isFinite(
+                        Number(entry.current)
+                    )
+                        ? Number(entry.current)
+                        : 0
+                ),
+            0
         )
+
+    const duplicateExists =
+        normalizedInventoryItems.value.some((item) => {
+            if (
+                Number(item.id) === Number(original.id)
+                || item.category !== category
+                || String(item.item || '')
+                    .trim()
+                    .toLowerCase()
+                    !== itemName.toLowerCase()
+            ) {
+                return false
+            }
+
+            if (isOtherItems) {
+                return String(item.location || '')
+                    .trim()
+                    .toLowerCase()
+                    === location.toLowerCase()
+            }
+
+            return (
+                Number(item.inventory_year) === inventoryYear
+                &&
+                String(item.unit || '')
+                    .trim()
+                    .toUpperCase()
+                    === unit
+            )
+        })
 
     if (duplicateExists) {
         fullEditErrors.value.item =
-            `This item and unit already exist for ${inventoryYear}.`
+            isOtherItems
+                ? 'This item already exists in the same location.'
+                : `This item and unit already exist for ${inventoryYear}.`
     }
 
     if (Object.keys(fullEditErrors.value).length) {
         return
     }
 
+    const payload = {
+        category,
+        item: itemName,
+        remarks:
+            String(fullEditForm.value.remarks || '').trim()
+            || null,
+    }
+
+    if (isOtherItems) {
+        payload.location = location
+        payload.currently_available =
+            requiresItemCount
+                ? Number(
+                    fullEditForm.value.currently_available
+                )
+                : null
+    } else {
+        payload.location = null
+        payload.unit = unit
+        payload.inventory_year = inventoryYear
+        payload.quarters = quarters
+        payload.fixed_value =
+            isSupplies
+                ? fixedValue
+                : null
+        payload.quarter_stock =
+            quarterStockPayload
+
+        payload.currently_available =
+            aggregateQuarterCurrent
+    }
+
     router.put(
         `/dts/inventory/${original.id}`,
-        {
-            category,
-            item: itemName,
-            unit,
-            inventory_year: inventoryYear,
-            quarters,
-            fixed_value: isSupplies ? fixedValue : null,
-            currently_available: isSupplies ? currentValue : null,
-            remarks:
-                String(fullEditForm.value.remarks || '').trim()
-                || null,
-        },
+        payload,
         {
             preserveScroll: true,
 
             onSuccess: () => {
-                activeTab.value = category
-                yearFilter.value = inventoryYear
+                if (isOtherItems) {
+                    activeTab.value = 'other'
+                    otherCategoryFilter.value = category
+                } else {
+                    activeTab.value = category
+                    yearFilter.value = inventoryYear
+                }
+
                 quarterFilter.value = 'all'
                 unitFilter.value = 'all'
                 search.value = ''
@@ -1745,9 +3674,129 @@ const saveFullEditItem = () => {
     )
 }
 
+const releaseCategory = computed(() =>
+    String(
+        releasingItem.value?.category || ''
+    )
+        .trim()
+        .toLowerCase()
+)
+
+const releaseIsSupplies = computed(() =>
+    releaseCategory.value === 'supplies'
+)
+
+const releaseIsIct = computed(() =>
+    releaseCategory.value === 'ict'
+)
+
+const releaseIsCountedOther = computed(() =>
+    [
+        'furniture',
+        'fixtures',
+        'token_giveaways',
+    ].includes(
+        releaseCategory.value
+    )
+)
+
+const releaseQuantityLabel = computed(() => {
+    if (releaseIsIct.value) {
+        return ictQuantityLabel(
+            releasingItem.value
+        )
+    }
+
+    return 'Quantity'
+})
+
+const releaseCurrentLabel = computed(() => {
+    if (releaseIsSupplies.value) {
+        return 'Currently Available in SPD'
+    }
+
+    if (releaseIsIct.value) {
+        return `${ictQuantityLabel(
+            releasingItem.value
+        )} Available`
+    }
+
+    return 'Count Available'
+})
+
+const releaseActionLabel = computed(() => {
+    if (releaseIsIct.value) {
+        if (
+            isIctMonthBased(
+                releasingItem.value
+            )
+        ) {
+            return 'Month(s) to Release'
+        }
+
+        if (
+            isIctYearBased(
+                releasingItem.value
+            )
+        ) {
+            return 'Year(s) to Release'
+        }
+    }
+
+    return 'Quantity to Release'
+})
+
+const releaseUsesQuarterStock = computed(() =>
+    ['supplies', 'ict'].includes(
+        releaseCategory.value
+    )
+)
+
+const releaseSelectedQuarter = computed(() => {
+    if (!releaseUsesQuarterStock.value) {
+        return 'all'
+    }
+
+    return latestQuarterForItem(
+        releasingItem.value
+    )
+})
+
+const isHistoricalQuarterView = (item) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    if (
+        !['supplies', 'ict'].includes(
+            category
+        )
+        || quarterFilter.value === 'all'
+    ) {
+        return false
+    }
+
+    const latest =
+        latestQuarterForItem(item)
+
+    return Boolean(
+        latest
+        && quarterFilter.value !== latest
+    )
+}
+
+const canReleaseInCurrentView = (item) => {
+    return !isHistoricalQuarterView(
+        item
+    )
+}
+
 const releaseTotalReleased = computed(() => {
     return quantityReleasedValue(
-        releasingItem.value
+        releasingItem.value,
+        releaseSelectedQuarter.value
+            || 'all'
     ) ?? 0
 })
 
@@ -1779,7 +3828,9 @@ const releaseHasFixedBaseline = computed(() => {
 
 const releaseCurrentAvailable = computed(() => {
     return currentAvailableValue(
-        releasingItem.value
+        releasingItem.value,
+        releaseSelectedQuarter.value
+            || 'all'
     ) ?? 0
 })
 
@@ -1803,6 +3854,13 @@ const releaseRemainingQuantity = computed(() => {
 })
 
 const releaseTotalReleasedAfter = computed(() => {
+    if (releaseUsesQuarterStock.value) {
+        return (
+            releaseTotalReleased.value
+            + releaseQuantity.value
+        )
+    }
+
     if (!releaseHasFixedBaseline.value) {
         return (
             releaseTotalReleased.value
@@ -1826,14 +3884,69 @@ const openReleaseItemModal = (item) => {
         return
     }
 
+    const category =
+        String(item.category || '')
+            .trim()
+            .toLowerCase()
+
+    const canRelease =
+        [
+            'supplies',
+            'ict',
+            'furniture',
+            'fixtures',
+            'token_giveaways',
+        ].includes(category)
+
+    if (
+        !canRelease
+        || currentAvailableValue(item) === null
+        || Number(currentAvailableValue(item)) <= 0
+    ) {
+        return
+    }
+
+    const itemQuarters =
+        inferredItemQuarters(item)
+
+    if (
+        ['supplies', 'ict'].includes(category)
+        && itemQuarters.length > 1
+        && !hasQuarterStock(item)
+    ) {
+        window.alert(
+            'This is a legacy multi-quarter item. Open Edit first and set the remaining quantity for each quarter before releasing.'
+        )
+
+        return
+    }
+
+    if (
+        ['supplies', 'ict'].includes(
+            category
+        )
+        && isHistoricalQuarterView(item)
+    ) {
+        const latest =
+            latestQuarterForItem(item)
+
+        window.alert(
+            `${quarterFilter.value.toUpperCase()} is already a historical quarter. Releases are automatically deducted from ${latest.toUpperCase()}, the latest active quarter.`
+        )
+
+        return
+    }
+
     releasingItem.value = item
 
     /*
      * Every release is a NEW transaction.
-     * Do not preload the previous/item remarks.
+     * Supplies/ICT automatically deduct from the latest assigned
+     * quarter. There is no quarter selector.
      */
     releaseItemForm.value = {
         releaseQuantity: '',
+        releaseDestination: '',
         remarks: '',
     }
 
@@ -1847,6 +3960,7 @@ const closeReleaseItemModal = () => {
 
     releaseItemForm.value = {
         releaseQuantity: '',
+        releaseDestination: '',
         remarks: '',
     }
 
@@ -1865,6 +3979,21 @@ const saveReleaseItem = () => {
     }
 
     releaseItemErrors.value = {}
+
+    const releaseQuarter =
+        releaseUsesQuarterStock.value
+            ? releaseSelectedQuarter.value
+            : ''
+
+    if (
+        releaseUsesQuarterStock.value
+        && !releaseQuarter
+    ) {
+        releaseItemErrors.value.releaseQuantity =
+            'No active quarter is available for this item.'
+
+        return
+    }
 
     const releaseQuantity =
         Number(
@@ -1886,7 +4015,28 @@ const saveReleaseItem = () => {
         > releaseCurrentAvailable.value
     ) {
         releaseItemErrors.value.releaseQuantity =
-            `Only ${releaseCurrentAvailable.value} item(s) are currently available.`
+            `Only ${releaseCurrentAvailable.value} available.`
+
+        return
+    }
+
+    const releaseDestination =
+        String(
+            releaseItemForm.value.releaseDestination
+            || ''
+        ).trim()
+
+    /*
+     * Supplies do not require a destination.
+     * ICT and counted Other Items still do so History can show
+     * where those released items went.
+     */
+    if (
+        !releaseIsSupplies.value
+        && !releaseDestination
+    ) {
+        releaseItemErrors.value.releaseDestination =
+            'Enter where the released item went.'
 
         return
     }
@@ -1945,6 +4095,16 @@ const saveReleaseItem = () => {
             release_quantity:
                 releaseQuantity,
 
+            release_quarter:
+                releaseUsesQuarterStock.value
+                    ? releaseQuarter
+                    : null,
+
+            release_destination:
+                releaseIsSupplies.value
+                    ? null
+                    : releaseDestination,
+
             /*
              * Transaction remark only.
              * Controller stores this in History,
@@ -1963,22 +4123,106 @@ const saveReleaseItem = () => {
                  * - Remaining bar changes
                  * - Quantity Released changes
                  */
-                updateLocalInventoryItem(
-                    item.id,
-                    {
-                        currently_available:
-                            nextCurrent,
+                if (
+                    releaseUsesQuarterStock.value
+                    && hasQuarterStock(item)
+                ) {
+                    const nextQuarterStock =
+                        normalizeQuarterStock(
+                            item.quarter_stock
+                        )
 
-                        tracked_released:
-                            Math.max(
-                                0,
-                                nextTrackedReleased
-                            ),
-
-                        total_released:
-                            nextGeneratedReleased,
+                    const quarterEntry = {
+                        ...(
+                            nextQuarterStock[
+                                releaseQuarter
+                            ]
+                            || {
+                                opening:
+                                    releaseCurrentAvailable.value,
+                                current:
+                                    releaseCurrentAvailable.value,
+                                released:
+                                    releaseTotalReleased.value,
+                            }
+                        ),
                     }
-                )
+
+                    quarterEntry.current =
+                        nextCurrent
+
+                    quarterEntry.released =
+                        Number(
+                            quarterEntry.released
+                            ?? 0
+                        )
+                        + releaseQuantity
+
+                    quarterEntry.opening =
+                        Number(
+                            quarterEntry.opening
+                            ?? (
+                                quarterEntry.current
+                                + quarterEntry.released
+                            )
+                        )
+
+                    nextQuarterStock[
+                        releaseQuarter
+                    ] = quarterEntry
+
+                    const aggregateCurrent =
+                        Object.values(
+                            nextQuarterStock
+                        ).reduce(
+                            (total, entry) =>
+                                total
+                                + Number(
+                                    entry.current
+                                    ?? 0
+                                ),
+                            0
+                        )
+
+                    updateLocalInventoryItem(
+                        item.id,
+                        {
+                            currently_available:
+                                aggregateCurrent,
+                            quarter_stock:
+                                nextQuarterStock,
+                            tracked_released:
+                                Object.values(
+                                    nextQuarterStock
+                                ).reduce(
+                                    (total, entry) =>
+                                        total
+                                        + Number(
+                                            entry.released
+                                            ?? 0
+                                        ),
+                                    0
+                                ),
+                        }
+                    )
+                } else {
+                    updateLocalInventoryItem(
+                        item.id,
+                        {
+                            currently_available:
+                                nextCurrent,
+
+                            tracked_released:
+                                Math.max(
+                                    0,
+                                    nextTrackedReleased
+                                ),
+
+                            total_released:
+                                nextGeneratedReleased,
+                        }
+                    )
+                }
 
                 closeReleaseItemModal()
 
@@ -2277,7 +4521,9 @@ const generateInventoryReport = () => {
     const categoryLabel =
         activeTab.value === 'supplies'
             ? 'Supplies'
-            : 'ICT & Other Items'
+            : activeTab.value === 'ict'
+                ? 'ICT'
+                : `Other Items - ${currentOtherCategoryLabel.value}`
 
     const quarterLabel =
         quarterFilter.value === 'all'
@@ -2386,6 +4632,17 @@ const generateInventoryReport = () => {
                 summary.currentTotal += Number(current)
                 summary.currentCount += 1
             }
+        } else if (activeTab.value === 'ict') {
+            const quantity =
+                currentAvailableValue(item)
+
+            if (
+                quantity !== null
+                && Number.isFinite(Number(quantity))
+            ) {
+                summary.currentTotal += Number(quantity)
+                summary.currentCount += 1
+            }
         }
     })
 
@@ -2398,6 +4655,27 @@ const generateInventoryReport = () => {
 
     const summaryUnitCount =
         unitSummaries.length
+
+    const summaryLocationCount =
+        new Set(
+            rows
+                .map((item) =>
+                    String(item.location || '').trim()
+                )
+                .filter(Boolean)
+        ).size
+
+
+    const summaryOtherItemCount =
+        rows.reduce(
+            (total, item) =>
+                total
+                + Math.max(
+                    0,
+                    Number(item.currently_available || 0)
+                ),
+            0
+        )
 
     const suppliesSummaryRows =
         unitSummaries
@@ -2444,6 +4722,11 @@ const generateInventoryReport = () => {
                 <tr>
                     <td>${escapeReportHtml(summary.unit)}</td>
                     <td class="number">${summary.itemCount.toLocaleString()}</td>
+                    <td class="number">${
+                        summary.currentCount > 0
+                            ? summary.currentTotal.toLocaleString()
+                            : '—'
+                    }</td>
                 </tr>
             `)
             .join('')
@@ -2492,40 +4775,75 @@ const generateInventoryReport = () => {
                     </table>
                 </section>
             `
-            : `
-                <section class="summary-section">
-                    <div class="summary-heading">
-                        <div>
-                            <p class="summary-eyebrow">Report Summary</p>
-                            <h2>ICT & Other Items Summary</h2>
-                        </div>
-
-                        <div class="summary-cards">
-                            <div class="summary-card">
-                                <span class="summary-card-label">Line Items</span>
-                                <strong>${rows.length.toLocaleString()}</strong>
+            : activeTab.value === 'ict'
+                ? `
+                    <section class="summary-section">
+                        <div class="summary-heading">
+                            <div>
+                                <p class="summary-eyebrow">Report Summary</p>
+                                <h2>ICT Summary</h2>
                             </div>
 
-                            <div class="summary-card">
-                                <span class="summary-card-label">Units Represented</span>
-                                <strong>${summaryUnitCount.toLocaleString()}</strong>
+                            <div class="summary-cards">
+                                <div class="summary-card">
+                                    <span class="summary-card-label">Line Items</span>
+                                    <strong>${rows.length.toLocaleString()}</strong>
+                                </div>
+
+                                <div class="summary-card">
+                                    <span class="summary-card-label">Units Represented</span>
+                                    <strong>${summaryUnitCount.toLocaleString()}</strong>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <table class="summary-table compact-summary">
-                        <thead>
-                            <tr>
-                                <th>Unit</th>
-                                <th class="number">Line Items</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${ictSummaryRows}
-                        </tbody>
-                    </table>
-                </section>
-            `
+                        <table class="summary-table compact-summary">
+                            <thead>
+                                <tr>
+                                    <th>Unit</th>
+                                    <th class="number">Line Items</th>
+                                    <th class="number">Total Count / Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${ictSummaryRows}
+                            </tbody>
+                        </table>
+                    </section>
+                `
+                : `
+                    <section class="summary-section">
+                        <div class="summary-heading">
+                            <div>
+                                <p class="summary-eyebrow">Report Summary</p>
+                                <h2>${escapeReportHtml(categoryLabel)} Summary</h2>
+                            </div>
+
+                            <div class="summary-cards">
+                                <div class="summary-card">
+                                    <span class="summary-card-label">Line Items</span>
+                                    <strong>${rows.length.toLocaleString()}</strong>
+                                </div>
+
+                                ${
+                                    currentOtherCategoryHasCount.value
+                                        ? `
+                                            <div class="summary-card">
+                                                <span class="summary-card-label">Total Count</span>
+                                                <strong>${summaryOtherItemCount.toLocaleString()}</strong>
+                                            </div>
+                                        `
+                                        : ''
+                                }
+
+                                <div class="summary-card">
+                                    <span class="summary-card-label">Locations Represented</span>
+                                    <strong>${summaryLocationCount.toLocaleString()}</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                `
 
     const suppliesHeader = `
         <tr>
@@ -2543,10 +4861,28 @@ const generateInventoryReport = () => {
         <tr>
             <th>Item</th>
             <th>Unit</th>
+            <th class="number">Count / Duration</th>
             <th>Quarter(s)</th>
             <th>Remarks</th>
         </tr>
     `
+
+    const otherHeader = currentOtherCategoryHasCount.value
+        ? `
+            <tr>
+                <th>Item</th>
+                <th class="number">Count</th>
+                <th>Location</th>
+                <th>Remarks</th>
+            </tr>
+        `
+        : `
+            <tr>
+                <th>Item</th>
+                <th>Location</th>
+                <th>Remarks</th>
+            </tr>
+        `
 
     const reportRows = rows
         .map((item) => {
@@ -2609,10 +4945,53 @@ const generateInventoryReport = () => {
                 `
             }
 
+            if (activeTab.value === 'other') {
+                const location =
+                    escapeReportHtml(
+                        String(item.location || '').trim()
+                        || '—'
+                    )
+
+                const itemCount =
+                    reportNumber(
+                        item.currently_available
+                    )
+
+                return currentOtherCategoryHasCount.value
+                    ? `
+                        <tr>
+                            <td class="item">${itemName}</td>
+                            <td class="number">${itemCount}</td>
+                            <td>${location}</td>
+                            <td class="remarks">${remarks}</td>
+                        </tr>
+                    `
+                    : `
+                        <tr>
+                            <td class="item">${itemName}</td>
+                            <td>${location}</td>
+                            <td class="remarks">${remarks}</td>
+                        </tr>
+                    `
+            }
+
+            const ictQuantity =
+                currentAvailableValue(item)
+
+            const ictQuantityText =
+                ictQuantity === null
+                    ? '—'
+                    : isIctMonthBased(item)
+                        ? `${reportNumber(ictQuantity)} ${ictQuantity === 1 ? 'Month' : 'Months'}`
+                        : isIctYearBased(item)
+                            ? `${reportNumber(ictQuantity)} ${ictQuantity === 1 ? 'Year' : 'Years'}`
+                            : reportNumber(ictQuantity)
+
             return `
                 <tr>
                     <td class="item">${itemName}</td>
                     <td>${unit}</td>
+                    <td class="number">${ictQuantityText}</td>
                     <td>${quarters}</td>
                     <td class="remarks">${remarks}</td>
                 </tr>
@@ -2634,6 +5013,67 @@ const generateInventoryReport = () => {
         return
     }
 
+    const reportFiltersHtml =
+        activeTab.value === 'other'
+            ? `
+                <section class="filters">
+                    <div class="filter">
+                        <span class="filter-label">Category</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(currentOtherCategoryLabel.value)}
+                        </span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Search</span>
+                        <span class="filter-value">${searchLabel}</span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Generated</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(generatedAt)}
+                        </span>
+                    </div>
+                </section>
+            `
+            : `
+                <section class="filters">
+                    <div class="filter">
+                        <span class="filter-label">Inventory Year</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(yearFilter.value)}
+                        </span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Quarter</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(quarterLabel)}
+                        </span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Unit</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(unitLabel)}
+                        </span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Search</span>
+                        <span class="filter-value">${searchLabel}</span>
+                    </div>
+
+                    <div class="filter">
+                        <span class="filter-label">Generated</span>
+                        <span class="filter-value">
+                            ${escapeReportHtml(generatedAt)}
+                        </span>
+                    </div>
+                </section>
+            `
+
     const reportHtml = `
 <!DOCTYPE html>
 <html lang="en">
@@ -2643,7 +5083,7 @@ const generateInventoryReport = () => {
         name="viewport"
         content="width=device-width, initial-scale=1.0"
     >
-    <title>Inventory Report - ${escapeReportHtml(categoryLabel)} ${yearFilter.value}</title>
+    <title>Inventory Report - ${escapeReportHtml(categoryLabel)}${activeTab.value === 'other' ? '' : ` ${yearFilter.value}`}</title>
 
     <style>
         * {
@@ -2962,52 +5402,8 @@ const generateInventoryReport = () => {
             </p>
         </header>
 
-        <section class="filters">
-            <div class="filter">
-                <span class="filter-label">
-                    Inventory Year
-                </span>
-                <span class="filter-value">
-                    ${escapeReportHtml(yearFilter.value)}
-                </span>
-            </div>
+        ${reportFiltersHtml}
 
-            <div class="filter">
-                <span class="filter-label">
-                    Quarter
-                </span>
-                <span class="filter-value">
-                    ${escapeReportHtml(quarterLabel)}
-                </span>
-            </div>
-
-            <div class="filter">
-                <span class="filter-label">
-                    Unit
-                </span>
-                <span class="filter-value">
-                    ${escapeReportHtml(unitLabel)}
-                </span>
-            </div>
-
-            <div class="filter">
-                <span class="filter-label">
-                    Search
-                </span>
-                <span class="filter-value">
-                    ${searchLabel}
-                </span>
-            </div>
-
-            <div class="filter">
-                <span class="filter-label">
-                    Generated
-                </span>
-                <span class="filter-value">
-                    ${escapeReportHtml(generatedAt)}
-                </span>
-            </div>
-        </section>
 
         ${summaryHtml}
 
@@ -3020,7 +5416,9 @@ const generateInventoryReport = () => {
                 ${
                     activeTab.value === 'supplies'
                         ? suppliesHeader
-                        : ictHeader
+                        : activeTab.value === 'ict'
+                            ? ictHeader
+                            : otherHeader
                 }
             </thead>
 
@@ -3056,8 +5454,14 @@ const generateInventoryReport = () => {
 <template>
     <Head title="Inventory" />
 
-    <div class="min-h-screen bg-[#f7faff]">
-        <main class="mx-auto max-w-[1700px] px-4 py-5 sm:px-6 lg:px-8">
+    <div
+        class="inventory-accessibility-root min-h-screen bg-[#f7faff]"
+        :class="accessibilityRootClasses"
+    >
+        <main
+            class="mx-auto max-w-[1700px] px-4 py-5 sm:px-6 lg:px-8"
+            :style="accessibilityVisualStyle"
+        >
             <!-- COMPACT LEDGER HEADER -->
             <section class="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
                 <div class="flex flex-col gap-5 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
@@ -3158,7 +5562,7 @@ const generateInventoryReport = () => {
 
                         <button
                             type="button"
-                            class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[260px]"
+                            class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[150px]"
                             :class="
                                 activeTab === 'ict'
                                     ? 'bg-blue-500 text-white shadow-sm shadow-blue-100'
@@ -3166,7 +5570,40 @@ const generateInventoryReport = () => {
                             "
                             @click="switchTab('ict')"
                         >
-                            <span>ICT & Other Items     </span>
+                            <span>ICT</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[180px]"
+                            :class="
+                                activeTab === 'other'
+                                    ? 'bg-blue-500 text-white shadow-sm shadow-blue-100'
+                                    : 'text-slate-600 hover:bg-slate-50 hover:text-blue-700'
+                            "
+                            @click="switchTab('other')"
+                        >
+                            <span>Other Items</span>
+                        </button>
+                    </div>
+
+                    <div
+                        v-if="activeTab === 'other'"
+                        class="mt-3 flex flex-wrap gap-2"
+                    >
+                        <button
+                            v-for="option in otherCategoryOptions"
+                            :key="option.value"
+                            type="button"
+                            class="rounded-lg border px-3 py-2 text-[10px] font-black transition"
+                            :class="
+                                otherCategoryFilter === option.value
+                                    ? 'border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-100'
+                                    : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-blue-50/50'
+                            "
+                            @click="switchOtherCategory(option.value)"
+                        >
+                            {{ option.label }}
                         </button>
                     </div>
                 </div>
@@ -3187,7 +5624,8 @@ const generateInventoryReport = () => {
 
                                 <span
                                     v-if="
-                                        quarterFilter !== 'all'
+                                        activeTab !== 'other'
+                                        && quarterFilter !== 'all'
                                     "
                                     class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700"
                                 >
@@ -3198,7 +5636,12 @@ const generateInventoryReport = () => {
                         </div>
 
                         <div
-                            class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 xl:w-[960px] xl:grid-cols-[minmax(0,1fr)_120px_140px_150px]"
+                            class="grid w-full grid-cols-1 gap-2 sm:grid-cols-2"
+                            :class="
+                                activeTab === 'other'
+                                    ? 'xl:w-[520px] xl:grid-cols-1'
+                                    : 'xl:w-[960px] xl:grid-cols-[minmax(0,1fr)_120px_140px_150px]'
+                            "
                         >
                             <!-- SEARCH -->
                             <div class="relative sm:col-span-2 xl:col-span-1">
@@ -3220,13 +5663,16 @@ const generateInventoryReport = () => {
                                     :placeholder="
                                         activeTab === 'supplies'
                                             ? 'Search supplies...'
-                                            : 'Search ICT and other items...'
+                                            : activeTab === 'ict'
+                                                ? 'Search ICT...'
+                                                : 'Search item, location, or remarks...'
                                     "
                                     class="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-4 text-xs font-semibold text-slate-700 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100"
                                 />
                             </div>
 
                             <select
+                                v-if="activeTab !== 'other'"
                                 v-model.number="yearFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -3240,6 +5686,7 @@ const generateInventoryReport = () => {
                             </select>
 
                             <select
+                                v-if="activeTab !== 'other'"
                                 v-model="unitFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -3255,6 +5702,7 @@ const generateInventoryReport = () => {
                             </select>
 
                             <select
+                                v-if="activeTab !== 'other'"
                                 v-model="quarterFilter"
                                 class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
@@ -3433,11 +5881,15 @@ const generateInventoryReport = () => {
                                 </th>
 
                                 <th class="w-[11%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Quantity Released
+                                    {{
+                                        releaseIsIct
+                                            ? `${releaseQuantityLabel} Released`
+                                            : 'Quantity Released'
+                                    }}
                                 </th>
 
                                 <th class="w-[16%] bg-blue-600 px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Currently Available in SPD
+                                    {{ releaseCurrentLabel }}
                                 </th>
 
                                 <th class="w-[22%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
@@ -3472,6 +5924,22 @@ const generateInventoryReport = () => {
                                             class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
                                         >
                                             {{ quarter }}
+                                        </span>
+                                    </div>
+
+
+                                    <div
+                                        v-if="visibleQuarterBalanceEntries(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="entry in visibleQuarterBalanceEntries(item)"
+                                            :key="`supply-balance-${item.id}-${entry.quarter}`"
+                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[8px] font-black text-emerald-700"
+                                        >
+                                            {{ entry.quarter.toUpperCase() }}
+                                            · Added: {{ entry.added }}
+                                            · Remaining: {{ entry.current }}
                                         </span>
                                     </div>
                                 </td>
@@ -3511,12 +5979,7 @@ const generateInventoryReport = () => {
                                         }}
                                     </span>
 
-                                    <p
-                                        v-if="!hasFixedBaseline(item)"
-                                        class="mt-1 text-[8px] font-bold leading-3 text-slate-400"
-                                    >
-                                        System tracked
-                                    </p>
+                                   
                                 </td>
 
                                 <!-- CURRENTLY AVAILABLE -->
@@ -3595,6 +6058,7 @@ const generateInventoryReport = () => {
                                             :disabled="
                                                 currentAvailableValue(item) === null
                                                 || Number(currentAvailableValue(item)) <= 0
+                                                || !canReleaseInCurrentView(item)
                                             "
                                             @click="openReleaseItemModal(item)"
                                         >
@@ -3685,7 +6149,7 @@ const generateInventoryReport = () => {
                 </div>
 
                 
-                <!-- ICT & OTHER ITEMS — YEAR / QUARTER TABLE -->
+                <!-- ICT TABLE -->
                 <div
                     v-if="activeTab === 'ict'"
                     class="hidden overflow-hidden lg:block"
@@ -3693,24 +6157,23 @@ const generateInventoryReport = () => {
                     <table class="w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
-                                <th class="w-[32%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[36%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Item
                                 </th>
 
+                                <th class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Unit
+                                </th>
+
                                 <th class="w-[14%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Unit of Measure
+                                    Count / Duration
                                 </th>
 
-                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Quarter(s)
-                                </th>
-
-                                <th class="w-[22%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[23%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Remarks
                                 </th>
 
-
-                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[15%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Action
                                 </th>
                             </tr>
@@ -3719,13 +6182,41 @@ const generateInventoryReport = () => {
                         <tbody class="divide-y divide-slate-100">
                             <tr
                                 v-for="item in paginatedItems"
-                                :key="`ict-${item.id || item.item}`"
+                                :key="`${activeTab}-${item.category}-${item.id || item.item}`"
                                 class="bg-white transition hover:bg-blue-50/35"
                             >
                                 <td class="px-4 py-4 align-middle">
                                     <p class="break-words text-xs font-black leading-5 text-slate-900">
                                         {{ item.item }}
                                     </p>
+
+                                    <div
+                                        v-if="quarterBadges(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="quarter in quarterBadges(item)"
+                                            :key="`ict-item-quarter-${item.id}-${quarter}`"
+                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
+                                        >
+                                            {{ quarter }}
+                                        </span>
+                                    </div>
+
+                                    <div
+                                        v-if="visibleQuarterBalanceEntries(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="entry in visibleQuarterBalanceEntries(item)"
+                                            :key="`ict-item-balance-${item.id}-${entry.quarter}`"
+                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[8px] font-black text-emerald-700"
+                                        >
+                                            {{ entry.quarter.toUpperCase() }}
+                                            · Added: {{ entry.added }}
+                                            · Remaining: {{ entry.current }}
+                                        </span>
+                                    </div>
                                 </td>
 
                                 <td class="px-3 py-4 text-center align-middle">
@@ -3738,20 +6229,15 @@ const generateInventoryReport = () => {
                                 </td>
 
                                 <td class="px-3 py-4 text-center align-middle">
-                                    <div class="flex flex-wrap justify-center gap-1">
+                                    <div class="flex flex-col items-center gap-1">
                                         <span
-                                            v-for="quarter in quarterBadges(item)"
-                                            :key="`ict-quarter-${item.id}-${quarter}`"
-                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
+                                            class="inline-flex min-w-12 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black tabular-nums text-slate-800"
                                         >
-                                            {{ quarter }}
+                                            {{ ictQuantityDisplay(item) }}
                                         </span>
 
-                                        <span
-                                            v-if="!quarterBadges(item).length"
-                                            class="text-xs font-semibold text-slate-300"
-                                        >
-                                            —
+                                        <span class="text-[8px] font-black uppercase tracking-[0.08em] text-slate-400">
+                                            {{ ictQuantityLabel(item) }}
                                         </span>
                                     </div>
                                 </td>
@@ -3782,6 +6268,42 @@ const generateInventoryReport = () => {
                                             @click="openFullEditModal(item)"
                                         >
                                             Edit
+                                        </button>
+
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                            :disabled="
+                                                currentAvailableValue(item) === null
+                                                || Number(currentAvailableValue(item)) <= 0
+                                                || !canReleaseInCurrentView(item)
+                                            "
+                                            @click="openReleaseItemModal(item)"
+                                        >
+                                            Release
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            title="View History"
+                                            aria-label="View History"
+                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                            @click="openHistoryModal(item)"
+                                        >
+                                            <svg
+                                                class="h-4 w-4"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M20 6v5h-5" />
+                                                <path d="M19 11a7 7 0 1 0 1 4" />
+                                            </svg>
                                         </button>
 
                                         <button
@@ -3830,7 +6352,204 @@ const generateInventoryReport = () => {
                                     </div>
 
                                     <p class="mt-4 text-sm font-black text-slate-700">
-                                        No ICT or other items found
+                                        No ICT items found
+                                    </p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+
+                <!-- OTHER ITEMS TABLE -->
+                <div
+                    v-if="activeTab === 'other'"
+                    class="hidden overflow-hidden lg:block"
+                >
+                    <table class="w-full table-fixed">
+                        <thead class="bg-blue-500 text-white">
+                            <tr>
+                                <th
+                                    class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]"
+                                    :class="
+                                        currentOtherCategoryHasCount
+                                            ? 'w-[28%]'
+                                            : 'w-[36%]'
+                                    "
+                                >
+                                    Item
+                                </th>
+
+                                <th
+                                    v-if="currentOtherCategoryHasCount"
+                                    class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]"
+                                >
+                                    Count
+                                </th>
+
+                                <th class="w-[25%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Location
+                                </th>
+
+                                <th
+                                    class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]"
+                                    :class="
+                                        currentOtherCategoryHasCount
+                                            ? 'w-[23%]'
+                                            : 'w-[27%]'
+                                    "
+                                >
+                                    Remarks
+                                </th>
+
+                                <th class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Actions
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="divide-y divide-slate-100">
+                            <tr
+                                v-for="item in paginatedItems"
+                                :key="`other-${item.category}-${item.id || item.item}`"
+                                class="bg-white transition hover:bg-blue-50/35"
+                            >
+                                <td class="px-4 py-4 align-middle">
+                                    <p class="break-words text-xs font-black leading-5 text-slate-900">
+                                        {{ item.item }}
+                                    </p>
+                                </td>
+
+                                <td
+                                    v-if="currentOtherCategoryHasCount"
+                                    class="px-3 py-4 text-center align-middle"
+                                >
+                                    <span class="inline-flex min-w-10 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-black tabular-nums text-slate-800">
+                                        {{ item.currently_available ?? 0 }}
+                                    </span>
+                                </td>
+
+                                <td class="px-4 py-4 align-middle">
+                                    <div class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-3 py-1.5 text-[11px] font-black text-blue-800">
+                                        {{ item.location || '—' }}
+                                    </div>
+                                </td>
+
+                                <td class="px-4 py-4 align-middle">
+                                    <p
+                                        v-if="String(item.remarks || '').trim()"
+                                        class="break-words text-[11px] font-semibold leading-5 text-slate-600"
+                                    >
+                                        {{ item.remarks }}
+                                    </p>
+
+                                    <span
+                                        v-else
+                                        class="text-xs font-semibold text-slate-300"
+                                    >
+                                        —
+                                    </span>
+                                </td>
+
+                                <td class="px-3 py-4 text-center align-middle">
+                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                            @click="openFullEditModal(item)"
+                                        >
+                                            Edit
+                                        </button>
+
+                                        <button
+                                            v-if="
+                                                canManageInventory
+                                                && currentOtherCategoryCanRelease
+                                            "
+                                            type="button"
+                                            class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                            :disabled="
+                                                currentAvailableValue(item) === null
+                                                || Number(currentAvailableValue(item)) <= 0
+                                            "
+                                            @click="openReleaseItemModal(item)"
+                                        >
+                                            Release
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            title="View History"
+                                            aria-label="View History"
+                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                            @click="openHistoryModal(item)"
+                                        >
+                                            <svg
+                                                class="h-4 w-4"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M20 6v5h-5" />
+                                                <path d="M19 11a7 7 0 1 0 1 4" />
+                                            </svg>
+                                        </button>
+
+                                        <button
+                                            v-if="canManageInventory"
+                                            type="button"
+                                            title="Delete Item"
+                                            aria-label="Delete Item"
+                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+                                            @click="openDeleteItemModal(item)"
+                                        >
+                                            <svg
+                                                class="h-4 w-4"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M3 6h18" />
+                                                <path d="M8 6V4h8v2" />
+                                                <path d="M19 6l-1 14H6L5 6" />
+                                                <path d="M10 11v5" />
+                                                <path d="M14 11v5" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+
+                            <tr v-if="!paginatedItems.length">
+                                <td
+                                    :colspan="currentOtherCategoryHasCount ? 5 : 4"
+                                    class="px-6 py-16 text-center"
+                                >
+                                    <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+                                        <svg
+                                            class="h-5 w-5"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                            aria-hidden="true"
+                                        >
+                                            <circle cx="11" cy="11" r="8" />
+                                            <path d="m21 21-4.35-4.35" />
+                                        </svg>
+                                    </div>
+
+                                    <p class="mt-4 text-sm font-black text-slate-700">
+                                        No {{ currentOtherCategoryLabel.toLowerCase() }} found
                                     </p>
                                 </td>
                             </tr>
@@ -3866,6 +6585,22 @@ const generateInventoryReport = () => {
                                             class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
                                         >
                                             {{ quarter }}
+                                        </span>
+                                    </div>
+
+
+                                    <div
+                                        v-if="visibleQuarterBalanceEntries(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="entry in visibleQuarterBalanceEntries(item)"
+                                            :key="`mobile-supply-balance-${item.id}-${entry.quarter}`"
+                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700"
+                                        >
+                                            {{ entry.quarter.toUpperCase() }}
+                                            · Added: {{ entry.added }}
+                                            · Remaining: {{ entry.current }}
                                         </span>
                                     </div>
                                 </div>
@@ -3908,7 +6643,7 @@ const generateInventoryReport = () => {
 
                             <div class="bg-slate-50 p-3 text-center">
                                 <p class="text-[8px] font-black uppercase tracking-[0.12em] text-emerald-600">
-                                    Currently Available
+                                    {{ releaseCurrentLabel }}
                                 </p>
 
                                 <p class="mt-1 text-base font-black tabular-nums text-slate-900">
@@ -3969,6 +6704,7 @@ const generateInventoryReport = () => {
                                     :disabled="
                                         currentAvailableValue(item) === null
                                         || Number(currentAvailableValue(item)) <= 0
+                                        || !canReleaseInCurrentView(item)
                                     "
                                     @click="openReleaseItemModal(item)"
                                 >
@@ -4044,21 +6780,51 @@ const generateInventoryReport = () => {
                 </div>
 
                 
-                <!-- ICT & OTHER ITEMS — MOBILE -->
+                <!-- ICT MOBILE -->
                 <div
                     v-if="activeTab === 'ict'"
                     class="space-y-3 p-4 lg:hidden"
                 >
                     <article
                         v-for="item in paginatedItems"
-                        :key="`mobile-ict-${item.id || item.item}`"
+                        :key="`mobile-${activeTab}-${item.category}-${item.id || item.item}`"
                         class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
                     >
                         <div class="border-b border-slate-100 px-4 py-4">
                             <div class="flex items-start justify-between gap-3">
-                                <p class="min-w-0 break-words text-sm font-black leading-5 text-slate-900">
-                                    {{ item.item }}
-                                </p>
+                                <div class="min-w-0">
+                                    <p class="break-words text-sm font-black leading-5 text-slate-900">
+                                        {{ item.item }}
+                                    </p>
+
+                                    <div
+                                        v-if="quarterBadges(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="quarter in quarterBadges(item)"
+                                            :key="`mobile-ict-item-quarter-${item.id}-${quarter}`"
+                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
+                                        >
+                                            {{ quarter }}
+                                        </span>
+                                    </div>
+
+                                    <div
+                                        v-if="visibleQuarterBalanceEntries(item).length"
+                                        class="mt-2 flex flex-wrap gap-1"
+                                    >
+                                        <span
+                                            v-for="entry in visibleQuarterBalanceEntries(item)"
+                                            :key="`mobile-ict-item-balance-${item.id}-${entry.quarter}`"
+                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700"
+                                        >
+                                            {{ entry.quarter.toUpperCase() }}
+                                            · Added: {{ entry.added }}
+                                            · Remaining: {{ entry.current }}
+                                        </span>
+                                    </div>
+                                </div>
 
                                 <span
                                     class="shrink-0 rounded-md border px-2 py-1 text-[9px] font-black"
@@ -4070,31 +6836,24 @@ const generateInventoryReport = () => {
                         </div>
 
                         <div class="space-y-3 p-4">
-                            <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
-                                    Year / Quarter
+                            <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
+                                    {{ ictQuantityLabel(item) }}
                                 </p>
 
-                                <div class="mt-2 flex flex-wrap items-center gap-1">
-                                    <span class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-blue-800 ring-1 ring-blue-100">
-                                        {{ item.inventory_year }}
-                                    </span>
+                                <p class="mt-1 text-sm font-black tabular-nums text-slate-900">
+                                    {{ ictQuantityDisplay(item) }}
+                                </p>
+                            </div>
 
-                                    <span
-                                        v-for="quarter in quarterBadges(item)"
-                                        :key="`mobile-ict-quarter-${item.id}-${quarter}`"
-                                        class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-blue-700 ring-1 ring-blue-100"
-                                    >
-                                        {{ quarter }}
-                                    </span>
+                            <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
+                                    Inventory Year
+                                </p>
 
-                                    <span
-                                        v-if="!quarterBadges(item).length"
-                                        class="rounded-md bg-white px-2 py-1 text-[10px] font-black text-slate-400 ring-1 ring-blue-100"
-                                    >
-                                        No quarter
-                                    </span>
-                                </div>
+                                <p class="mt-1 text-sm font-black tabular-nums text-blue-900">
+                                    {{ item.inventory_year }}
+                                </p>
                             </div>
 
                             <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -4121,6 +6880,42 @@ const generateInventoryReport = () => {
                                 <button
                                     v-if="canManageInventory"
                                     type="button"
+                                    class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                    :disabled="
+                                        currentAvailableValue(item) === null
+                                        || Number(currentAvailableValue(item)) <= 0
+                                        || !canReleaseInCurrentView(item)
+                                    "
+                                    @click="openReleaseItemModal(item)"
+                                >
+                                    Release
+                                </button>
+
+                                <button
+                                    type="button"
+                                    title="View History"
+                                    aria-label="View History"
+                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                    @click="openHistoryModal(item)"
+                                >
+                                    <svg
+                                        class="h-5 w-5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M20 6v5h-5" />
+                                        <path d="M19 11a7 7 0 1 0 1 4" />
+                                    </svg>
+                                </button>
+
+                                <button
+                                    v-if="canManageInventory"
+                                    type="button"
                                     class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
                                     @click="openDeleteItemModal(item)"
                                 >
@@ -4135,7 +6930,128 @@ const generateInventoryReport = () => {
                         class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
                     >
                         <p class="text-sm font-black text-slate-700">
-                            No ICT or other items found
+                            No ICT items found
+                        </p>
+                    </div>
+                </div>
+
+
+                <!-- OTHER ITEMS MOBILE -->
+                <div
+                    v-if="activeTab === 'other'"
+                    class="space-y-3 p-4 lg:hidden"
+                >
+                    <article
+                        v-for="item in paginatedItems"
+                        :key="`mobile-other-${item.category}-${item.id || item.item}`"
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div class="border-b border-slate-100 px-4 py-4">
+                            <p class="break-words text-sm font-black leading-5 text-slate-900">
+                                {{ item.item }}
+                            </p>
+                        </div>
+
+                        <div class="space-y-3 p-4">
+                            <div
+                                v-if="currentOtherCategoryHasCount"
+                                class="rounded-xl border border-slate-200 bg-slate-50 p-3"
+                            >
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
+                                    Count
+                                </p>
+
+                                <p class="mt-1 text-sm font-black tabular-nums text-slate-900">
+                                    {{ item.currently_available ?? 0 }}
+                                </p>
+                            </div>
+
+                            <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
+                                    Location
+                                </p>
+
+                                <p class="mt-1 break-words text-xs font-black leading-5 text-blue-900">
+                                    {{ item.location || '—' }}
+                                </p>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
+                                    Remarks
+                                </p>
+
+                                <p class="mt-1 break-words text-xs font-semibold leading-5 text-slate-600">
+                                    {{ String(item.remarks || '').trim() || '—' }}
+                                </p>
+                            </div>
+
+                            <div class="flex justify-end gap-2">
+                                <button
+                                    v-if="canManageInventory"
+                                    type="button"
+                                    class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                    @click="openFullEditModal(item)"
+                                >
+                                    Edit
+                                </button>
+
+                                <button
+                                    v-if="
+                                        canManageInventory
+                                        && currentOtherCategoryCanRelease
+                                    "
+                                    type="button"
+                                    class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                    :disabled="
+                                        currentAvailableValue(item) === null
+                                        || Number(currentAvailableValue(item)) <= 0
+                                    "
+                                    @click="openReleaseItemModal(item)"
+                                >
+                                    Release
+                                </button>
+
+                                <button
+                                    type="button"
+                                    title="View History"
+                                    aria-label="View History"
+                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                    @click="openHistoryModal(item)"
+                                >
+                                    <svg
+                                        class="h-5 w-5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M20 6v5h-5" />
+                                        <path d="M19 11a7 7 0 1 0 1 4" />
+                                    </svg>
+                                </button>
+
+                                <button
+                                    v-if="canManageInventory"
+                                    type="button"
+                                    class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
+                                    @click="openDeleteItemModal(item)"
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                    </article>
+
+                    <div
+                        v-if="!paginatedItems.length"
+                        class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
+                    >
+                        <p class="text-sm font-black text-slate-700">
+                            No {{ currentOtherCategoryLabel.toLowerCase() }} found
                         </p>
                     </div>
                 </div>
@@ -4205,7 +7121,9 @@ const generateInventoryReport = () => {
                                 {{
                                     activeTab === 'supplies'
                                         ? 'Supplies Inventory'
-                                        : 'ICT & Other Items'
+                                        : activeTab === 'ict'
+                                            ? 'ICT'
+                                            : `Other Items · ${currentOtherCategoryLabel}`
                                 }}
                             </p>
 
@@ -4244,11 +7162,26 @@ const generateInventoryReport = () => {
                         class="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
                     >
                         <p class="text-xs font-black text-blue-800">
-                            ICT & Other Items
+                            ICT
                         </p>
                         <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700/80">
-                            Select the Inventory Year and applicable Quarter(s).
-                            Stock monitoring and release fields remain for Supplies only.
+                            Normal ICT items use a Count. For subscriptions, select <strong>Month (Subscription)</strong> or <strong>Year (Subscription)</strong>, then enter the subscription duration.
+                        </p>
+                    </div>
+
+                    <div
+                        v-if="activeTab === 'other'"
+                        class="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
+                    >
+                        <p class="text-xs font-black text-blue-800">
+                            Other Items · {{ currentOtherCategoryLabel }}
+                        </p>
+                        <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700/80">
+                            {{
+                                currentOtherCategoryHasCount
+                                    ? 'Enter the item name, count, current location, and optional remarks.'
+                                    : 'Enter only the item name, current location, and optional remarks.'
+                            }}
                         </p>
                     </div>
 
@@ -4292,8 +7225,77 @@ const generateInventoryReport = () => {
                         </div>
 
 
+                        <!-- COUNT — OTHER ITEMS EXCEPT EMERGENCY KITS -->
+                        <div
+                            v-if="
+                                activeTab === 'other'
+                                && currentOtherCategoryHasCount
+                            "
+                            class="md:col-span-2"
+                        >
+                            <label
+                                class="mb-2 block text-sm font-black text-slate-800"
+                            >
+                                Count
+                            </label>
+
+                            <input
+                                v-model.number="newItemForm.currently_available"
+                                type="number"
+                                min="0"
+                                step="1"
+                                placeholder="Enter number of items"
+                                class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-black tabular-nums text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                :class="
+                                    addItemErrors.currently_available
+                                        ? 'border-rose-400'
+                                        : 'border-slate-200 focus:border-blue-400'
+                                "
+                            />
+
+                            <p
+                                v-if="addItemErrors.currently_available"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.currently_available }}
+                            </p>
+                        </div>
+
+
+                        <!-- LOCATION — OTHER ITEMS ONLY -->
+                        <div
+                            v-if="activeTab === 'other'"
+                            class="md:col-span-2"
+                        >
+                            <label
+                                class="mb-2 block text-sm font-black text-slate-800"
+                            >
+                                Location
+                            </label>
+
+                            <input
+                                v-model="newItemForm.location"
+                                type="text"
+                                placeholder="Example: SPD Library"
+                                class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                :class="
+                                    addItemErrors.location
+                                        ? 'border-rose-400'
+                                        : 'border-slate-200 focus:border-blue-400'
+                                "
+                            />
+
+                            <p
+                                v-if="addItemErrors.location"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.location }}
+                            </p>
+                        </div>
+
+
                         <!-- UNIT -->
-                        <div>
+                        <div v-if="activeTab !== 'other'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
@@ -4345,8 +7347,10 @@ const generateInventoryReport = () => {
                             </p>
                         </div>
 
+
+
                         <!-- INVENTORY YEAR -->
-                        <div>
+                        <div v-if="activeTab !== 'other'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
@@ -4419,86 +7423,17 @@ const generateInventoryReport = () => {
                                 v-else
                                 class="mt-2 text-[10px] font-semibold text-slate-400"
                             >
-                                Optional. If left blank, Quantity Released starts at 0 and accumulates every release made in the system.
+                                Optional reference value. Actual remaining and released quantities are now tracked separately per quarter.
                             </p>
                         </div>
 
-                        <!-- CURRENTLY AVAILABLE -->
-                        <div v-if="activeTab === 'supplies'">
-                            <label
-                                class="mb-2 block text-sm font-black text-slate-800"
-                            >
-                                Currently Available in SPD
-                            </label>
 
-                            <input
-                                v-model.number="
-                                    newItemForm.currently_available
-                                "
-                                type="number"
-                                min="0"
-                                :max="
-                                    newItemForm.fixed !== ''
-                                        ? newItemForm.fixed
-                                        : undefined
-                                "
-                                step="1"
-                                placeholder="Enter actual current stock"
-                                class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
-                                :class="
-                                    addItemErrors.currently_available
-                                        ? 'border-rose-400'
-                                        : 'border-slate-200 focus:border-blue-400'
-                                "
-                            />
-
-                            <p
-                                v-if="addItemErrors.currently_available"
-                                class="mt-2 text-xs font-bold text-rose-600"
-                            >
-                                {{
-                                    addItemErrors.currently_available
-                                }}
-                            </p>
-
-                            <div
-                                class="mt-2 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2"
-                            >
-                                <p
-                                    class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500"
-                                >
-                                    Quantity Released · Auto
-                                </p>
-
-                                <p
-                                    class="mt-0.5 text-sm font-black tabular-nums text-blue-700"
-                                >
-                                    {{
-                                        newItemQuantityReleased
-                                        ?? '—'
-                                    }}
-                                </p>
-
-                                <p
-                                    class="mt-0.5 text-[9px] font-semibold text-slate-400"
-                                >
-                                    {{
-                                        newItemForm.fixed === ''
-                                            || newItemForm.fixed === null
-                                            || newItemForm.fixed === undefined
-                                            || Number(newItemForm.fixed) <= 0
-                                            ? 'Starts at 0 · accumulates releases made in the system'
-                                            : 'Fixed Value − Currently Available'
-                                    }}
-                                </p>
-                            </div>
-                        </div>
 
                     </div>
 
 
                     <!-- QUARTERS -->
-                    <div>
+                    <div v-if="activeTab !== 'other'">
                         <div
                             class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
                         >
@@ -4562,14 +7497,21 @@ const generateInventoryReport = () => {
                                 class="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs font-black text-slate-700"
                             >
                                 <input
-                                    v-model="
-                                        newItemForm.quarters
-                                    "
                                     type="checkbox"
-                                    :value="
-                                        quarter.value
+                                    :value="quarter.value"
+                                    :checked="
+                                        newItemForm.quarters
+                                            .includes(
+                                                quarter.value
+                                            )
                                     "
                                     class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                    @change="
+                                        toggleNewItemQuarter(
+                                            quarter.value,
+                                            $event.target.checked
+                                        )
+                                    "
                                 />
 
                                 {{
@@ -4588,10 +7530,115 @@ const generateInventoryReport = () => {
                                 addItemErrors.quarters
                             }}
                         </p>
+
+                        <div
+                            v-if="
+                                ['supplies', 'ict'].includes(activeTab)
+                                && newItemForm.quarters.length
+                            "
+                            class="mt-4 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
+                        >
+                            <div>
+                                <p class="text-xs font-black text-slate-800">
+                                    New Quantity per Quarter
+                                </p>
+                                <p class="mt-1 text-[10px] font-semibold leading-4 text-slate-500">
+                                    Remaining stock automatically carries forward. Example: if Q1 has 10 remaining and you add 25 in Q2, Q2 starts with 35 while Q1 still shows 10 as its historical remaining balance.
+                                </p>
+                            </div>
+
+                            <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                <div
+                                    v-for="quarter in newItemForm.quarters"
+                                    :key="`new-quarter-stock-${quarter}`"
+                                    class="rounded-xl border border-slate-200 bg-white p-3"
+                                >
+                                    <label class="mb-2 block text-xs font-black text-slate-800">
+                                        {{ quarter.toUpperCase() }}
+                                        ·
+                                        {{
+                                            activeTab === 'ict'
+                                                ? `New ${ictQuantityLabel(newItemForm.unit)}`
+                                                : 'New Quantity'
+                                        }}
+                                    </label>
+
+                                    <input
+                                        :value="
+                                            quarterStockFormCurrent(
+                                                newItemForm,
+                                                quarter
+                                            )
+                                        "
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        placeholder="Enter new quantity for this quarter"
+                                        class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                        :class="
+                                            addItemErrors[
+                                                `quarter_stock.${quarter}.current`
+                                            ]
+                                                ? 'border-rose-400'
+                                                : 'border-slate-200 focus:border-blue-400'
+                                        "
+                                        @input="
+                                            setNewQuarterStockCurrent(
+                                                quarter,
+                                                $event.target.value
+                                            )
+                                        "
+                                    />
+
+                                    <p
+                                        v-if="
+                                            addItemErrors[
+                                                `quarter_stock.${quarter}.current`
+                                            ]
+                                        "
+                                        class="mt-2 text-[10px] font-bold text-rose-600"
+                                    >
+                                        {{
+                                            addItemErrors[
+                                                `quarter_stock.${quarter}.current`
+                                            ]
+                                        }}
+                                    </p>
+
+
+                                    <div class="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[9px] font-semibold leading-4 text-slate-500">
+                                        <p>
+                                            Carryover:
+                                            <strong class="text-slate-700">
+                                                {{
+                                                    projectedQuarterCarryover(
+                                                        newItemForm,
+                                                        quarter
+                                                    )
+                                                }}
+                                            </strong>
+                                        </p>
+
+                                        <p>
+                                            Resulting balance:
+                                            <strong class="text-emerald-700">
+                                                {{
+                                                    projectedFormQuarterCurrent(
+                                                        newItemForm,
+                                                        quarter
+                                                    )
+                                                }}
+                                            </strong>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
 
 
-                    <!-- REMARKS -->
+                                        <!-- REMARKS -->
                     <div>
                         <label
                             class="mb-2 block text-sm font-black text-slate-800"
@@ -4668,19 +7715,27 @@ const generateInventoryReport = () => {
                     class="grid gap-4 p-5 sm:grid-cols-2 sm:p-6"
                     @submit.prevent="saveFullEditItem"
                 >
-                    <div>
+                    <div
+                        v-if="!otherCategoryValues.includes(fullEditingItem.category)"
+                    >
                         <label class="mb-2 block text-sm font-black text-slate-800">Category</label>
                         <select
                             v-model="fullEditForm.category"
                             class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                         >
                             <option value="supplies">Supplies</option>
-                            <option value="ict">ICT & Other Items</option>
+                            <option value="ict">ICT</option>
+                            <option value="furniture">Other Items - Furniture</option>
+                            <option value="fixtures">Other Items - Fixtures</option>
+                            <option value="emergency_kits">Other Items - Emergency Kits</option>
+                            <option value="token_giveaways">Other Items - Token and Giveaways</option>
                         </select>
                         <p v-if="fullEditErrors.category" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.category }}</p>
                     </div>
 
-                    <div>
+                    <div
+                        v-if="!otherCategoryValues.includes(fullEditForm.category)"
+                    >
                         <label class="mb-2 block text-sm font-black text-slate-800">Inventory Year</label>
                         <select
                             v-model.number="fullEditForm.inventory_year"
@@ -4701,18 +7756,78 @@ const generateInventoryReport = () => {
                         <p v-if="fullEditErrors.item" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.item }}</p>
                     </div>
 
-                    <div>
-                        <label class="mb-2 block text-sm font-black text-slate-800">Unit of Measure</label>
+                    <div
+                        v-if="
+                            otherCategoryHasCount(
+                                fullEditForm.category
+                            )
+                        "
+                        class="sm:col-span-2"
+                    >
+                        <label class="mb-2 block text-sm font-black text-slate-800">Count</label>
                         <input
+                            v-model.number="fullEditForm.currently_available"
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="Enter number of items"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                        <p
+                            v-if="fullEditErrors.currently_available"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ fullEditErrors.currently_available }}
+                        </p>
+                    </div>
+
+                    <div
+                        v-if="otherCategoryValues.includes(fullEditForm.category)"
+                        class="sm:col-span-2"
+                    >
+                        <label class="mb-2 block text-sm font-black text-slate-800">Location</label>
+                        <input
+                            v-model="fullEditForm.location"
+                            type="text"
+                            placeholder="Example: SPD Library"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                        <p v-if="fullEditErrors.location" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.location }}</p>
+                    </div>
+
+                    <div
+                        v-if="!otherCategoryValues.includes(fullEditForm.category)"
+                    >
+                        <label class="mb-2 block text-sm font-black text-slate-800">Unit of Measure</label>
+
+                        <select
+                            v-if="fullEditForm.category === 'ict'"
+                            v-model="fullEditForm.unit"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        >
+                            <option
+                                v-for="unitOption in ictUnitOptions"
+                                :key="`edit-ict-${unitOption.value}`"
+                                :value="unitOption.value"
+                            >
+                                {{ unitOption.label }}
+                            </option>
+                        </select>
+
+                        <input
+                            v-else
                             v-model="fullEditForm.unit"
                             type="text"
                             class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold uppercase text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                         />
+
                         <p v-if="fullEditErrors.unit" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.unit }}</p>
                     </div>
 
+
+
                     <template v-if="fullEditForm.category === 'supplies'">
-                        <div>
+                        <div class="sm:col-span-2">
                             <label class="mb-2 block text-sm font-black text-slate-800">
                                 Fixed Value <span class="font-medium text-slate-400">(Optional)</span>
                             </label>
@@ -4725,21 +7840,12 @@ const generateInventoryReport = () => {
                             />
                             <p v-if="fullEditErrors.fixed_value" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.fixed_value }}</p>
                         </div>
-
-                        <div>
-                            <label class="mb-2 block text-sm font-black text-slate-800">Currently Available in SPD</label>
-                            <input
-                                v-model="fullEditForm.currently_available"
-                                type="number"
-                                min="0"
-                                step="1"
-                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                            />
-                            <p v-if="fullEditErrors.currently_available" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.currently_available }}</p>
-                        </div>
                     </template>
 
-                    <div class="sm:col-span-2">
+                    <div
+                        v-if="!otherCategoryValues.includes(fullEditForm.category)"
+                        class="sm:col-span-2"
+                    >
                         <div class="mb-2 flex items-center justify-between gap-3">
                             <label class="block text-sm font-black text-slate-800">Applicable Quarter(s)</label>
                             <button
@@ -4770,6 +7876,157 @@ const generateInventoryReport = () => {
 
                         <p v-if="fullEditErrors.quarters" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.quarters }}</p>
                     </div>
+
+                    <div
+                        v-if="
+                            ['supplies', 'ict'].includes(
+                                fullEditForm.category
+                            )
+                            && fullEditForm.quarters.length
+                        "
+                        class="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
+                    >
+                        <p class="text-xs font-black text-slate-800">
+                            Current Balance per Quarter
+                        </p>
+
+                        <p class="mt-1 text-[10px] font-semibold leading-4 text-slate-500">
+                            Existing quarters keep their historical remaining balance. When you add a new quarter, enter only the NEW quantity for that quarter; the previous quarter's remaining stock is carried forward automatically.
+                        </p>
+
+                        <p
+                            v-if="
+                                fullEditingItem
+                                && !hasQuarterStock(fullEditingItem)
+                                && fullEditForm.quarters.length > 1
+                            "
+                            class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-bold leading-4 text-amber-800"
+                        >
+                            Legacy multi-quarter record: the old global balance cannot be split automatically. Enter the correct remaining balance for each quarter once, then future releases will be tracked separately.
+                        </p>
+
+                        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div
+                                v-for="quarter in fullEditForm.quarters"
+                                :key="`edit-quarter-stock-${quarter}`"
+                                class="rounded-xl border border-slate-200 bg-white p-3"
+                            >
+                                <label class="mb-2 block text-xs font-black text-slate-800">
+                                    {{ quarter.toUpperCase() }}
+                                    ·
+                                    {{
+                                        isEditQuarterNew(quarter)
+                                            ? (
+                                                fullEditForm.category === 'ict'
+                                                    ? `New ${ictQuantityLabel(fullEditForm.unit)}`
+                                                    : 'New Quantity to Add'
+                                            )
+                                            : (
+                                                fullEditForm.category === 'ict'
+                                                    ? `${ictQuantityLabel(fullEditForm.unit)} Remaining`
+                                                    : 'Remaining Balance'
+                                            )
+                                    }}
+                                </label>
+
+                                <input
+                                    :value="
+                                        quarterStockFormCurrent(
+                                            fullEditForm,
+                                            quarter
+                                        )
+                                    "
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    :placeholder="
+                                        isEditQuarterNew(quarter)
+                                            ? 'Enter new quantity for this quarter'
+                                            : 'Enter remaining balance'
+                                    "
+                                    class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                    :class="
+                                        fullEditErrors[
+                                            `quarter_stock.${quarter}.current`
+                                        ]
+                                            ? 'border-rose-400'
+                                            : 'border-slate-200 focus:border-blue-400'
+                                    "
+                                    @input="
+                                        setEditQuarterStockCurrent(
+                                            quarter,
+                                            $event.target.value
+                                        )
+                                    "
+                                />
+
+                                <p
+                                    v-if="
+                                        fullEditErrors[
+                                            `quarter_stock.${quarter}.current`
+                                        ]
+                                    "
+                                    class="mt-2 text-[10px] font-bold text-rose-600"
+                                >
+                                    {{
+                                        fullEditErrors[
+                                            `quarter_stock.${quarter}.current`
+                                        ]
+                                    }}
+                                </p>
+
+                                <p
+                                    v-if="
+                                        fullEditingItem
+                                        && normalizeQuarterStock(
+                                            fullEditingItem.quarter_stock
+                                        )?.[quarter]
+                                    "
+                                    class="mt-2 text-[9px] font-semibold text-slate-400"
+                                >
+                                    Released in {{ quarter.toUpperCase() }}:
+                                    {{
+                                        normalizeQuarterStock(
+                                            fullEditingItem.quarter_stock
+                                        )[quarter].released
+                                    }}
+                                </p>
+
+
+                                <div
+                                    v-if="isEditQuarterNew(quarter)"
+                                    class="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[9px] font-semibold leading-4 text-slate-500"
+                                >
+                                    <p>
+                                        Carryover from previous quarter:
+                                        <strong class="text-slate-700">
+                                            {{
+                                                projectedQuarterCarryover(
+                                                    fullEditForm,
+                                                    quarter,
+                                                    originalEditQuarterStock
+                                                )
+                                            }}
+                                        </strong>
+                                    </p>
+
+                                    <p>
+                                        New resulting balance:
+                                        <strong class="text-emerald-700">
+                                            {{
+                                                projectedFormQuarterCurrent(
+                                                    fullEditForm,
+                                                    quarter,
+                                                    originalEditQuarterStock
+                                                )
+                                            }}
+                                        </strong>
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
 
                     <div
                         v-if="fullEditForm.category === 'supplies'"
@@ -4845,11 +8102,19 @@ const generateInventoryReport = () => {
                                 {{ releasingItem?.unit || '—' }}
                             </span>
 
-                            <span>
+                            <span v-if="releaseIsSupplies">
                                 Fixed Value:
                                 <strong class="text-slate-800">
                                     {{ releaseHasFixedBaseline ? releaseFixedValue : '—' }}
                                 </strong>
+                            </span>
+
+                            <span v-else-if="releaseIsIct">
+                                {{ ictQuantityLabel(releasingItem) }} tracking
+                            </span>
+
+                            <span v-else>
+                                Count tracking
                             </span>
                         </div>
                     </div>
@@ -4876,7 +8141,11 @@ const generateInventoryReport = () => {
                             <p
                                 class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500"
                             >
-                                Quantity Released
+                                {{
+                                    releaseIsIct
+                                        ? `${releaseQuantityLabel} Released`
+                                        : 'Quantity Released'
+                                }}
                             </p>
 
                             <p
@@ -4899,7 +8168,7 @@ const generateInventoryReport = () => {
                             <p
                                 class="text-[9px] font-black uppercase tracking-[0.12em] text-emerald-600"
                             >
-                                Currently Available in SPD
+                                {{ releaseCurrentLabel }}
                             </p>
 
                             <p
@@ -4918,7 +8187,7 @@ const generateInventoryReport = () => {
                             <label
                                 class="block text-sm font-black text-slate-800"
                             >
-                                Quantity to Release
+                                {{ releaseActionLabel }}
                             </label>
 
                             <span
@@ -4935,7 +8204,11 @@ const generateInventoryReport = () => {
                             min="1"
                             :max="releaseCurrentAvailable"
                             step="1"
-                            placeholder="Enter quantity to release"
+                            :placeholder="
+                                releaseIsIct
+                                    ? `Enter ${releaseQuantityLabel.toLowerCase()} to release`
+                                    : 'Enter quantity to release'
+                            "
                             class="h-12 w-full rounded-xl border bg-white px-4 text-base font-black tabular-nums text-slate-900 outline-none transition focus:ring-4 focus:ring-blue-100"
                             :class="
                                 releaseItemErrors.releaseQuantity
@@ -4972,7 +8245,11 @@ const generateInventoryReport = () => {
                                 <p
                                     class="text-[10px] font-bold text-slate-500"
                                 >
-                                    Quantity Released
+                                    {{
+                                        releaseIsIct
+                                            ? `${releaseQuantityLabel} Released`
+                                            : 'Quantity Released'
+                                    }}
                                 </p>
 
                                 <p
@@ -4989,7 +8266,7 @@ const generateInventoryReport = () => {
                                 <p
                                     class="text-[10px] font-bold text-slate-500"
                                 >
-                                    Currently Available
+                                    {{ releaseCurrentLabel }}
                                 </p>
 
                                 <p
@@ -5006,6 +8283,34 @@ const generateInventoryReport = () => {
                                 </p>
                             </div>
                         </div>
+                    </div>
+
+                    <!-- RELEASED TO / DESTINATION -->
+                    <div v-if="!releaseIsSupplies">
+                        <label
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Released To / Destination
+                        </label>
+
+                        <input
+                            v-model="releaseItemForm.releaseDestination"
+                            type="text"
+                            placeholder="Example: SPD Library, MIS Staff, Conference Room"
+                            class="h-12 w-full rounded-xl border bg-white px-4 text-sm font-semibold text-slate-800 outline-none transition focus:ring-4 focus:ring-blue-100"
+                            :class="
+                                releaseItemErrors.releaseDestination
+                                    ? 'border-rose-400'
+                                    : 'border-slate-200 focus:border-blue-400'
+                            "
+                        />
+
+                        <p
+                            v-if="releaseItemErrors.releaseDestination"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ releaseItemErrors.releaseDestination }}
+                        </p>
                     </div>
 
                     <!-- REMARKS -->
@@ -5485,5 +8790,238 @@ const generateInventoryReport = () => {
         </div>
 
 
+        <!-- ACCESSIBILITY READING GUIDE -->
+        <div
+            v-if="accessibilitySettings.readingGuide"
+            class="inventory-accessibility-ui pointer-events-none fixed left-0 right-0 z-[75] h-12 border-y-2 border-indigo-500/35 bg-indigo-200/20 shadow-[0_0_20px_rgba(79,70,229,0.10)]"
+            :style="{
+                top: `${Math.max(
+                    0,
+                    readingGuideY - 24
+                )}px`,
+            }"
+            aria-hidden="true"
+        ></div>
+
+        <!-- ACCESSIBILITY PANEL -->
+        <div
+            v-if="accessibilityOpen"
+            class="inventory-accessibility-ui fixed bottom-24 right-4 z-[90] w-[calc(100vw-2rem)] max-w-[455px] overflow-hidden rounded-[1.8rem] border border-slate-200 bg-white shadow-[0_26px_80px_rgba(15,23,42,0.25)] sm:right-6"
+            role="dialog"
+            aria-modal="false"
+            aria-label="Accessibility settings"
+        >
+            <!-- HEADER -->
+            <div
+                class="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                    <div
+                        class="flex h-13 w-13 shrink-0 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-600"
+                    >
+                        <svg
+                            class="h-8 w-8"
+                            viewBox="0 0 64 64"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                            aria-hidden="true"
+                        >
+                            <circle cx="19" cy="16" r="7" fill="currentColor" />
+                            <path
+                                d="M14 28C14 25.7909 15.7909 24 18 24H27C31.4183 24 35 27.5817 35 32V46L30 42V34C30 32.8954 29.1046 32 28 32H24V50L14 43V28Z"
+                                fill="currentColor"
+                            />
+                            <path
+                                d="M39 24L51 20V38L39 42C37.3431 42.5523 35.5523 42.1046 34.3431 40.8284L28 34L34.3431 28.1716C35.5523 26.8954 37.3431 26.4477 39 27L51 31"
+                                fill="currentColor"
+                            />
+                            <path
+                                d="M39 24L51 20V38"
+                                stroke="white"
+                                stroke-width="2.5"
+                                stroke-linejoin="round"
+                            />
+                        </svg>
+                    </div>
+
+                    <div class="min-w-0">
+                        <h2
+                            class="text-xl font-black tracking-tight text-slate-900"
+                        >
+                            Accessibility
+                        </h2>
+
+                        <p
+                            class="mt-0.5 text-sm font-medium text-slate-400"
+                        >
+                            Adjust the page to your needs
+                        </p>
+                    </div>
+                </div>
+
+                <button
+                    type="button"
+                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-xl font-black text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                    aria-label="Close accessibility settings"
+                    @click="closeAccessibilityPanel"
+                >
+                    ×
+                </button>
+            </div>
+
+            <div
+                class="max-h-[calc(100dvh-9rem)] overflow-y-auto px-6 py-5"
+            >
+                <!-- TEXT SIZE ONLY -->
+                <section>
+                    <p
+                        class="text-xs font-black uppercase tracking-[0.08em] text-slate-400"
+                    >
+                        Text Size
+                    </p>
+
+                    <div
+                        class="mt-4 grid grid-cols-[60px_1fr_60px] gap-3"
+                    >
+                        <button
+                            type="button"
+                            :disabled="
+                                accessibilitySettings.textSize <= 80
+                            "
+                            class="flex h-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Decrease text size"
+                            @click="decreaseAccessibilityTextSize"
+                        >
+                            −
+                        </button>
+
+                        <div
+                            class="flex h-14 items-center justify-center rounded-2xl border border-slate-100 bg-slate-50 text-lg font-black tabular-nums text-slate-900"
+                        >
+                            {{
+                                accessibilitySettings.textSize
+                            }}%
+                        </div>
+
+                        <button
+                            type="button"
+                            :disabled="
+                                accessibilitySettings.textSize >= 200
+                            "
+                            class="flex h-14 items-center justify-center rounded-2xl border border-slate-200 bg-white text-2xl font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Increase text size"
+                            @click="increaseAccessibilityTextSize"
+                        >
+                            +
+                        </button>
+                    </div>
+
+                    <p
+                        class="mt-4 text-sm font-semibold leading-6 text-slate-500"
+                    >
+                        Adjust the text size for the Inventory content only.
+                    </p>
+                </section>
+
+                <!-- RESET TEXT SIZE -->
+                <button
+                    type="button"
+                    class="mt-6 flex h-14 w-full items-center justify-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 text-sm font-black text-rose-600 transition hover:bg-rose-100"
+                    @click="resetAccessibilitySettings"
+                >
+                    <svg
+                        class="h-5 w-5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                    >
+                        <path d="M3 12a9 9 0 1 0 3-6.7" />
+                        <path d="M3 4v6h6" />
+                    </svg>
+
+                    Reset text size
+                </button>
+            </div>
+        </div>
+
+        <!-- FLOATING ACCESSIBILITY BUTTON -->
+        <button
+            type="button"
+            class="inventory-accessibility-ui fixed bottom-5 right-5 z-[85] flex h-16 w-16 items-center justify-center rounded-full bg-indigo-600 text-white shadow-[0_16px_35px_rgba(79,70,229,0.38)] transition hover:-translate-y-0.5 hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-200 sm:bottom-6 sm:right-6"
+            :aria-expanded="accessibilityOpen"
+            aria-label="Open accessibility settings"
+            @click="toggleAccessibilityPanel"
+        >
+            <svg
+                class="h-9 w-9"
+                viewBox="0 0 64 64"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+            >
+                <circle cx="19" cy="16" r="7" fill="currentColor" />
+                <path
+                    d="M14 28C14 25.7909 15.7909 24 18 24H27C31.4183 24 35 27.5817 35 32V46L30 42V34C30 32.8954 29.1046 32 28 32H24V50L14 43V28Z"
+                    fill="currentColor"
+                />
+                <path
+                    d="M39 24L51 20V38L39 42C37.3431 42.5523 35.5523 42.1046 34.3431 40.8284L28 34L34.3431 28.1716C35.5523 26.8954 37.3431 26.4477 39 27L51 31"
+                    fill="currentColor"
+                />
+                <path
+                    d="M39 24L51 20V38"
+                    stroke="white"
+                    stroke-width="2.5"
+                    stroke-linejoin="round"
+                />
+            </svg>
+        </button>
+
+
     </div>
 </template>
+
+<style>
+.inventory-accessibility-root {
+    zoom: 1 !important;
+    transform: none;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+}
+
+.inventory-accessibility-root.a11y-readable-font,
+.inventory-accessibility-root.a11y-readable-font * {
+    font-family:
+        Arial,
+        Verdana,
+        Helvetica,
+        sans-serif !important;
+}
+
+.inventory-accessibility-root.a11y-highlight-links a {
+    text-decoration: underline !important;
+    text-decoration-thickness: 3px !important;
+    text-underline-offset: 3px !important;
+    box-shadow:
+        0 0 0 2px rgba(245, 158, 11, 0.45);
+}
+
+.inventory-accessibility-root.a11y-big-cursor,
+.inventory-accessibility-root.a11y-big-cursor * {
+    cursor:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'%3E%3Cpath d='M3 2l24 17-9 2 6 11-5 2-6-11-7 7z' fill='%230f172a' stroke='%23ffffff' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E")
+        3 2,
+        auto !important;
+}
+
+@media (max-width: 640px) {
+    .inventory-accessibility-root.a11y-big-cursor,
+    .inventory-accessibility-root.a11y-big-cursor * {
+        cursor: auto !important;
+    }
+}
+</style>
