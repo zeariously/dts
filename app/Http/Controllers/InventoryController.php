@@ -53,9 +53,9 @@ class InventoryController extends Controller
      *      tracked_released starts at 0 and future releases accumulate there.
      *
      * ICT
-     * - Normal items: Item, Unit, Count, Inventory Year, Quarter(s), Remarks.
+     * - No Quarter. Normal items: Item, Unit, Count, Inventory Year, Remarks.
      * - Subscription: Unit = MONTH or YEAR and currently_available stores duration.
-     * - History is supported for ICT changes.
+     * - Release and History are supported for ICT changes.
      *
      * OTHER ITEMS
      * - Furniture / Fixtures / Emergency Kits / Token and Giveaways:
@@ -79,12 +79,12 @@ class InventoryController extends Controller
                 'required_if:category,supplies,ict|nullable|integer|min:2026|max:2100',
             'fixed_value' => 'nullable|integer|min:0',
             'currently_available' =>
-                'required_if:category,furniture,fixtures,emergency_kits,token_giveaways|nullable|integer|min:0',
+                'required_if:category,ict,furniture,fixtures,emergency_kits,token_giveaways|nullable|integer|min:0',
             'quarters' =>
-                'required_if:category,supplies,ict|nullable|array|min:1',
+                'required_if:category,supplies|nullable|array|min:1',
             'quarters.*' => 'in:q1,q2,q3,q4',
             'quarter_stock' =>
-                'required_if:category,supplies,ict|nullable|array',
+                'required_if:category,supplies|nullable|array',
             'quarter_stock.*' =>
                 'array',
             'quarter_stock.*.current' =>
@@ -139,31 +139,36 @@ class InventoryController extends Controller
             $validated['unit'] =
                 strtoupper(trim($validated['unit']));
 
-            $quarters =
-                $this->normalizedQuarterList(
-                    $validated['quarters'] ?? []
-                );
+            if ($validated['category'] === 'supplies') {
+                $quarters =
+                    $this->normalizedQuarterList(
+                        $validated['quarters'] ?? []
+                    );
 
-            $quarterStock =
-                $this->buildQuarterStock(
-                    $quarters,
-                    $validated['quarter_stock'] ?? [],
-                    null
-                );
+                $quarterStock =
+                    $this->buildQuarterStock(
+                        $quarters,
+                        $validated['quarter_stock'] ?? [],
+                        null
+                    );
 
-            $validated['quarters'] =
-                $quarters;
+                $validated['quarters'] =
+                    $quarters;
 
-            $validated['quarter_stock'] =
-                $quarterStock;
+                $validated['quarter_stock'] =
+                    $quarterStock;
 
-            $validated['currently_available'] =
-                $this->quarterStockCurrentTotal(
-                    $quarterStock
-                );
-
-            if ($validated['category'] !== 'supplies') {
+                $validated['currently_available'] =
+                    $this->quarterStockCurrentTotal(
+                        $quarterStock
+                    );
+            } else {
+                /* ICT has no Quarter. */
+                $validated['quarters'] = [];
+                $validated['quarter_stock'] = null;
                 $validated['fixed_value'] = null;
+                $validated['currently_available'] =
+                    (int) $validated['currently_available'];
             }
         }
 
@@ -223,7 +228,7 @@ class InventoryController extends Controller
                 'sometimes|nullable|integer|min:0',
 
             'quarters' =>
-                'sometimes|required|array|min:1',
+                'sometimes|nullable|array',
 
             'quarters.*' =>
                 'in:q1,q2,q3,q4',
@@ -508,11 +513,7 @@ class InventoryController extends Controller
                     (int) $validated['release_quantity'];
 
                 $usesQuarterStock =
-                    in_array(
-                        $category,
-                        ['supplies', 'ict'],
-                        true
-                    );
+                    $category === 'supplies';
 
                 if ($usesQuarterStock) {
                     $assignedQuarters =
@@ -733,7 +734,7 @@ class InventoryController extends Controller
 
             /*
              * Direct aggregate correction is legacy-only.
-             * Quarter-aware Supplies/ICT use quarter_stock instead.
+             * Quarter-aware Supplies use quarter_stock instead. ICT uses a global Count/Duration balance.
              */
             if (
                 !array_key_exists(
@@ -780,11 +781,7 @@ class InventoryController extends Controller
                     );
 
                 if (
-                    in_array(
-                        $targetCategory,
-                        ['supplies', 'ict'],
-                        true
-                    )
+                    $targetCategory === 'supplies'
                 ) {
                     $targetQuarters =
                         $this->normalizedQuarterList(
@@ -902,6 +899,8 @@ class InventoryController extends Controller
             } elseif ($finalCategory === 'ict') {
                 $item->location = null;
                 $item->fixed_value = null;
+                $item->quarters = [];
+                $item->quarter_stock = null;
                 $item->currently_available =
                     $item->currently_available !== null
                         ? (int) $item->currently_available
@@ -989,11 +988,7 @@ class InventoryController extends Controller
 
             if (
                 $isRelease
-                && in_array(
-                    $category,
-                    ['supplies', 'ict'],
-                    true
-                )
+                && $category === 'supplies'
             ) {
                 $releaseHistoryQuarters =
                     $this->normalizedQuarterList(
@@ -1660,16 +1655,16 @@ class InventoryController extends Controller
                     ),
 
             'quarters' =>
-                $isOtherItem
-                    ? []
-                    : $quarters,
+                $category === 'supplies'
+                    ? $quarters
+                    : [],
 
             'quarter_stock' =>
-                $isOtherItem
-                    ? []
-                    : $this->normalizedStoredQuarterStock(
+                $category === 'supplies'
+                    ? $this->normalizedStoredQuarterStock(
                         $item->quarter_stock
-                    ),
+                    )
+                    : [],
 
             'fixed_value' =>
                 $item->fixed_value !== null
@@ -1759,12 +1754,16 @@ class InventoryController extends Controller
             'location' => 'Location',
             'unit' => 'Unit',
             'inventory_year' => 'Inventory Year',
-            'quarters' => 'Quarter(s)',
-            'fixed_value' => 'Fixed Value',
-            'currently_available' =>
-                $currentAvailableLabel,
-            'remarks' => 'Remarks',
         ];
+
+        if ($historyCategory === 'supplies') {
+            $fields['quarters'] = 'Quarter(s)';
+            $fields['fixed_value'] = 'Fixed Value';
+        }
+
+        $fields['currently_available'] =
+            $currentAvailableLabel;
+        $fields['remarks'] = 'Remarks';
 
         $changes = [];
 
@@ -2520,7 +2519,10 @@ class InventoryController extends Controller
             $request
         );
 
-       
+        /*
+         * Delete related inventory history first so the item can be removed
+         * safely even when the foreign key is not configured with CASCADE.
+         */
         $inventoryItem->histories()->delete();
         $inventoryItem->delete();
 

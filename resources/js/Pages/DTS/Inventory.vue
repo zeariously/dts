@@ -33,6 +33,94 @@ const currentPage = ref(1)
 const perPage = 8
 
 
+const CUSTOM_UNIT_STORAGE_KEY =
+    'dts_inventory_custom_units_v1'
+
+const customUnitValues = ref({
+    supplies: [],
+    ict: [],
+})
+
+const addUnitEditorOpen = ref(false)
+const addUnitValue = ref('')
+const addUnitError = ref('')
+const normalizeCustomUnitValue = (value) => {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase()
+}
+
+const loadCustomUnits = () => {
+    try {
+        const stored =
+            localStorage.getItem(
+                CUSTOM_UNIT_STORAGE_KEY
+            )
+
+        if (!stored) {
+            return
+        }
+
+        const parsed = JSON.parse(stored)
+
+        customUnitValues.value = {
+            supplies: Array.isArray(
+                parsed?.supplies
+            )
+                ? parsed.supplies
+                    .map(
+                        normalizeCustomUnitValue
+                    )
+                    .filter(Boolean)
+                : [],
+
+            ict: Array.isArray(
+                parsed?.ict
+            )
+                ? parsed.ict
+                    .map(
+                        normalizeCustomUnitValue
+                    )
+                    .filter(Boolean)
+                : [],
+        }
+    } catch (error) {
+        customUnitValues.value = {
+            supplies: [],
+            ict: [],
+        }
+    }
+}
+
+const persistCustomUnits = () => {
+    try {
+        localStorage.setItem(
+            CUSTOM_UNIT_STORAGE_KEY,
+            JSON.stringify(
+                customUnitValues.value
+            )
+        )
+    } catch (error) {
+        // Optional browser persistence only.
+    }
+}
+
+onMounted(() => {
+    loadCustomUnits()
+})
+
+watch(
+    customUnitValues,
+    () => {
+        persistCustomUnits()
+    },
+    {
+        deep: true,
+    }
+)
+
+
 /*
 |--------------------------------------------------------------------------
 | ACCESSIBILITY PANEL
@@ -923,7 +1011,7 @@ const hasQuarterStock = (item) => {
             .trim()
             .toLowerCase()
 
-    if (!['supplies', 'ict'].includes(category)) {
+    if (category !== 'supplies') {
         return false
     }
 
@@ -1455,11 +1543,21 @@ const normalizeInventoryItem = (item) => {
                 ? Number(item.inventory_year)
                 : 2026,
         quarters:
-            normalizeQuarters(item.quarters),
+            String(item.category || '')
+                .trim()
+                .toLowerCase() === 'supplies'
+                    ? normalizeQuarters(
+                        item.quarters
+                    )
+                    : [],
         quarter_stock:
-            normalizeQuarterStock(
-                item.quarter_stock
-            ),
+            String(item.category || '')
+                .trim()
+                .toLowerCase() === 'supplies'
+                    ? normalizeQuarterStock(
+                        item.quarter_stock
+                    )
+                    : {},
         location:
             String(item.location ?? '').trim(),
         remarks:
@@ -1539,10 +1637,7 @@ const otherCategoryOptions = [
         value: 'furniture',
         label: 'Furniture',
     },
-    {
-        value: 'fixtures',
-        label: 'Fixtures',
-    },
+   
     {
         value: 'emergency_kits',
         label: 'Emergency Kits',
@@ -1712,20 +1807,284 @@ const suppliesUnitOptions = [
 ]
 
 const ictUnitOptions = [
+    { value: 'MONTH', label: 'Month (Subscription)' },
+    { value: 'YEAR', label: 'Year (Subscription)' },
     { value: 'UNIT', label: 'Unit' },
     { value: 'LOT', label: 'Lot' },
     { value: 'PAX', label: 'Pax' },
-    { value: 'MONTH', label: 'Month (Subscription)' },
-    { value: 'YEAR', label: 'Year (Subscription)' },
 ]
+
+const unitOptionLabel = (
+    value,
+    category
+) => {
+    const normalized =
+        normalizeCustomUnitValue(value)
+
+    const baseOptions =
+        category === 'ict'
+            ? ictUnitOptions
+            : suppliesUnitOptions
+
+    const existing =
+        baseOptions.find(
+            (option) =>
+                option.value === normalized
+        )
+
+    return existing?.label
+        ?? normalized
+}
+
+const inventoryUnitsForCategory = (
+    category
+) => {
+    return [
+        ...new Set(
+            (props.inventoryItems || [])
+                .filter(
+                    (item) =>
+                        String(
+                            item?.category || ''
+                        )
+                            .trim()
+                            .toLowerCase()
+                        === category
+                )
+                .map(
+                    (item) =>
+                        normalizeCustomUnitValue(
+                            item?.unit
+                        )
+                )
+                .filter(Boolean)
+        ),
+    ]
+}
+
+const mergedUnitOptions = (
+    category,
+    baseOptions
+) => {
+    const seen = new Set(
+        baseOptions.map(
+            (option) =>
+                option.value
+        )
+    )
+
+    const extras = [
+        ...(
+            customUnitValues.value[
+                category
+            ]
+            || []
+        ),
+        ...inventoryUnitsForCategory(
+            category
+        ),
+    ]
+        .map(
+            normalizeCustomUnitValue
+        )
+        .filter(Boolean)
+        .filter((value) => {
+            if (seen.has(value)) {
+                return false
+            }
+
+            seen.add(value)
+            return true
+        })
+        .sort((a, b) =>
+            a.localeCompare(
+                b,
+                undefined,
+                {
+                    sensitivity: 'base',
+                }
+            )
+        )
+
+    return [
+        ...baseOptions,
+        ...extras.map((value) => ({
+            value,
+            label:
+                unitOptionLabel(
+                    value,
+                    category
+                ),
+        })),
+    ]
+}
+
+const suppliesUnitOptionsWithCustom =
+    computed(() =>
+        mergedUnitOptions(
+            'supplies',
+            suppliesUnitOptions
+        )
+    )
+
+const ictUnitOptionsWithCustom =
+    computed(() =>
+        mergedUnitOptions(
+            'ict',
+            ictUnitOptions
+        )
+    )
 
 const unitOptions = computed(() => {
     if (activeTab.value === 'supplies') {
-        return suppliesUnitOptions
+        return (
+            suppliesUnitOptionsWithCustom
+                .value
+        )
     }
 
     if (activeTab.value === 'ict') {
-        return ictUnitOptions
+        return (
+            ictUnitOptionsWithCustom
+                .value
+        )
+    }
+
+    return []
+})
+
+const addCustomUnitToCategory = (
+    category,
+    rawValue
+) => {
+    const value =
+        normalizeCustomUnitValue(
+            rawValue
+        )
+
+    if (
+        !['supplies', 'ict'].includes(
+            category
+        )
+    ) {
+        return {
+            ok: false,
+            error:
+                'Custom units are only available for Supplies and ICT.',
+        }
+    }
+
+    if (!value) {
+        return {
+            ok: false,
+            error:
+                'Enter a unit name.',
+        }
+    }
+
+    if (value.length > 50) {
+        return {
+            ok: false,
+            error:
+                'Unit must not exceed 50 characters.',
+        }
+    }
+
+    const exists =
+        mergedUnitOptions(
+            category,
+            category === 'ict'
+                ? ictUnitOptions
+                : suppliesUnitOptions
+        )
+            .some(
+                (option) =>
+                    option.value === value
+            )
+
+    if (!exists) {
+        customUnitValues.value = {
+            ...customUnitValues.value,
+            [category]: [
+                ...(
+                    customUnitValues.value[
+                        category
+                    ]
+                    || []
+                ),
+                value,
+            ],
+        }
+    }
+
+    return {
+        ok: true,
+        value,
+    }
+}
+
+const saveToolbarCustomUnit = () => {
+    const result =
+        addCustomUnitToCategory(
+            activeTab.value,
+            addUnitValue.value
+        )
+
+    if (!result.ok) {
+        addUnitError.value =
+            result.error
+
+        return
+    }
+
+    unitFilter.value = 'all'
+
+    addUnitValue.value = ''
+    addUnitError.value = ''
+    addUnitEditorOpen.value = false
+}
+
+const saveAddCustomUnit = () => {
+    const result =
+        addCustomUnitToCategory(
+            activeTab.value,
+            addUnitValue.value
+        )
+
+    if (!result.ok) {
+        addUnitError.value =
+            result.error
+
+        return
+    }
+
+    newItemForm.value.unit =
+        result.value
+
+    addUnitValue.value = ''
+    addUnitError.value = ''
+    addUnitEditorOpen.value = false
+}
+
+const editUnitOptions = computed(() => {
+    if (
+        fullEditForm.value.category
+        === 'supplies'
+    ) {
+        return (
+            suppliesUnitOptionsWithCustom
+                .value
+        )
+    }
+
+    if (
+        fullEditForm.value.category
+        === 'ict'
+    ) {
+        return (
+            ictUnitOptionsWithCustom
+                .value
+        )
     }
 
     return []
@@ -1785,6 +2144,15 @@ const newItemQuantityReleased = computed(() => {
 })
 
 const inferredItemQuarters = (item) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    if (category !== 'supplies') {
+        return []
+    }
+
     return Array.isArray(item?.quarters)
         ? [
             ...new Set(
@@ -2060,7 +2428,10 @@ const addNewItem = () => {
                 'Select a valid year from 2026 onwards.'
         }
 
-        if (!quarters.length) {
+        if (
+            isSupplies
+            && !quarters.length
+        ) {
             addItemErrors.value.quarters =
                 'Select at least one applicable quarter.'
         }
@@ -2079,7 +2450,7 @@ const addNewItem = () => {
         }
     }
 
-    if (isSupplies || isIct) {
+    if (isSupplies) {
         quarters.forEach((quarter) => {
             const raw =
                 newItemForm.value
@@ -2104,9 +2475,27 @@ const addNewItem = () => {
         })
     }
 
+
+    if (isIct) {
+        if (
+            newItemForm.value.currently_available === ''
+            || newItemForm.value.currently_available === null
+            || newItemForm.value.currently_available === undefined
+            || !Number.isInteger(currentlyAvailable)
+            || currentlyAvailable < 0
+        ) {
+            addItemErrors.value.currently_available =
+                isIctMonthBased(unit)
+                    ? 'Enter a valid number of month(s).'
+                    : isIctYearBased(unit)
+                        ? 'Enter a valid number of year(s).'
+                        : 'Enter a valid count.'
+        }
+    }
+
     const quarterStockPayload = {}
 
-    if (isSupplies || isIct) {
+    if (isSupplies) {
         quarters.forEach((quarter) => {
             const current =
                 Number(
@@ -2197,18 +2586,21 @@ const addNewItem = () => {
                     newItemForm.value.currently_available
                 )
                 : null
+    } else if (isIct) {
+        payload.location = null
+        payload.unit = unit
+        payload.inventory_year = inventoryYear
+        payload.fixed_value = null
+        payload.currently_available =
+            currentlyAvailable
     } else {
+        payload.location = null
         payload.unit = unit
         payload.inventory_year = inventoryYear
         payload.quarters = quarters
-        payload.location = null
-        payload.fixed_value =
-            isSupplies
-                ? fixedValue
-                : null
+        payload.fixed_value = fixedValue
         payload.quarter_stock =
             quarterStockPayload
-
         payload.currently_available =
             aggregateQuarterCurrent
     }
@@ -2278,46 +2670,120 @@ const filteredItems = computed(() => {
         })
     }
 
-    return currentItems.value.filter((item) => {
-        const matchesYear =
-            Number(item.inventory_year)
-            === Number(yearFilter.value)
+    const filtered =
+        currentItems.value.filter((item) => {
+            const matchesYear =
+                Number(item.inventory_year)
+                === Number(yearFilter.value)
 
-        const matchesSearch =
-            !term
-            ||
-            String(item.item || '')
-                .toLowerCase()
-                .includes(term)
-            ||
-            String(item.unit || '')
-                .toLowerCase()
-                .includes(term)
-            ||
-            String(item.remarks || '')
-                .toLowerCase()
-                .includes(term)
+            const matchesSearch =
+                !term
+                ||
+                String(item.item || '')
+                    .toLowerCase()
+                    .includes(term)
+                ||
+                String(item.unit || '')
+                    .toLowerCase()
+                    .includes(term)
+                ||
+                String(item.remarks || '')
+                    .toLowerCase()
+                    .includes(term)
 
-        const matchesUnit =
-            unitFilter.value === 'all'
-            ||
-            item.unit === unitFilter.value
+            const matchesUnit =
+                unitFilter.value === 'all'
+                ||
+                item.unit === unitFilter.value
 
-        const matchesQuarter =
-            quarterFilter.value === 'all'
-            ||
-            inferredItemQuarters(item)
-                .includes(
-                    quarterFilter.value
+            const matchesQuarter =
+                activeTab.value !== 'supplies'
+                || quarterFilter.value === 'all'
+                || inferredItemQuarters(item)
+                    .includes(
+                        quarterFilter.value
+                    )
+
+            return (
+                matchesYear
+                && matchesSearch
+                && matchesUnit
+                && matchesQuarter
+            )
+        })
+
+    /*
+     * ICT ordering:
+     * Subscription items first (MONTH / YEAR),
+     * followed by normal ICT items.
+     */
+    if (activeTab.value === 'ict') {
+        return [...filtered].sort((a, b) => {
+            const aSubscription =
+                isIctSubscription(a)
+                    ? 0
+                    : 1
+
+            const bSubscription =
+                isIctSubscription(b)
+                    ? 0
+                    : 1
+
+            if (
+                aSubscription
+                !== bSubscription
+            ) {
+                return (
+                    aSubscription
+                    - bSubscription
                 )
+            }
 
-        return (
-            matchesYear
-            && matchesSearch
-            && matchesUnit
-            && matchesQuarter
-        )
-    })
+            /*
+             * MONTH before YEAR inside subscriptions.
+             */
+            const unitOrder = {
+                MONTH: 0,
+                YEAR: 1,
+                UNIT: 2,
+                LOT: 3,
+                PAX: 4,
+            }
+
+            const aUnit =
+                String(a.unit || '')
+                    .trim()
+                    .toUpperCase()
+
+            const bUnit =
+                String(b.unit || '')
+                    .trim()
+                    .toUpperCase()
+
+            const aOrder =
+                unitOrder[aUnit]
+                ?? 99
+
+            const bOrder =
+                unitOrder[bUnit]
+                ?? 99
+
+            if (aOrder !== bOrder) {
+                return aOrder - bOrder
+            }
+
+            return String(a.item || '')
+                .localeCompare(
+                    String(b.item || ''),
+                    undefined,
+                    {
+                        sensitivity: 'base',
+                    }
+                )
+        })
+    }
+
+    return filtered
 })
 
 
@@ -2409,12 +2875,14 @@ const unitStockSummary = computed(() => {
         })
 
     const unitOrder = new Map(
-        suppliesUnitOptions.map(
-            (unit, index) => [
-                unit.value,
-                index,
-            ]
-        )
+        suppliesUnitOptionsWithCustom
+            .value
+            .map(
+                (unit, index) => [
+                    unit.value,
+                    index,
+                ]
+            )
     )
 
     return [...groups.values()]
@@ -2971,7 +3439,7 @@ const currentAvailableValue = (
             .toLowerCase()
 
     if (
-        ['supplies', 'ict'].includes(category)
+        category === 'supplies'
         && hasQuarterStock(item)
     ) {
         return quarterStockValue(
@@ -2982,7 +3450,7 @@ const currentAvailableValue = (
     }
 
     if (
-        ['supplies', 'ict'].includes(category)
+        category === 'supplies'
         && !hasQuarterStock(item)
         && inferredItemQuarters(item).length > 1
         && selectedQuarter !== 'all'
@@ -3041,7 +3509,7 @@ const quantityReleasedValue = (
             .toLowerCase()
 
     if (
-        ['supplies', 'ict'].includes(category)
+        category === 'supplies'
         && hasQuarterStock(item)
     ) {
         return quarterStockValue(
@@ -3052,7 +3520,7 @@ const quantityReleasedValue = (
     }
 
     if (
-        ['supplies', 'ict'].includes(category)
+        category === 'supplies'
         && !hasQuarterStock(item)
         && inferredItemQuarters(item).length > 1
         && selectedQuarter !== 'all'
@@ -3487,7 +3955,10 @@ const saveFullEditItem = () => {
                 'Select a valid year from 2026 onwards.'
         }
 
-        if (!quarters.length) {
+        if (
+            isSupplies
+            && !quarters.length
+        ) {
             fullEditErrors.value.quarters =
                 'Select at least one applicable quarter.'
         }
@@ -3503,7 +3974,7 @@ const saveFullEditItem = () => {
         }
     }
 
-    if (isSupplies || isIct) {
+    if (isSupplies) {
         quarters.forEach((quarter) => {
             const raw =
                 fullEditForm.value
@@ -3528,9 +3999,25 @@ const saveFullEditItem = () => {
         })
     }
 
+
+    if (isIct) {
+        if (
+            !hasCurrent
+            || !Number.isInteger(currentValue)
+            || currentValue < 0
+        ) {
+            fullEditErrors.value.currently_available =
+                isIctMonthBased(unit)
+                    ? 'Enter a valid number of month(s).'
+                    : isIctYearBased(unit)
+                        ? 'Enter a valid number of year(s).'
+                        : 'Enter a valid count.'
+        }
+    }
+
     const quarterStockPayload = {}
 
-    if (isSupplies || isIct) {
+    if (isSupplies) {
         quarters.forEach((quarter) => {
             const existing =
                 fullEditForm.value
@@ -3620,18 +4107,21 @@ const saveFullEditItem = () => {
                     fullEditForm.value.currently_available
                 )
                 : null
+    } else if (isIct) {
+        payload.location = null
+        payload.unit = unit
+        payload.inventory_year = inventoryYear
+        payload.fixed_value = null
+        payload.currently_available =
+            currentValue
     } else {
         payload.location = null
         payload.unit = unit
         payload.inventory_year = inventoryYear
         payload.quarters = quarters
-        payload.fixed_value =
-            isSupplies
-                ? fixedValue
-                : null
+        payload.fixed_value = fixedValue
         payload.quarter_stock =
             quarterStockPayload
-
         payload.currently_available =
             aggregateQuarterCurrent
     }
@@ -3745,9 +4235,7 @@ const releaseActionLabel = computed(() => {
 })
 
 const releaseUsesQuarterStock = computed(() =>
-    ['supplies', 'ict'].includes(
-        releaseCategory.value
-    )
+    releaseCategory.value === 'supplies'
 )
 
 const releaseSelectedQuarter = computed(() => {
@@ -3767,9 +4255,7 @@ const isHistoricalQuarterView = (item) => {
             .toLowerCase()
 
     if (
-        !['supplies', 'ict'].includes(
-            category
-        )
+        category !== 'supplies'
         || quarterFilter.value === 'all'
     ) {
         return false
@@ -3893,6 +4379,7 @@ const openReleaseItemModal = (item) => {
             'ict',
             'furniture',
             'fixtures',
+            'emergency_kits',
             'token_giveaways',
         ].includes(category)
 
@@ -3908,7 +4395,7 @@ const openReleaseItemModal = (item) => {
         inferredItemQuarters(item)
 
     if (
-        ['supplies', 'ict'].includes(category)
+        category === 'supplies'
         && itemQuarters.length > 1
         && !hasQuarterStock(item)
     ) {
@@ -3920,9 +4407,7 @@ const openReleaseItemModal = (item) => {
     }
 
     if (
-        ['supplies', 'ict'].includes(
-            category
-        )
+        category === 'supplies'
         && isHistoricalQuarterView(item)
     ) {
         const latest =
@@ -3939,8 +4424,8 @@ const openReleaseItemModal = (item) => {
 
     /*
      * Every release is a NEW transaction.
-     * Supplies/ICT automatically deduct from the latest assigned
-     * quarter. There is no quarter selector.
+     * Supplies automatically deduct from the latest active quarter.
+     * ICT and Other Items use their global Count/Duration balance.
      */
     releaseItemForm.value = {
         releaseQuantity: '',
@@ -4860,7 +5345,6 @@ const generateInventoryReport = () => {
             <th>Item</th>
             <th>Unit</th>
             <th class="number">Count / Duration</th>
-            <th>Quarter(s)</th>
             <th>Remarks</th>
         </tr>
     `
@@ -4990,7 +5474,6 @@ const generateInventoryReport = () => {
                     <td class="item">${itemName}</td>
                     <td>${unit}</td>
                     <td class="number">${ictQuantityText}</td>
-                    <td>${quarters}</td>
                     <td class="remarks">${remarks}</td>
                 </tr>
             `
@@ -5035,42 +5518,72 @@ const generateInventoryReport = () => {
                     </div>
                 </section>
             `
-            : `
-                <section class="filters">
-                    <div class="filter">
-                        <span class="filter-label">Inventory Year</span>
-                        <span class="filter-value">
-                            ${escapeReportHtml(yearFilter.value)}
-                        </span>
-                    </div>
+            : activeTab.value === 'supplies'
+                ? `
+                    <section class="filters">
+                        <div class="filter">
+                            <span class="filter-label">Inventory Year</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(yearFilter.value)}
+                            </span>
+                        </div>
 
-                    <div class="filter">
-                        <span class="filter-label">Quarter</span>
-                        <span class="filter-value">
-                            ${escapeReportHtml(quarterLabel)}
-                        </span>
-                    </div>
+                        <div class="filter">
+                            <span class="filter-label">Quarter</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(quarterLabel)}
+                            </span>
+                        </div>
 
-                    <div class="filter">
-                        <span class="filter-label">Unit</span>
-                        <span class="filter-value">
-                            ${escapeReportHtml(unitLabel)}
-                        </span>
-                    </div>
+                        <div class="filter">
+                            <span class="filter-label">Unit</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(unitLabel)}
+                            </span>
+                        </div>
 
-                    <div class="filter">
-                        <span class="filter-label">Search</span>
-                        <span class="filter-value">${searchLabel}</span>
-                    </div>
+                        <div class="filter">
+                            <span class="filter-label">Search</span>
+                            <span class="filter-value">${searchLabel}</span>
+                        </div>
 
-                    <div class="filter">
-                        <span class="filter-label">Generated</span>
-                        <span class="filter-value">
-                            ${escapeReportHtml(generatedAt)}
-                        </span>
-                    </div>
-                </section>
-            `
+                        <div class="filter">
+                            <span class="filter-label">Generated</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(generatedAt)}
+                            </span>
+                        </div>
+                    </section>
+                `
+                : `
+                    <section class="filters">
+                        <div class="filter">
+                            <span class="filter-label">Inventory Year</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(yearFilter.value)}
+                            </span>
+                        </div>
+
+                        <div class="filter">
+                            <span class="filter-label">Unit</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(unitLabel)}
+                            </span>
+                        </div>
+
+                        <div class="filter">
+                            <span class="filter-label">Search</span>
+                            <span class="filter-value">${searchLabel}</span>
+                        </div>
+
+                        <div class="filter">
+                            <span class="filter-label">Generated</span>
+                            <span class="filter-value">
+                                ${escapeReportHtml(generatedAt)}
+                            </span>
+                        </div>
+                    </section>
+                `
 
     const reportHtml = `
 <!DOCTYPE html>
@@ -5622,7 +6135,7 @@ const generateInventoryReport = () => {
 
                                 <span
                                     v-if="
-                                        activeTab !== 'other'
+                                        activeTab === 'supplies'
                                         && quarterFilter !== 'all'
                                     "
                                     class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700"
@@ -5638,7 +6151,9 @@ const generateInventoryReport = () => {
                             :class="
                                 activeTab === 'other'
                                     ? 'xl:w-[520px] xl:grid-cols-1'
-                                    : 'xl:w-[960px] xl:grid-cols-[minmax(0,1fr)_120px_140px_150px]'
+                                    : activeTab === 'supplies'
+                                        ? 'xl:w-[1080px] xl:grid-cols-[minmax(260px,1fr)_110px_140px_120px_150px]'
+                                        : 'xl:w-[900px] xl:grid-cols-[minmax(260px,1fr)_110px_140px_120px]'
                             "
                         >
                             <!-- SEARCH -->
@@ -5686,9 +6201,11 @@ const generateInventoryReport = () => {
                             <select
                                 v-if="activeTab !== 'other'"
                                 v-model="unitFilter"
-                                class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
-                                <option value="all">All units</option>
+                                <option value="all">
+                                    All units
+                                </option>
 
                                 <option
                                     v-for="unit in unitOptions"
@@ -5699,10 +6216,12 @@ const generateInventoryReport = () => {
                                 </option>
                             </select>
 
+                            
+
                             <select
-                                v-if="activeTab !== 'other'"
+                                v-if="activeTab === 'supplies'"
                                 v-model="quarterFilter"
-                                class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                             >
                                 <option
                                     v-for="quarter in quarterOptions"
@@ -5712,7 +6231,26 @@ const generateInventoryReport = () => {
                                     {{ quarter.label }}
                                 </option>
                             </select>
+                            <button
+                                v-if="
+                                    canManageInventory
+                                    && ['supplies', 'ict'].includes(activeTab)
+                                "
+                                type="button"
+                                class="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-blue-500 px-4 text-xs font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                                @click="
+                                    addUnitEditorOpen = true;
+                                    addUnitError = '';
+                                    addUnitValue = ''
+                                "
+                            >
+                                <span class="text-base leading-none">
+                                    +
+                                </span>
+                                <span>Add Unit</span>
+                            </button>
                         </div>
+
                     </div>
                 </div>
 
@@ -6188,33 +6726,9 @@ const generateInventoryReport = () => {
                                         {{ item.item }}
                                     </p>
 
-                                    <div
-                                        v-if="quarterBadges(item).length"
-                                        class="mt-2 flex flex-wrap gap-1"
-                                    >
-                                        <span
-                                            v-for="quarter in quarterBadges(item)"
-                                            :key="`ict-item-quarter-${item.id}-${quarter}`"
-                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
-                                        >
-                                            {{ quarter }}
-                                        </span>
-                                    </div>
 
-                                    <div
-                                        v-if="visibleQuarterBalanceEntries(item).length"
-                                        class="mt-2 flex flex-wrap gap-1"
-                                    >
-                                        <span
-                                            v-for="entry in visibleQuarterBalanceEntries(item)"
-                                            :key="`ict-item-balance-${item.id}-${entry.quarter}`"
-                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[8px] font-black text-emerald-700"
-                                        >
-                                            {{ entry.quarter.toUpperCase() }}
-                                            · Added: {{ entry.added }}
-                                            · Remaining: {{ entry.current }}
-                                        </span>
-                                    </div>
+
+
                                 </td>
 
                                 <td class="px-3 py-4 text-center align-middle">
@@ -6795,33 +7309,9 @@ const generateInventoryReport = () => {
                                         {{ item.item }}
                                     </p>
 
-                                    <div
-                                        v-if="quarterBadges(item).length"
-                                        class="mt-2 flex flex-wrap gap-1"
-                                    >
-                                        <span
-                                            v-for="quarter in quarterBadges(item)"
-                                            :key="`mobile-ict-item-quarter-${item.id}-${quarter}`"
-                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
-                                        >
-                                            {{ quarter }}
-                                        </span>
-                                    </div>
 
-                                    <div
-                                        v-if="visibleQuarterBalanceEntries(item).length"
-                                        class="mt-2 flex flex-wrap gap-1"
-                                    >
-                                        <span
-                                            v-for="entry in visibleQuarterBalanceEntries(item)"
-                                            :key="`mobile-ict-item-balance-${item.id}-${entry.quarter}`"
-                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700"
-                                        >
-                                            {{ entry.quarter.toUpperCase() }}
-                                            · Added: {{ entry.added }}
-                                            · Remaining: {{ entry.current }}
-                                        </span>
-                                    </div>
+
+
                                 </div>
 
                                 <span
@@ -7095,6 +7585,122 @@ const generateInventoryReport = () => {
         </main>
 
 
+        <!-- ADD UNIT MODAL -->
+        <div
+            v-if="addUnitEditorOpen"
+            class="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+            @click.self="
+                addUnitEditorOpen = false;
+                addUnitValue = '';
+                addUnitError = ''
+            "
+        >
+            <div
+                class="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            >
+                <div
+                    class="flex items-center justify-between border-b border-slate-100 px-5 py-4"
+                >
+                    <div>
+                        <p
+                            class="text-[10px] font-black uppercase tracking-[0.14em] text-blue-600"
+                        >
+                            Inventory Unit
+                        </p>
+
+                        <h3
+                            class="mt-1 text-lg font-black text-slate-900"
+                        >
+                            Add Unit ·
+                            {{
+                                activeTab === 'supplies'
+                                    ? 'Supplies'
+                                    : 'ICT'
+                            }}
+                        </h3>
+                    </div>
+
+                    <button
+                        type="button"
+                        class="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg font-black text-slate-500 transition hover:bg-slate-50"
+                        @click="
+                            addUnitEditorOpen = false;
+                            addUnitValue = '';
+                            addUnitError = ''
+                        "
+                    >
+                        ×
+                    </button>
+                </div>
+
+                <div class="p-5">
+                    <label
+                        class="mb-2 block text-sm font-black text-slate-800"
+                    >
+                        Unit Name
+                    </label>
+
+                    <input
+                        v-model="addUnitValue"
+                        type="text"
+                        maxlength="50"
+                        autofocus
+                        placeholder="Example: BOTTLE, LICENSE, SET"
+                        class="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold uppercase text-slate-800 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        @keyup.enter.prevent="
+                            saveToolbarCustomUnit
+                        "
+                    />
+
+                    <p
+                        v-if="addUnitError"
+                        class="mt-2 text-xs font-bold text-rose-600"
+                    >
+                        {{ addUnitError }}
+                    </p>
+
+                    <p
+                        class="mt-3 text-xs font-semibold leading-5 text-slate-500"
+                    >
+                        The new unit will automatically appear in the
+                        Unit dropdown for
+                        {{
+                            activeTab === 'supplies'
+                                ? 'Supplies'
+                                : 'ICT'
+                        }}.
+                    </p>
+                </div>
+
+                <div
+                    class="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4"
+                >
+                    <button
+                        type="button"
+                        class="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-600 transition hover:bg-slate-100"
+                        @click="
+                            addUnitEditorOpen = false;
+                            addUnitValue = '';
+                            addUnitError = ''
+                        "
+                    >
+                        Cancel
+                    </button>
+
+                    <button
+                        type="button"
+                        class="h-10 rounded-xl bg-blue-600 px-5 text-xs font-black text-white transition hover:bg-blue-700"
+                        @click="
+                            saveToolbarCustomUnit
+                        "
+                    >
+                        Save Unit
+                    </button>
+                </div>
+            </div>
+        </div>
+
+
         <!-- ADD ITEM MODAL -->
         <div
             v-if="canManageInventory && showAddItemModal"
@@ -7347,6 +7953,47 @@ const generateInventoryReport = () => {
 
 
 
+                        <!-- ICT COUNT / SUBSCRIPTION DURATION -->
+                        <div v-if="activeTab === 'ict'">
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                {{
+                                    isIctMonthBased(newItemForm.unit)
+                                        ? 'Subscription Duration (Month/s)'
+                                        : isIctYearBased(newItemForm.unit)
+                                            ? 'Subscription Duration (Year/s)'
+                                            : 'Count'
+                                }}
+                            </label>
+
+                            <input
+                                v-model.number="newItemForm.currently_available"
+                                type="number"
+                                min="0"
+                                step="1"
+                                :placeholder="
+                                    isIctMonthBased(newItemForm.unit)
+                                        ? 'Example: 12 months'
+                                        : isIctYearBased(newItemForm.unit)
+                                            ? 'Example: 1 year'
+                                            : 'Enter count'
+                                "
+                                class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-black tabular-nums text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                :class="
+                                    addItemErrors.currently_available
+                                        ? 'border-rose-400'
+                                        : 'border-slate-200 focus:border-blue-400'
+                                "
+                            />
+
+                            <p
+                                v-if="addItemErrors.currently_available"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.currently_available }}
+                            </p>
+                        </div>
+
+
                         <!-- INVENTORY YEAR -->
                         <div v-if="activeTab !== 'other'">
                             <label
@@ -7431,7 +8078,7 @@ const generateInventoryReport = () => {
 
 
                     <!-- QUARTERS -->
-                    <div v-if="activeTab !== 'other'">
+                    <div v-if="activeTab === 'supplies'">
                         <div
                             class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
                         >
@@ -7531,7 +8178,7 @@ const generateInventoryReport = () => {
 
                         <div
                             v-if="
-                                ['supplies', 'ict'].includes(activeTab)
+                                activeTab === 'supplies'
                                 && newItemForm.quarters.length
                             "
                             class="mt-4 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
@@ -7555,9 +8202,7 @@ const generateInventoryReport = () => {
                                         {{ quarter.toUpperCase() }}
                                         ·
                                         {{
-                                            activeTab === 'ict'
-                                                ? `New ${ictQuantityLabel(newItemForm.unit)}`
-                                                : 'New Quantity'
+                                            'New Quantity'
                                         }}
                                     </label>
 
@@ -7724,7 +8369,6 @@ const generateInventoryReport = () => {
                             <option value="supplies">Supplies</option>
                             <option value="ict">ICT</option>
                             <option value="furniture">Other Items - Furniture</option>
-                            <option value="fixtures">Other Items - Fixtures</option>
                             <option value="emergency_kits">Other Items - Emergency Kits</option>
                             <option value="token_giveaways">Other Items - Token and Giveaways</option>
                         </select>
@@ -7796,33 +8440,69 @@ const generateInventoryReport = () => {
                     <div
                         v-if="!otherCategoryValues.includes(fullEditForm.category)"
                     >
-                        <label class="mb-2 block text-sm font-black text-slate-800">Unit of Measure</label>
+                        <label
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Unit of Measure
+                        </label>
 
                         <select
-                            v-if="fullEditForm.category === 'ict'"
                             v-model="fullEditForm.unit"
                             class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                         >
                             <option
-                                v-for="unitOption in ictUnitOptions"
-                                :key="`edit-ict-${unitOption.value}`"
-                                :value="unitOption.value"
+                                v-for="
+                                    unitOption in editUnitOptions
+                                "
+                                :key="
+                                    `edit-${fullEditForm.category}-${unitOption.value}`
+                                "
+                                :value="
+                                    unitOption.value
+                                "
                             >
                                 {{ unitOption.label }}
                             </option>
                         </select>
 
-                        <input
-                            v-else
-                            v-model="fullEditForm.unit"
-                            type="text"
-                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold uppercase text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                        />
-
-                        <p v-if="fullEditErrors.unit" class="mt-2 text-xs font-bold text-rose-600">{{ fullEditErrors.unit }}</p>
+                        <p
+                            v-if="fullEditErrors.unit"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ fullEditErrors.unit }}
+                        </p>
                     </div>
 
 
+
+                    <div
+                        v-if="fullEditForm.category === 'ict'"
+                    >
+                        <label class="mb-2 block text-sm font-black text-slate-800">
+                            {{
+                                isIctMonthBased(fullEditForm.unit)
+                                    ? 'Subscription Duration (Month/s)'
+                                    : isIctYearBased(fullEditForm.unit)
+                                        ? 'Subscription Duration (Year/s)'
+                                        : 'Count'
+                            }}
+                        </label>
+
+                        <input
+                            v-model.number="fullEditForm.currently_available"
+                            type="number"
+                            min="0"
+                            step="1"
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+
+                        <p
+                            v-if="fullEditErrors.currently_available"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ fullEditErrors.currently_available }}
+                        </p>
+                    </div>
 
                     <template v-if="fullEditForm.category === 'supplies'">
                         <div class="sm:col-span-2">
@@ -7841,7 +8521,7 @@ const generateInventoryReport = () => {
                     </template>
 
                     <div
-                        v-if="!otherCategoryValues.includes(fullEditForm.category)"
+                        v-if="fullEditForm.category === 'supplies'"
                         class="sm:col-span-2"
                     >
                         <div class="mb-2 flex items-center justify-between gap-3">
@@ -7877,9 +8557,7 @@ const generateInventoryReport = () => {
 
                     <div
                         v-if="
-                            ['supplies', 'ict'].includes(
-                                fullEditForm.category
-                            )
+                            fullEditForm.category === 'supplies'
                             && fullEditForm.quarters.length
                         "
                         class="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
@@ -7915,14 +8593,10 @@ const generateInventoryReport = () => {
                                     {{
                                         isEditQuarterNew(quarter)
                                             ? (
-                                                fullEditForm.category === 'ict'
-                                                    ? `New ${ictQuantityLabel(fullEditForm.unit)}`
-                                                    : 'New Quantity to Add'
+                                                'New Quantity to Add'
                                             )
                                             : (
-                                                fullEditForm.category === 'ict'
-                                                    ? `${ictQuantityLabel(fullEditForm.unit)} Remaining`
-                                                    : 'Remaining Balance'
+                                                'Remaining Balance'
                                             )
                                     }}
                                 </label>
