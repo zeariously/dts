@@ -29,11 +29,10 @@ class InventoryController extends Controller
                     CASE
                         WHEN LOWER(TRIM(category)) = 'supplies' THEN 1
                         WHEN LOWER(TRIM(category)) = 'ict' THEN 2
-                        WHEN LOWER(TRIM(category)) = 'furniture' THEN 3
-                        WHEN LOWER(TRIM(category)) = 'fixtures' THEN 4
-                        WHEN LOWER(TRIM(category)) = 'emergency_kits' THEN 5
-                        WHEN LOWER(TRIM(category)) = 'token_giveaways' THEN 6
-                        ELSE 7
+                        WHEN LOWER(TRIM(category)) IN ('furniture', 'fixtures') THEN 3
+                        WHEN LOWER(TRIM(category)) = 'emergency_kits' THEN 4
+                        WHEN LOWER(TRIM(category)) = 'token_giveaways' THEN 5
+                        ELSE 6
                     END
                 ")
                 ->orderBy('item')
@@ -58,7 +57,7 @@ class InventoryController extends Controller
      * - Release and History are supported for ICT changes.
      *
      * OTHER ITEMS
-     * - Furniture / Fixtures / Emergency Kits / Token and Giveaways:
+     * - Furniture/Fixtures / Emergency Kits / Token and Giveaways:
      *   Item, Count (stored in currently_available), Location, Remarks.
      * - All Other Items use Count, Release, and History.
      */
@@ -71,6 +70,7 @@ class InventoryController extends Controller
         $validated = $request->validate([
             'category' => 'required|in:supplies,ict,furniture,fixtures,emergency_kits,token_giveaways',
             'item' => 'required|string|max:255',
+            'description' => 'nullable|string|max:1000',
             'location' =>
                 'required_if:category,furniture,fixtures,emergency_kits,token_giveaways|nullable|string|max:255',
             'unit' =>
@@ -80,6 +80,11 @@ class InventoryController extends Controller
             'fixed_value' => 'nullable|integer|min:0',
             'currently_available' =>
                 'required_if:category,ict,furniture,fixtures,emergency_kits,token_giveaways|nullable|integer|min:0',
+            'ict_assets' => 'nullable|array',
+            'ict_assets.*' => 'array',
+            'ict_assets.*.description' => 'nullable|string|max:255',
+            'ict_assets.*.property_number' => 'nullable|string|max:100',
+            'ict_assets.*.current_user' => 'nullable|string|max:255',
             'quarters' =>
                 'required_if:category,supplies|nullable|array|min:1',
             'quarters.*' => 'in:q1,q2,q3,q4',
@@ -95,11 +100,21 @@ class InventoryController extends Controller
         $validated['category'] =
             strtolower(trim($validated['category']));
 
+        /*
+         * Description belongs to individual physical assets in ict_assets.
+         */
+        $validated['description'] = null;
+
         $otherCategories = [
             'furniture',
             'fixtures',
             'emergency_kits',
             'token_giveaways',
+        ];
+
+        $propertyTrackedOtherCategories = [
+            'furniture',
+            'fixtures',
         ];
 
         $isOtherItem =
@@ -133,6 +148,20 @@ class InventoryController extends Controller
 
             $validated['fixed_value'] = null;
             $validated['quarter_stock'] = null;
+
+            $validated['ict_assets'] =
+                in_array(
+                    $validated['category'],
+                    $propertyTrackedOtherCategories,
+                    true
+                )
+                    ? $this->normalizedIctAssets(
+                        $validated['ict_assets'] ?? [],
+                        (int) $validated['currently_available'],
+                        true,
+                        true
+                    )
+                    : null;
         } else {
             $validated['location'] = null;
 
@@ -157,18 +186,37 @@ class InventoryController extends Controller
 
                 $validated['quarter_stock'] =
                     $quarterStock;
+                $validated['ict_assets'] = null;
 
                 $validated['currently_available'] =
                     $this->quarterStockCurrentTotal(
                         $quarterStock
                     );
             } else {
-                /* ICT has no Quarter. */
+                /*
+                 * ICT keeps a real Item Name, just like Supplies.
+                 * Unit of Measure remains separate so MONTH/YEAR
+                 * subscriptions can still use duration tracking.
+                 */
                 $validated['quarters'] = [];
                 $validated['quarter_stock'] = null;
                 $validated['fixed_value'] = null;
                 $validated['currently_available'] =
                     (int) $validated['currently_available'];
+
+                $validated['ict_assets'] =
+                    in_array(
+                        $validated['unit'],
+                        ['MONTH', 'YEAR'],
+                        true
+                    )
+                        ? null
+                        : $this->normalizedIctAssets(
+                            $validated['ict_assets'] ?? [],
+                            (int) $validated['currently_available'],
+                            true,
+                            true
+                        );
             }
         }
 
@@ -203,6 +251,9 @@ class InventoryController extends Controller
             'release_destination' =>
                 'sometimes|nullable|string|max:255',
 
+            'release_property_number' =>
+                'sometimes|nullable|string|max:100',
+
             'release_quarter' =>
                 'sometimes|nullable|in:q1,q2,q3,q4',
 
@@ -211,6 +262,9 @@ class InventoryController extends Controller
 
             'item' =>
                 'sometimes|required|string|max:255',
+
+            'description' =>
+                'sometimes|nullable|string|max:1000',
 
             'location' =>
                 'sometimes|nullable|string|max:255',
@@ -226,6 +280,12 @@ class InventoryController extends Controller
 
             'currently_available' =>
                 'sometimes|nullable|integer|min:0',
+
+            'ict_assets' => 'sometimes|nullable|array',
+            'ict_assets.*' => 'array',
+            'ict_assets.*.description' => 'nullable|string|max:255',
+            'ict_assets.*.property_number' => 'nullable|string|max:100',
+            'ict_assets.*.current_user' => 'nullable|string|max:255',
 
             'quarters' =>
                 'sometimes|nullable|array',
@@ -333,6 +393,16 @@ class InventoryController extends Controller
                     ? trim(
                         (string) (
                             $validated['release_destination']
+                            ?? ''
+                        )
+                    )
+                    : '';
+
+            $releasePropertyNumber =
+                $isRelease
+                    ? trim(
+                        (string) (
+                            $validated['release_property_number']
                             ?? ''
                         )
                     )
@@ -668,30 +738,100 @@ class InventoryController extends Controller
                             );
                     }
                 } else {
-                    if ($oldCurrent === null) {
-                        throw ValidationException::withMessages([
-                            'release_quantity' =>
-                                'Available quantity is not configured for this item.',
-                        ]);
+                    $isPropertyTrackedAsset =
+                        (
+                            $category === 'ict'
+                            && !in_array(
+                                strtoupper(trim((string) $item->unit)),
+                                ['MONTH', 'YEAR'],
+                                true
+                            )
+                        )
+                        || in_array(
+                            $category,
+                            ['furniture', 'fixtures'],
+                            true
+                        );
+
+                    if ($isPropertyTrackedAsset) {
+                        if ($releaseQuantity !== 1) {
+                            throw ValidationException::withMessages([
+                                'release_quantity' =>
+                                    'Property-tracked items are released one Property Number at a time.',
+                            ]);
+                        }
+
+                        if ($releasePropertyNumber === '') {
+                            throw ValidationException::withMessages([
+                                'release_property_number' =>
+                                    'Select an available Property Number.',
+                            ]);
+                        }
+
+                        $assets = $this->normalizedIctAssets(
+                            $item->ict_assets ?? []
+                        );
+
+                        $matchedIndex = null;
+
+                        foreach ($assets as $index => $asset) {
+                            if (
+                                mb_strtolower(trim((string) ($asset['property_number'] ?? '')))
+                                === mb_strtolower($releasePropertyNumber)
+                            ) {
+                                $matchedIndex = $index;
+                                break;
+                            }
+                        }
+
+                        if ($matchedIndex === null) {
+                            throw ValidationException::withMessages([
+                                'release_property_number' =>
+                                    'The selected Property Number does not belong to this item.',
+                            ]);
+                        }
+
+                        if (
+                            trim((string) ($assets[$matchedIndex]['current_user'] ?? '')) !== ''
+                        ) {
+                            throw ValidationException::withMessages([
+                                'release_property_number' =>
+                                    'The selected Property Number is no longer available.',
+                            ]);
+                        }
+
+                        $assets[$matchedIndex]['current_user'] =
+                            $releaseDestination;
+
+                        $item->ict_assets = $assets;
+
+                        /*
+                         * Count remains the total physical asset count.
+                         * Available is derived from blank Current User rows.
+                         */
+                        $item->tracked_released =
+                            $oldTrackedReleased + 1;
+                    } else {
+                        if ($oldCurrent === null) {
+                            throw ValidationException::withMessages([
+                                'release_quantity' =>
+                                    'Available quantity is not configured for this item.',
+                            ]);
+                        }
+
+                        if ($releaseQuantity > $oldCurrent) {
+                            throw ValidationException::withMessages([
+                                'release_quantity' =>
+                                    "Only {$oldCurrent} available.",
+                            ]);
+                        }
+
+                        $item->currently_available =
+                            $oldCurrent - $releaseQuantity;
+
+                        $item->tracked_released =
+                            $oldTrackedReleased + $releaseQuantity;
                     }
-
-                    if (
-                        $releaseQuantity
-                        > $oldCurrent
-                    ) {
-                        throw ValidationException::withMessages([
-                            'release_quantity' =>
-                                "Only {$oldCurrent} available.",
-                        ]);
-                    }
-
-                    $item->currently_available =
-                        $oldCurrent
-                        - $releaseQuantity;
-
-                    $item->tracked_released =
-                        $oldTrackedReleased
-                        + $releaseQuantity;
                 }
             }
 
@@ -710,6 +850,24 @@ class InventoryController extends Controller
                     trim($validated['item']);
             }
 
+            if (
+                !$isRelease
+                && array_key_exists(
+                    'description',
+                    $validated
+                )
+            ) {
+                $item->description =
+                    $validated['description'] !== null
+                        ? (
+                            trim(
+                                (string) $validated['description']
+                            )
+                            ?: null
+                        )
+                        : null;
+            }
+
             if (array_key_exists('location', $validated)) {
                 $item->location =
                     $validated['location'] !== null
@@ -725,6 +883,47 @@ class InventoryController extends Controller
             if (array_key_exists('inventory_year', $validated)) {
                 $item->inventory_year =
                     (int) $validated['inventory_year'];
+            }
+
+            if (
+                !$isRelease
+                && array_key_exists(
+                    'ict_assets',
+                    $validated
+                )
+            ) {
+                $assetCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $validated['category']
+                                ?? $item->category
+                                ?? ''
+                            )
+                        )
+                    );
+
+                $item->ict_assets =
+                    $this->normalizedIctAssets(
+                        $validated['ict_assets'] ?? [],
+                        (
+                            array_key_exists(
+                                'currently_available',
+                                $validated
+                            )
+                                ? (int) $validated['currently_available']
+                                : (int) ($item->currently_available ?? 0)
+                        ),
+                        true,
+                        (
+                            $assetCategory === 'ict'
+                            || in_array(
+                                $assetCategory,
+                                ['furniture', 'fixtures'],
+                                true
+                            )
+                        )
+                    );
             }
 
             if (array_key_exists('fixed_value', $validated)) {
@@ -878,6 +1077,8 @@ class InventoryController extends Controller
              * intentionally hidden from the Other Items UI.
              */
             if ($finalIsOther) {
+                $item->description = null;
+
                 $item->currently_available =
                     (int) ($item->currently_available ?? 0);
 
@@ -894,21 +1095,60 @@ class InventoryController extends Controller
                 $item->quarter_stock = null;
                 $item->fixed_value = null;
 
+                $item->ict_assets =
+                    in_array(
+                        $finalCategory,
+                        ['furniture', 'fixtures'],
+                        true
+                    )
+                        ? $this->normalizedIctAssets(
+                            $item->ict_assets ?? [],
+                            (int) $item->currently_available,
+                            true,
+                            true
+                        )
+                        : null;
+
                 $item->tracked_released =
                     (int) ($item->tracked_released ?? 0);
             } elseif ($finalCategory === 'ict') {
+                $item->description = null;
                 $item->location = null;
                 $item->fixed_value = null;
                 $item->quarters = [];
                 $item->quarter_stock = null;
+
+                /*
+                 * Keep ICT Item Name and Unit of Measure separate.
+                 */
+                $item->item =
+                    trim(
+                        (string) $item->item
+                    );
+
                 $item->currently_available =
                     $item->currently_available !== null
                         ? (int) $item->currently_available
                         : 0;
+                $item->ict_assets =
+                    in_array(
+                        strtoupper(trim((string) $item->unit)),
+                        ['MONTH', 'YEAR'],
+                        true
+                    )
+                        ? null
+                        : $this->normalizedIctAssets(
+                            $item->ict_assets ?? [],
+                            (int) $item->currently_available,
+                            true,
+                            true
+                        );
                 $item->tracked_released =
                     (int) ($item->tracked_released ?? 0);
             } else {
+                $item->description = null;
                 $item->location = null;
+                $item->ict_assets = null;
             }
 
             $newCurrent =
@@ -984,6 +1224,19 @@ class InventoryController extends Controller
             ) {
                 $historyNewData['release_destination'] =
                     $releaseDestination;
+            }
+
+            if (
+                $isRelease
+                && in_array(
+                    $category,
+                    ['ict', 'furniture', 'fixtures'],
+                    true
+                )
+                && $releasePropertyNumber !== ''
+            ) {
+                $historyNewData['release_property_number'] =
+                    $releasePropertyNumber;
             }
 
             if (
@@ -1256,6 +1509,35 @@ class InventoryController extends Controller
                     ?? null;
 
                 /*
+                 * Resolve category/unit before any release-history logic.
+                 * Property-based ICT and Furniture/Fixtures releases need
+                 * these values before building their synthetic changes.
+                 */
+                $historyCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $newData['category']
+                                ?? $oldData['category']
+                                ?? $inventoryItem->category
+                                ?? ''
+                            )
+                        )
+                    );
+
+                $historyUnit =
+                    strtoupper(
+                        trim(
+                            (string) (
+                                $newData['unit']
+                                ?? $oldData['unit']
+                                ?? $inventoryItem->unit
+                                ?? ''
+                            )
+                        )
+                    );
+
+                /*
                  * When a quarter is newly activated, show the exact
                  * quantity entered by the user instead of only showing
                  * the resulting aggregate Currently Available value.
@@ -1348,34 +1630,58 @@ class InventoryController extends Controller
                  * field, so expose the exact released quantity as a
                  * synthetic history change.
                  */
+                $historyReleasePropertyNumber =
+                    trim(
+                        (string) (
+                            $newData['release_property_number']
+                            ?? ''
+                        )
+                    );
+
                 if (
                     $action === 'release'
+                    && in_array(
+                        $historyCategory,
+                        ['ict', 'furniture', 'fixtures'],
+                        true
+                    )
+                    && $historyReleasePropertyNumber !== ''
+                ) {
+                    $changes = array_values(
+                        array_filter(
+                            $changes,
+                            fn ($change) =>
+                                ($change['field'] ?? '') !== 'ict_assets'
+                        )
+                    );
+
+                    array_unshift(
+                        $changes,
+                        [
+                            'field' => 'release_quantity',
+                            'label' => 'Quantity Released',
+                            'old' => null,
+                            'new' => 1,
+                            'single' => true,
+                        ]
+                    );
+
+                    $changes[] = [
+                        'field' => 'release_property_number',
+                        'label' => 'Property Number',
+                        'old' => null,
+                        'new' => $historyReleasePropertyNumber,
+                        'single' => true,
+                    ];
+                }
+
+                if (
+                    $action === 'release'
+                    && $historyReleasePropertyNumber === ''
                     && $oldCurrent !== null
                     && $newCurrent !== null
                     && (int) $oldCurrent > (int) $newCurrent
                 ) {
-                    $historyCategory =
-                        strtolower(
-                            trim(
-                                (string) (
-                                    $newData['category']
-                                    ?? $oldData['category']
-                                    ?? ''
-                                )
-                            )
-                        );
-
-                    $historyUnit =
-                        strtoupper(
-                            trim(
-                                (string) (
-                                    $newData['unit']
-                                    ?? $oldData['unit']
-                                    ?? ''
-                                )
-                            )
-                        );
-
                     $releaseLabel =
                         $historyCategory === 'ict'
                             && $historyUnit === 'MONTH'
@@ -1423,7 +1729,16 @@ class InventoryController extends Controller
                             'release_destination',
 
                         'label' =>
-                            'Released To / Destination',
+                            (
+                                in_array(
+                                    $historyCategory,
+                                    ['ict', 'furniture', 'fixtures'],
+                                    true
+                                )
+                                && $historyReleasePropertyNumber !== ''
+                            )
+                                ? 'Current User / Released To'
+                                : 'Released To / Destination',
 
                         'old' =>
                             null,
@@ -1629,6 +1944,8 @@ class InventoryController extends Controller
             'item' =>
                 trim((string) $item->item),
 
+            'description' => null,
+
             'location' =>
                 $isOtherItem
                     ? (
@@ -1675,6 +1992,17 @@ class InventoryController extends Controller
                 $item->currently_available !== null
                     ? (int) $item->currently_available
                     : null,
+
+            'ict_assets' =>
+                in_array(
+                    $category,
+                    ['ict', 'furniture', 'fixtures'],
+                    true
+                )
+                    ? $this->normalizedIctAssets(
+                        $item->ict_assets ?? []
+                    )
+                    : [],
 
             'remarks' =>
                 $item->remarks !== null
@@ -1750,11 +2078,25 @@ class InventoryController extends Controller
 
         $fields = [
             'category' => 'Category',
-            'item' => 'Item Name',
-            'location' => 'Location',
-            'unit' => 'Unit',
-            'inventory_year' => 'Inventory Year',
         ];
+
+        if ($historyCategory === 'ict') {
+            $fields['item'] =
+                'Item Name';
+            $fields['unit'] =
+                'Unit of Measure';
+            $fields['inventory_year'] =
+                'Inventory Year';
+        } else {
+            $fields['item'] =
+                'Item Name';
+            $fields['location'] =
+                'Location';
+            $fields['unit'] =
+                'Unit';
+            $fields['inventory_year'] =
+                'Inventory Year';
+        }
 
         if ($historyCategory === 'supplies') {
             $fields['quarters'] = 'Quarter(s)';
@@ -1763,6 +2105,18 @@ class InventoryController extends Controller
 
         $fields['currently_available'] =
             $currentAvailableLabel;
+
+        if (
+            in_array(
+                $historyCategory,
+                ['ict', 'furniture', 'fixtures'],
+                true
+            )
+        ) {
+            $fields['ict_assets'] =
+                'Property Number / Current User';
+        }
+
         $fields['remarks'] = 'Remarks';
 
         $changes = [];
@@ -1927,6 +2281,143 @@ class InventoryController extends Controller
         return !empty($assigned)
             ? $assigned[0]
             : null;
+    }
+
+    /**
+     * Normalize optional ICT property details.
+     *
+     * Current User is optional. If a Current User is supplied,
+     * a Property Number is required so the assignment is identifiable.
+     */
+    private function normalizedIctAssets(
+        mixed $assets,
+        ?int $expectedCount = null,
+        bool $requirePropertyNumbers = false,
+        bool $requireDescriptions = false
+    ): array {
+        $rows =
+            is_array($assets)
+                ? array_values($assets)
+                : [];
+
+        if (
+            $expectedCount !== null
+            && count($rows) !== $expectedCount
+        ) {
+            throw ValidationException::withMessages([
+                'ict_assets' =>
+                    'Property Details must contain exactly '
+                    . $expectedCount
+                    . ' row'
+                    . ($expectedCount === 1 ? '' : 's')
+                    . ' to match the Count.',
+            ]);
+        }
+
+        $normalized = [];
+        $seen = [];
+
+        $limit =
+            $expectedCount !== null
+                ? $expectedCount
+                : count($rows);
+
+        for (
+            $index = 0;
+            $index < $limit;
+            $index++
+        ) {
+            $asset =
+                is_array($rows[$index] ?? null)
+                    ? $rows[$index]
+                    : [];
+
+            $description = trim(
+                (string) (
+                    $asset['description']
+                    ?? ''
+                )
+            );
+
+            $propertyNumber = trim(
+                (string) (
+                    $asset['property_number']
+                    ?? ''
+                )
+            );
+
+            $currentUser = trim(
+                (string) (
+                    $asset['current_user']
+                    ?? ''
+                )
+            );
+
+            if (
+                $requireDescriptions
+                && $description === ''
+            ) {
+                throw ValidationException::withMessages([
+                    "ict_assets.{$index}.description" =>
+                        'Description is required.',
+                ]);
+            }
+
+            if (
+                $requirePropertyNumbers
+                && $propertyNumber === ''
+            ) {
+                throw ValidationException::withMessages([
+                    "ict_assets.{$index}.property_number" =>
+                        'Property Number is required.',
+                ]);
+            }
+
+            if (
+                !$requirePropertyNumbers
+                && $description === ''
+                && $propertyNumber === ''
+                && $currentUser === ''
+            ) {
+                continue;
+            }
+
+            if (
+                $propertyNumber === ''
+                && $currentUser !== ''
+            ) {
+                throw ValidationException::withMessages([
+                    "ict_assets.{$index}.property_number" =>
+                        'Property Number is required.',
+                ]);
+            }
+
+            if ($propertyNumber !== '') {
+                $key = mb_strtolower(
+                    $propertyNumber
+                );
+
+                if (isset($seen[$key])) {
+                    throw ValidationException::withMessages([
+                        "ict_assets.{$index}.property_number" =>
+                            'Property Number must be unique for this ICT item.',
+                    ]);
+                }
+
+                $seen[$key] = true;
+            }
+
+            $normalized[] = [
+                'description' =>
+                    $description,
+                'property_number' =>
+                    $propertyNumber,
+                'current_user' =>
+                    $currentUser,
+            ];
+        }
+
+        return $normalized;
     }
 
     /**

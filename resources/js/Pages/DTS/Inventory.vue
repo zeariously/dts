@@ -690,6 +690,7 @@ const releaseItemErrors = ref({})
 
 const releaseItemForm = ref({
     releaseQuantity: '',
+    releasePropertyNumber: '',
     releaseDestination: '',
     remarks: '',
 })
@@ -700,6 +701,7 @@ const fullEditErrors = ref({})
 const fullEditForm = ref({
     category: 'supplies',
     item: '',
+    description: '',
     location: '',
     unit: '',
     inventory_year: 2026,
@@ -707,6 +709,7 @@ const fullEditForm = ref({
     currently_available: '',
     quarters: [],
     quarter_stock: {},
+    ict_assets: [],
     remarks: '',
 })
 
@@ -715,6 +718,8 @@ const addItemErrors = ref({})
 
 const newItemForm = ref({
     item: '',
+    description: '',
+    other_category: 'furniture_fixtures',
     location: '',
     unit: '',
     inventory_year: 2026,
@@ -722,8 +727,11 @@ const newItemForm = ref({
     currently_available: '',
     quarters: [],
     quarter_stock: {},
+    ict_assets: [],
     remarks: '',
 })
+
+const expandedIctItems = ref({})
 
 const quarterOptions = [
     { value: 'all', label: 'All Quarters' },
@@ -1560,6 +1568,19 @@ const normalizeInventoryItem = (item) => {
                     : {},
         location:
             String(item.location ?? '').trim(),
+        ict_assets:
+            (
+                String(item.category || '')
+                    .trim()
+                    .toLowerCase() === 'ict'
+                || isPropertyTrackedOtherCategory(
+                    item.category
+                )
+            )
+                ? normalizeIctAssets(
+                    item.ict_assets
+                )
+                : [],
         remarks:
             item.remarks ?? '',
     }
@@ -1632,12 +1653,21 @@ const ictItems = computed(() =>
     )
 )
 
+/*
+ * Furniture and Fixtures are presented as ONE category in the UI.
+ *
+ * Existing database rows may still contain either:
+ * - furniture
+ * - fixtures
+ *
+ * We intentionally keep those legacy DB values valid so no existing
+ * inventory record needs to be migrated or rewritten.
+ */
 const otherCategoryOptions = [
     {
-        value: 'furniture',
-        label: 'Furniture',
+        value: 'furniture_fixtures',
+        label: 'Furniture/Fixtures',
     },
-   
     {
         value: 'emergency_kits',
         label: 'Emergency Kits',
@@ -1648,12 +1678,69 @@ const otherCategoryOptions = [
     },
 ]
 
-const otherCategoryValues =
+/*
+ * Actual Other Items category values accepted/stored in the database.
+ */
+const otherCategoryValues = [
+    'furniture',
+    'fixtures',
+    'emergency_kits',
+    'token_giveaways',
+]
+
+const otherCategoryFilterValues =
     otherCategoryOptions.map(
         (option) => option.value
     )
 
-const otherCategoryFilter = ref('furniture')
+const furnitureFixtureCategories = [
+    'furniture',
+    'fixtures',
+]
+
+const propertyTrackedOtherCategories = [
+    'furniture_fixtures',
+    ...furnitureFixtureCategories,
+]
+
+const isPropertyTrackedOtherCategory = (category) =>
+    propertyTrackedOtherCategories.includes(
+        String(category || '')
+            .trim()
+            .toLowerCase()
+    )
+
+const otherFilterValueForCategory = (category) => {
+    const normalized =
+        String(category || '')
+            .trim()
+            .toLowerCase()
+
+    return furnitureFixtureCategories.includes(
+        normalized
+    )
+        ? 'furniture_fixtures'
+        : normalized
+}
+
+/*
+ * New records created from the merged Furniture/Fixtures view use
+ * "furniture" internally. Existing "fixtures" rows remain untouched.
+ */
+const otherCategoryForSave = (filterValue) => {
+    const normalized =
+        String(filterValue || '')
+            .trim()
+            .toLowerCase()
+
+    return normalized === 'furniture_fixtures'
+        ? 'furniture'
+        : normalized
+}
+
+const otherCategoryFilter = ref(
+    'furniture_fixtures'
+)
 
 const otherItems = computed(() =>
     normalizedInventoryItems.value.filter(
@@ -1679,10 +1766,25 @@ const currentItems = computed(() => {
         return ictItems.value
     }
 
+    const selectedFilter =
+        otherCategoryFilter.value
+
+    if (
+        selectedFilter
+        === 'furniture_fixtures'
+    ) {
+        return otherItems.value.filter(
+            (item) =>
+                furnitureFixtureCategories.includes(
+                    item.category
+                )
+        )
+    }
+
     return otherItems.value.filter(
         (item) =>
             item.category
-            === otherCategoryFilter.value
+            === selectedFilter
     )
 })
 
@@ -1707,15 +1809,63 @@ const otherCategoryCanRelease = (category) => {
     )
 }
 
-const currentOtherCategoryHasCount = computed(() =>
-    otherCategoryHasCount(
+const currentOtherCategoryHasCount = computed(() => {
+    if (
+        otherCategoryFilter.value
+        === 'furniture_fixtures'
+    ) {
+        return true
+    }
+
+    return otherCategoryHasCount(
+        otherCategoryFilter.value
+    )
+})
+
+const currentOtherCategoryCanRelease = computed(() => {
+    if (
+        otherCategoryFilter.value
+        === 'furniture_fixtures'
+    ) {
+        return true
+    }
+
+    return otherCategoryCanRelease(
+        otherCategoryFilter.value
+    )
+})
+
+const currentOtherCategoryIsAssetTracked = computed(() =>
+    isPropertyTrackedOtherCategory(
         otherCategoryFilter.value
     )
 )
 
-const currentOtherCategoryCanRelease = computed(() =>
-    otherCategoryCanRelease(
-        otherCategoryFilter.value
+/*
+ * Add Item modal can select a different Other Items category
+ * without first switching the visible category tab.
+ */
+const addOtherCategoryLabel = computed(() => {
+    return otherCategoryOptions.find(
+        (option) =>
+            option.value
+            === newItemForm.value.other_category
+    )?.label || 'Other Items'
+})
+
+const addOtherCategoryHasCount = computed(() => {
+    const selected =
+        newItemForm.value.other_category
+
+    return (
+        selected === 'furniture_fixtures'
+        || otherCategoryHasCount(selected)
+    )
+})
+
+const addOtherCategoryIsAssetTracked = computed(() =>
+    isPropertyTrackedOtherCategory(
+        newItemForm.value.other_category
     )
 )
 
@@ -1744,6 +1894,273 @@ const isIctMonthBased = (itemOrUnit) =>
 
 const isIctSubscription = (itemOrUnit) =>
     Boolean(ictDurationUnit(itemOrUnit))
+
+const ictEditorAssetRows = (assets) => {
+    if (!Array.isArray(assets)) {
+        return []
+    }
+
+    return assets.map((asset) => ({
+        description: String(
+            asset?.description ?? ''
+        ).trim(),
+        property_number: String(
+            asset?.property_number ?? ''
+        ).trim(),
+        current_user: String(
+            asset?.current_user ?? ''
+        ).trim(),
+    }))
+}
+
+const normalizeIctAssets = (assets) => {
+    return ictEditorAssetRows(assets)
+        .filter(
+            (asset) =>
+                asset.description
+                || asset.property_number
+                || asset.current_user
+        )
+}
+
+const ictEquipmentCount = (value) => {
+    const number = Number(value)
+
+    return (
+        Number.isInteger(number)
+        && number > 0
+    )
+        ? number
+        : 0
+}
+
+const syncIctAssetRowsToCount = (
+    assets,
+    count
+) => {
+    const target =
+        ictEquipmentCount(count)
+
+    const rows =
+        ictEditorAssetRows(assets)
+            .slice(0, target)
+
+    while (rows.length < target) {
+        rows.push({
+            description: '',
+            property_number: '',
+            current_user: '',
+        })
+    }
+
+    return rows
+}
+
+const ictAssetDetails = (item) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    const usesPropertyTracking =
+        (
+            category === 'ict'
+            && !isIctSubscription(item)
+        )
+        || isPropertyTrackedOtherCategory(
+            category
+        )
+
+    if (!usesPropertyTracking) {
+        return []
+    }
+
+    return syncIctAssetRowsToCount(
+        item?.ict_assets,
+        item?.currently_available
+    )
+}
+
+const hasIctAssetDetails = (item) =>
+    ictAssetDetails(item).length > 0
+
+const isIctExpanded = (item) =>
+    Boolean(
+        expandedIctItems.value[
+            Number(item?.id)
+        ]
+    )
+
+const toggleIctAssetDetails = (item) => {
+    if (!hasIctAssetDetails(item)) {
+        return
+    }
+
+    const key = Number(item.id)
+
+    expandedIctItems.value = {
+        ...expandedIctItems.value,
+        [key]: !expandedIctItems.value[key],
+    }
+}
+
+const validateIctAssetRows = (
+    rows,
+    errorBag,
+    expectedCount,
+    category = 'ict'
+) => {
+    const target =
+        ictEquipmentCount(
+            expectedCount
+        )
+
+    const editorRows =
+        ictEditorAssetRows(rows)
+
+    if (editorRows.length !== target) {
+        errorBag.ict_assets =
+            `Property Details must contain exactly ${target} row${target === 1 ? '' : 's'} to match the Count.`
+    }
+
+    const seen = new Set()
+
+    for (
+        let index = 0;
+        index < target;
+        index += 1
+    ) {
+        const asset =
+            editorRows[index]
+            || {
+                description: '',
+                property_number: '',
+                current_user: '',
+            }
+
+        const description =
+            String(
+                asset.description
+                ?? ''
+            ).trim()
+
+        const propertyNumber =
+            String(
+                asset.property_number
+                ?? ''
+            ).trim()
+
+        if (
+            (
+                category === 'ict'
+                || isPropertyTrackedOtherCategory(
+                    category
+                )
+            )
+            && !description
+        ) {
+            errorBag[
+                `ict_assets.${index}.description`
+            ] =
+                'Description is required.'
+        }
+
+        if (!propertyNumber) {
+            errorBag[
+                `ict_assets.${index}.property_number`
+            ] =
+                'Property Number is required.'
+
+            continue
+        }
+
+        const key =
+            propertyNumber.toLowerCase()
+
+        if (seen.has(key)) {
+            errorBag[
+                `ict_assets.${index}.property_number`
+            ] =
+                'Property Number must be unique for this item.'
+        }
+
+        seen.add(key)
+    }
+}
+
+/*
+ * Normal ICT:
+ * Count = exact number of Property Detail rows.
+ *
+ * Subscription ICT:
+ * No Property Detail rows.
+ */
+watch(
+    [
+        () => activeTab.value,
+        () => newItemForm.value.other_category,
+        () => newItemForm.value.unit,
+        () =>
+            newItemForm.value
+                .currently_available,
+    ],
+    ([tab, otherCategory, unit, count]) => {
+        const usesPropertyTracking =
+            (
+                tab === 'ict'
+                && !isIctSubscription(unit)
+            )
+            || (
+                tab === 'other'
+                && isPropertyTrackedOtherCategory(
+                    otherCategory
+                )
+            )
+
+        if (!usesPropertyTracking) {
+            newItemForm.value.ict_assets = []
+            return
+        }
+
+        newItemForm.value.ict_assets =
+            syncIctAssetRowsToCount(
+                newItemForm.value.ict_assets,
+                count
+            )
+    }
+)
+
+watch(
+    [
+        () => fullEditForm.value.category,
+        () => fullEditForm.value.unit,
+        () =>
+            fullEditForm.value
+                .currently_available,
+    ],
+    ([category, unit, count]) => {
+        const usesPropertyTracking =
+            (
+                category === 'ict'
+                && !isIctSubscription(unit)
+            )
+            || isPropertyTrackedOtherCategory(
+                category
+            )
+
+        if (!usesPropertyTracking) {
+            fullEditForm.value.ict_assets = []
+            return
+        }
+
+        fullEditForm.value.ict_assets =
+            syncIctAssetRowsToCount(
+                fullEditForm.value.ict_assets,
+                count
+            )
+    }
+)
+
 
 const ictQuantityLabel = (itemOrUnit) => {
     if (isIctMonthBased(itemOrUnit)) {
@@ -2207,7 +2624,10 @@ const itemMatchesQuarter = (
 const resetNewItemForm = () => {
     newItemForm.value = {
         item: '',
-            location: '',
+        description: '',
+        other_category:
+            otherCategoryFilter.value,
+        location: '',
         unit: '',
         inventory_year:
             Number(yearFilter.value) || 2026,
@@ -2225,6 +2645,7 @@ const resetNewItemForm = () => {
                         current: '',
                     },
                 },
+        ict_assets: [],
         remarks: '',
     }
 
@@ -2333,7 +2754,9 @@ const addNewItem = () => {
 
     const category =
         isOtherItems
-            ? otherCategoryFilter.value
+            ? otherCategoryForSave(
+                newItemForm.value.other_category
+            )
             : activeTab.value
 
     const location = String(
@@ -2373,7 +2796,7 @@ const addNewItem = () => {
         : null
 
     const currentlyAvailable =
-        isSupplies || isIct
+        isSupplies || isIct || isOtherItems
             ? Number(
                 newItemForm.value.currently_available
             )
@@ -2493,6 +2916,27 @@ const addNewItem = () => {
         }
     }
 
+
+    if (
+        (
+            isIct
+            && !isIctSubscription(unit)
+        )
+        || (
+            isOtherItems
+            && isPropertyTrackedOtherCategory(
+                category
+            )
+        )
+    ) {
+        validateIctAssetRows(
+            newItemForm.value.ict_assets,
+            addItemErrors.value,
+            currentlyAvailable,
+            category
+        )
+    }
+
     const quarterStockPayload = {}
 
     if (isSupplies) {
@@ -2526,17 +2970,37 @@ const addNewItem = () => {
             0
         )
 
+    const effectiveItemName =
+        itemName
+
     const duplicateExists =
         normalizedInventoryItems.value.some((item) => {
             if (
                 item.category !== category
                 || Number(item.id || 0) < 0
-                || String(item.item || '')
-                    .trim()
-                    .toLowerCase()
-                    !== itemName.toLowerCase()
             ) {
                 return false
+            }
+
+            if (
+                String(item.item || '')
+                    .trim()
+                    .toLowerCase()
+                !== effectiveItemName.toLowerCase()
+            ) {
+                return false
+            }
+
+            if (isIct) {
+                return (
+                    Number(item.inventory_year)
+                        === inventoryYear
+                    &&
+                    String(item.unit || '')
+                        .trim()
+                        .toUpperCase()
+                        === unit
+                )
             }
 
             if (isOtherItems) {
@@ -2558,10 +3022,15 @@ const addNewItem = () => {
         })
 
     if (duplicateExists) {
-        addItemErrors.value.item =
-            isOtherItems
-                ? 'This item already exists in the same location.'
-                : `This item and unit already exist for ${inventoryYear}.`
+        if (isIct) {
+            addItemErrors.value.item =
+                `This ICT item and unit already exist for ${inventoryYear}.`
+        } else {
+            addItemErrors.value.item =
+                isOtherItems
+                    ? 'This item already exists in the same location.'
+                    : `This item and unit already exist for ${inventoryYear}.`
+        }
     }
 
     if (
@@ -2574,7 +3043,8 @@ const addNewItem = () => {
 
     const payload = {
         category,
-        item: itemName,
+        item: effectiveItemName,
+        description: null,
         remarks,
     }
 
@@ -2586,6 +3056,14 @@ const addNewItem = () => {
                     newItemForm.value.currently_available
                 )
                 : null
+        payload.ict_assets =
+            isPropertyTrackedOtherCategory(
+                category
+            )
+                ? normalizeIctAssets(
+                    newItemForm.value.ict_assets
+                )
+                : []
     } else if (isIct) {
         payload.location = null
         payload.unit = unit
@@ -2593,6 +3071,12 @@ const addNewItem = () => {
         payload.fixed_value = null
         payload.currently_available =
             currentlyAvailable
+        payload.ict_assets =
+            isIctSubscription(unit)
+                ? []
+                : normalizeIctAssets(
+                    newItemForm.value.ict_assets
+                )
     } else {
         payload.location = null
         payload.unit = unit
@@ -2612,7 +3096,12 @@ const addNewItem = () => {
             preserveScroll: true,
 
             onSuccess: () => {
-                if (!isOtherItems) {
+                if (isOtherItems) {
+                    otherCategoryFilter.value =
+                        otherFilterValueForCategory(
+                            category
+                        )
+                } else {
                     yearFilter.value =
                         inventoryYear
                 }
@@ -2684,6 +3173,10 @@ const filteredItems = computed(() => {
                     .includes(term)
                 ||
                 String(item.unit || '')
+                    .toLowerCase()
+                    .includes(term)
+                ||
+                String(item.description || '')
                     .toLowerCase()
                     .includes(term)
                 ||
@@ -3098,7 +3591,9 @@ const switchTab = (tab) => {
 
 const switchOtherCategory = (category) => {
     if (
-        !otherCategoryValues.includes(category)
+        !otherCategoryFilterValues.includes(
+            category
+        )
     ) {
         return
     }
@@ -3373,6 +3868,21 @@ const historyChangeValue = (change, value) => {
             : '—'
     }
 
+    if (field === 'ict_assets') {
+        const assets =
+            normalizeIctAssets(value)
+
+        if (!assets.length) {
+            return '—'
+        }
+
+        return assets
+            .map((asset) =>
+                `${asset.property_number || '—'} — ${asset.current_user || 'Unassigned'}`
+            )
+            .join(' · ')
+    }
+
     if (field === 'quarters') {
         const quarters =
             Array.isArray(value)
@@ -3400,6 +3910,14 @@ const historyChangeValue = (change, value) => {
 
         if (category === 'supplies') {
             return 'Supplies'
+        }
+
+        if (
+            furnitureFixtureCategories.includes(
+                category
+            )
+        ) {
+            return 'Furniture/Fixtures'
         }
 
         return otherCategoryOptions.find(
@@ -3801,6 +4319,8 @@ const openFullEditModal = (item) => {
     fullEditForm.value = {
         category: normalized.category || 'supplies',
         item: String(normalized.item || ''),
+        description:
+            String(normalized.description || ''),
         location: String(normalized.location || ''),
         unit: String(normalized.unit || ''),
         inventory_year: Number(normalized.inventory_year) || 2026,
@@ -3817,6 +4337,33 @@ const openFullEditModal = (item) => {
         quarters: [...normalizedQuarters],
         quarter_stock:
             editQuarterStock,
+        ict_assets:
+            (
+                (
+                    normalized.category === 'ict'
+                    && !isIctSubscription(
+                        normalized.unit
+                    )
+                )
+                || isPropertyTrackedOtherCategory(
+                    normalized.category
+                )
+            )
+                ? syncIctAssetRowsToCount(
+                    normalized.ict_assets,
+                    normalized.currently_available
+                ).map((asset) => ({
+                    ...asset,
+                    description:
+                        normalized.category === 'ict'
+                            ? String(
+                                asset.description
+                                || normalized.description
+                                || ''
+                            ).trim()
+                            : asset.description,
+                }))
+                : [],
 
         // Always start Edit Remarks blank.
         // Previous remarks should not be preloaded into a new edit session.
@@ -4015,6 +4562,27 @@ const saveFullEditItem = () => {
         }
     }
 
+
+    if (
+        (
+            isIct
+            && !isIctSubscription(unit)
+        )
+        || (
+            isOtherItems
+            && isPropertyTrackedOtherCategory(
+                category
+            )
+        )
+    ) {
+        validateIctAssetRows(
+            fullEditForm.value.ict_assets,
+            fullEditErrors.value,
+            currentValue,
+            category
+        )
+    }
+
     const quarterStockPayload = {}
 
     if (isSupplies) {
@@ -4050,17 +4618,37 @@ const saveFullEditItem = () => {
             0
         )
 
+    const effectiveItemName =
+        itemName
+
     const duplicateExists =
         normalizedInventoryItems.value.some((item) => {
             if (
                 Number(item.id) === Number(original.id)
                 || item.category !== category
-                || String(item.item || '')
-                    .trim()
-                    .toLowerCase()
-                    !== itemName.toLowerCase()
             ) {
                 return false
+            }
+
+            if (
+                String(item.item || '')
+                    .trim()
+                    .toLowerCase()
+                !== effectiveItemName.toLowerCase()
+            ) {
+                return false
+            }
+
+            if (isIct) {
+                return (
+                    Number(item.inventory_year)
+                        === inventoryYear
+                    &&
+                    String(item.unit || '')
+                        .trim()
+                        .toUpperCase()
+                        === unit
+                )
             }
 
             if (isOtherItems) {
@@ -4081,10 +4669,15 @@ const saveFullEditItem = () => {
         })
 
     if (duplicateExists) {
-        fullEditErrors.value.item =
-            isOtherItems
-                ? 'This item already exists in the same location.'
-                : `This item and unit already exist for ${inventoryYear}.`
+        if (isIct) {
+            fullEditErrors.value.item =
+                `This ICT item and unit already exist for ${inventoryYear}.`
+        } else {
+            fullEditErrors.value.item =
+                isOtherItems
+                    ? 'This item already exists in the same location.'
+                    : `This item and unit already exist for ${inventoryYear}.`
+        }
     }
 
     if (Object.keys(fullEditErrors.value).length) {
@@ -4093,7 +4686,8 @@ const saveFullEditItem = () => {
 
     const payload = {
         category,
-        item: itemName,
+        item: effectiveItemName,
+        description: null,
         remarks:
             String(fullEditForm.value.remarks || '').trim()
             || null,
@@ -4107,6 +4701,14 @@ const saveFullEditItem = () => {
                     fullEditForm.value.currently_available
                 )
                 : null
+        payload.ict_assets =
+            isPropertyTrackedOtherCategory(
+                category
+            )
+                ? normalizeIctAssets(
+                    fullEditForm.value.ict_assets
+                )
+                : []
     } else if (isIct) {
         payload.location = null
         payload.unit = unit
@@ -4114,6 +4716,12 @@ const saveFullEditItem = () => {
         payload.fixed_value = null
         payload.currently_available =
             currentValue
+        payload.ict_assets =
+            isIctSubscription(unit)
+                ? []
+                : normalizeIctAssets(
+                    fullEditForm.value.ict_assets
+                )
     } else {
         payload.location = null
         payload.unit = unit
@@ -4135,7 +4743,10 @@ const saveFullEditItem = () => {
             onSuccess: () => {
                 if (isOtherItems) {
                     activeTab.value = 'other'
-                    otherCategoryFilter.value = category
+                    otherCategoryFilter.value =
+                        otherFilterValueForCategory(
+                            category
+                        )
                 } else {
                     activeTab.value = category
                     yearFilter.value = inventoryYear
@@ -4162,6 +4773,62 @@ const saveFullEditItem = () => {
     )
 }
 
+const isNormalIctAssetItem = (item) => {
+    const category =
+        String(item?.category || '')
+            .trim()
+            .toLowerCase()
+
+    return (
+        (
+            category === 'ict'
+            && !isIctSubscription(item)
+        )
+        || isPropertyTrackedOtherCategory(
+            category
+        )
+    )
+}
+
+const ictAvailableAssets = (item) => {
+    if (!isNormalIctAssetItem(item)) {
+        return []
+    }
+
+    return ictAssetDetails(item)
+        .filter((asset) => {
+            const propertyNumber =
+                String(
+                    asset?.property_number ?? ''
+                ).trim()
+
+            const currentUser =
+                String(
+                    asset?.current_user ?? ''
+                ).trim()
+
+            return Boolean(propertyNumber)
+                && !currentUser
+        })
+}
+
+const ictAvailableCount = (item) =>
+    ictAvailableAssets(item).length
+
+const canReleaseInventoryItem = (item) => {
+    if (isNormalIctAssetItem(item)) {
+        return ictAvailableCount(item) > 0
+    }
+
+    const available =
+        currentAvailableValue(item)
+
+    return (
+        available !== null
+        && Number(available) > 0
+    )
+}
+
 const releaseCategory = computed(() =>
     String(
         releasingItem.value?.category || ''
@@ -4176,6 +4843,20 @@ const releaseIsSupplies = computed(() =>
 
 const releaseIsIct = computed(() =>
     releaseCategory.value === 'ict'
+)
+
+const releaseIsIctAsset = computed(() =>
+    isNormalIctAssetItem(
+        releasingItem.value
+    )
+)
+
+const releaseAvailableProperties = computed(() =>
+    releaseIsIctAsset.value
+        ? ictAvailableAssets(
+            releasingItem.value
+        )
+        : []
 )
 
 const releaseIsCountedOther = computed(() =>
@@ -4201,6 +4882,10 @@ const releaseQuantityLabel = computed(() => {
 const releaseCurrentLabel = computed(() => {
     if (releaseIsSupplies.value) {
         return 'Currently Available in SPD'
+    }
+
+    if (releaseIsIctAsset.value) {
+        return 'Available'
     }
 
     if (releaseIsIct.value) {
@@ -4311,6 +4996,12 @@ const releaseHasFixedBaseline = computed(() => {
 })
 
 const releaseCurrentAvailable = computed(() => {
+    if (releaseIsIctAsset.value) {
+        return ictAvailableCount(
+            releasingItem.value
+        )
+    }
+
     return currentAvailableValue(
         releasingItem.value,
         releaseSelectedQuarter.value
@@ -4319,6 +5010,16 @@ const releaseCurrentAvailable = computed(() => {
 })
 
 const releaseQuantity = computed(() => {
+    if (releaseIsIctAsset.value) {
+        return String(
+            releaseItemForm.value
+                .releasePropertyNumber
+            || ''
+        ).trim()
+            ? 1
+            : 0
+    }
+
     const value = Number(
         releaseItemForm.value.releaseQuantity
     )
@@ -4338,6 +5039,21 @@ const releaseRemainingQuantity = computed(() => {
 })
 
 const releaseTotalReleasedAfter = computed(() => {
+    if (releaseIsIctAsset.value) {
+        return (
+            Number(
+                releasingItem.value
+                    ?.tracked_released
+                ?? 0
+            )
+            + (
+                releaseQuantity.value > 0
+                    ? 1
+                    : 0
+            )
+        )
+    }
+
     if (releaseUsesQuarterStock.value) {
         return (
             releaseTotalReleased.value
@@ -4385,9 +5101,17 @@ const openReleaseItemModal = (item) => {
 
     if (
         !canRelease
-        || currentAvailableValue(item) === null
-        || Number(currentAvailableValue(item)) <= 0
+        || !canReleaseInventoryItem(item)
     ) {
+        if (
+            isNormalIctAssetItem(item)
+            && ictAvailableCount(item) <= 0
+        ) {
+            window.alert(
+                'No available ICT property is currently unassigned.'
+            )
+        }
+
         return
     }
 
@@ -4429,6 +5153,7 @@ const openReleaseItemModal = (item) => {
      */
     releaseItemForm.value = {
         releaseQuantity: '',
+        releasePropertyNumber: '',
         releaseDestination: '',
         remarks: '',
     }
@@ -4443,6 +5168,7 @@ const closeReleaseItemModal = () => {
 
     releaseItemForm.value = {
         releaseQuantity: '',
+        releasePropertyNumber: '',
         releaseDestination: '',
         remarks: '',
     }
@@ -4478,29 +5204,63 @@ const saveReleaseItem = () => {
         return
     }
 
+    const releasePropertyNumber =
+        String(
+            releaseItemForm.value
+                .releasePropertyNumber
+            || ''
+        ).trim()
+
     const releaseQuantity =
-        Number(
-            releaseItemForm.value.releaseQuantity
-        )
+        releaseIsIctAsset.value
+            ? 1
+            : Number(
+                releaseItemForm.value
+                    .releaseQuantity
+            )
 
-    if (
-        !Number.isFinite(releaseQuantity)
-        || releaseQuantity <= 0
-    ) {
-        releaseItemErrors.value.releaseQuantity =
-            'Enter the quantity to release.'
+    if (releaseIsIctAsset.value) {
+        const propertyStillAvailable =
+            releaseAvailableProperties.value
+                .some(
+                    (asset) =>
+                        String(
+                            asset.property_number
+                            ?? ''
+                        ).trim()
+                            === releasePropertyNumber
+                )
 
-        return
-    }
+        if (
+            !releasePropertyNumber
+            || !propertyStillAvailable
+        ) {
+            releaseItemErrors.value
+                .releasePropertyNumber =
+                    'Select an available Property Number.'
 
-    if (
-        releaseQuantity
-        > releaseCurrentAvailable.value
-    ) {
-        releaseItemErrors.value.releaseQuantity =
-            `Only ${releaseCurrentAvailable.value} available.`
+            return
+        }
+    } else {
+        if (
+            !Number.isFinite(releaseQuantity)
+            || releaseQuantity <= 0
+        ) {
+            releaseItemErrors.value.releaseQuantity =
+                'Enter the quantity to release.'
 
-        return
+            return
+        }
+
+        if (
+            releaseQuantity
+            > releaseCurrentAvailable.value
+        ) {
+            releaseItemErrors.value.releaseQuantity =
+                `Only ${releaseCurrentAvailable.value} available.`
+
+            return
+        }
     }
 
     const releaseDestination =
@@ -4519,7 +5279,9 @@ const saveReleaseItem = () => {
         && !releaseDestination
     ) {
         releaseItemErrors.value.releaseDestination =
-            'Enter where the released item went.'
+            releaseIsIctAsset.value
+                ? 'Enter the Current User / Released To.'
+                : 'Enter where the released item went.'
 
         return
     }
@@ -4588,6 +5350,11 @@ const saveReleaseItem = () => {
                     ? null
                     : releaseDestination,
 
+            release_property_number:
+                releaseIsIctAsset.value
+                    ? releasePropertyNumber
+                    : null,
+
             /*
              * Transaction remark only.
              * Controller stores this in History,
@@ -4607,6 +5374,42 @@ const saveReleaseItem = () => {
                  * - Quantity Released changes
                  */
                 if (
+                    releaseIsIctAsset.value
+                ) {
+                    const nextAssets =
+                        ictEditorAssetRows(
+                            item.ict_assets
+                        ).map((asset) => {
+                            if (
+                                String(
+                                    asset.property_number
+                                    ?? ''
+                                ).trim()
+                                !== releasePropertyNumber
+                            ) {
+                                return asset
+                            }
+
+                            return {
+                                ...asset,
+                                current_user:
+                                    releaseDestination,
+                            }
+                        })
+
+                    updateLocalInventoryItem(
+                        item.id,
+                        {
+                            ict_assets:
+                                nextAssets,
+                            tracked_released:
+                                Number(
+                                    item.tracked_released
+                                    ?? 0
+                                ) + 1,
+                        }
+                    )
+                } else if (
                     releaseUsesQuarterStock.value
                     && hasQuarterStock(item)
                 ) {
@@ -5274,7 +6077,7 @@ const generateInventoryReport = () => {
                                 </div>
 
                                 <div class="summary-card">
-                                    <span class="summary-card-label">Units Represented</span>
+                                    <span class="summary-card-label">Item Names Represented</span>
                                     <strong>${summaryUnitCount.toLocaleString()}</strong>
                                 </div>
                             </div>
@@ -5283,7 +6086,7 @@ const generateInventoryReport = () => {
                         <table class="summary-table compact-summary">
                             <thead>
                                 <tr>
-                                    <th>Unit</th>
+                                    <th>Item Name</th>
                                     <th class="number">Line Items</th>
                                     <th class="number">Total Count / Duration</th>
                                 </tr>
@@ -5315,6 +6118,17 @@ const generateInventoryReport = () => {
                                                 <span class="summary-card-label">Total Count</span>
                                                 <strong>${summaryOtherItemCount.toLocaleString()}</strong>
                                             </div>
+
+                                            ${
+                                                currentOtherCategoryIsAssetTracked.value
+                                                    ? `
+                                                        <div class="summary-card">
+                                                            <span class="summary-card-label">Total Available</span>
+                                                            <strong>${rows.reduce((total, item) => total + ictAvailableCount(item), 0).toLocaleString()}</strong>
+                                                        </div>
+                                                    `
+                                                    : ''
+                                            }
                                         `
                                         : ''
                                 }
@@ -5342,18 +6156,19 @@ const generateInventoryReport = () => {
 
     const ictHeader = `
         <tr>
-            <th>Item</th>
-            <th>Unit</th>
+            <th>Item Name</th>
             <th class="number">Count / Duration</th>
+            <th class="number">Available</th>
             <th>Remarks</th>
         </tr>
     `
 
-    const otherHeader = currentOtherCategoryHasCount.value
+    const otherHeader = currentOtherCategoryIsAssetTracked.value
         ? `
             <tr>
                 <th>Item</th>
                 <th class="number">Count</th>
+                <th class="number">Available</th>
                 <th>Location</th>
                 <th>Remarks</th>
             </tr>
@@ -5361,6 +6176,7 @@ const generateInventoryReport = () => {
         : `
             <tr>
                 <th>Item</th>
+                <th class="number">Count</th>
                 <th>Location</th>
                 <th>Remarks</th>
             </tr>
@@ -5439,11 +6255,12 @@ const generateInventoryReport = () => {
                         item.currently_available
                     )
 
-                return currentOtherCategoryHasCount.value
+                return currentOtherCategoryIsAssetTracked.value
                     ? `
                         <tr>
                             <td class="item">${itemName}</td>
                             <td class="number">${itemCount}</td>
+                            <td class="number">${ictAvailableCount(item)}</td>
                             <td>${location}</td>
                             <td class="remarks">${remarks}</td>
                         </tr>
@@ -5451,6 +6268,7 @@ const generateInventoryReport = () => {
                     : `
                         <tr>
                             <td class="item">${itemName}</td>
+                            <td class="number">${itemCount}</td>
                             <td>${location}</td>
                             <td class="remarks">${remarks}</td>
                         </tr>
@@ -5469,11 +6287,22 @@ const generateInventoryReport = () => {
                             ? `${reportNumber(ictQuantity)} ${ictQuantity === 1 ? 'Year' : 'Years'}`
                             : reportNumber(ictQuantity)
 
+            const ictItemName =
+                escapeReportHtml(
+                    String(
+                        item.item || ''
+                    ).trim() || '—'
+                )
+
             return `
                 <tr>
-                    <td class="item">${itemName}</td>
-                    <td>${unit}</td>
+                    <td class="item">${ictItemName}</td>
                     <td class="number">${ictQuantityText}</td>
+                    <td class="number">${
+                        isIctSubscription(item)
+                            ? '—'
+                            : ictAvailableCount(item)
+                    }</td>
                     <td class="remarks">${remarks}</td>
                 </tr>
             `
@@ -6216,21 +7045,6 @@ const generateInventoryReport = () => {
                                 </option>
                             </select>
 
-                            
-
-                            <select
-                                v-if="activeTab === 'supplies'"
-                                v-model="quarterFilter"
-                                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                            >
-                                <option
-                                    v-for="quarter in quarterOptions"
-                                    :key="quarter.value"
-                                    :value="quarter.value"
-                                >
-                                    {{ quarter.label }}
-                                </option>
-                            </select>
                             <button
                                 v-if="
                                     canManageInventory
@@ -6249,6 +7063,20 @@ const generateInventoryReport = () => {
                                 </span>
                                 <span>Add Unit</span>
                             </button>
+
+                            <select
+                                v-if="activeTab === 'supplies'"
+                                v-model="quarterFilter"
+                                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            >
+                                <option
+                                    v-for="quarter in quarterOptions"
+                                    :key="quarter.value"
+                                    :value="quarter.value"
+                                >
+                                    {{ quarter.label }}
+                                </option>
+                            </select>
                         </div>
 
                     </div>
@@ -6418,9 +7246,13 @@ const generateInventoryReport = () => {
 
                                 <th class="w-[11%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     {{
-                                        releaseIsIct
-                                            ? `${releaseQuantityLabel} Released`
-                                            : 'Quantity Released'
+                                        releaseIsIctAsset
+                                            ? 'Property Number'
+                                            : (
+                                                releaseIsIct
+                                                    ? `${releaseQuantityLabel} Released`
+                                                    : 'Quantity Released'
+                                            )
                                     }}
                                 </th>
 
@@ -6693,52 +7525,41 @@ const generateInventoryReport = () => {
                     <table class="w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
-                                <th class="w-[36%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Item
+                                <th class="w-[28%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Item Name
                                 </th>
 
-                                <th class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Unit
-                                </th>
-
-                                <th class="w-[14%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Count / Duration
                                 </th>
 
-                                <th class="w-[23%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Available
+                                </th>
+
+                                <th class="w-[26%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Remarks
                                 </th>
 
-                                <th class="w-[15%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Action
+                                <th class="w-[18%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Actions
                                 </th>
                             </tr>
                         </thead>
 
                         <tbody class="divide-y divide-slate-100">
-                            <tr
+                            <template
                                 v-for="item in paginatedItems"
                                 :key="`${activeTab}-${item.category}-${item.id || item.item}`"
-                                class="bg-white transition hover:bg-blue-50/35"
                             >
-                                <td class="px-4 py-4 align-middle">
-                                    <p class="break-words text-xs font-black leading-5 text-slate-900">
-                                        {{ item.item }}
-                                    </p>
-
-
-
-
-                                </td>
-
-                                <td class="px-3 py-4 text-center align-middle">
-                                    <span
-                                        class="inline-flex rounded-lg border px-2.5 py-1 text-[9px] font-black"
-                                        :class="unitBadgeClass(item.unit)"
-                                    >
-                                        {{ item.unit || '—' }}
-                                    </span>
-                                </td>
+                                <tr
+                                    class="bg-white transition hover:bg-blue-50/35"
+                                >
+                                    <td class="px-4 py-4 align-middle">
+                                        <p class="break-words text-xs font-black leading-5 text-blue-950">
+                                            {{ item.item || '—' }}
+                                        </p>
+                                    </td>
 
                                 <td class="px-3 py-4 text-center align-middle">
                                     <div class="flex flex-col items-center gap-1">
@@ -6752,6 +7573,27 @@ const generateInventoryReport = () => {
                                             {{ ictQuantityLabel(item) }}
                                         </span>
                                     </div>
+                                </td>
+
+                                <td class="px-3 py-4 text-center align-middle">
+                                    <span
+                                        v-if="!isIctSubscription(item)"
+                                        class="inline-flex min-w-12 justify-center rounded-lg border px-2.5 py-1 text-[10px] font-black tabular-nums"
+                                        :class="
+                                            ictAvailableCount(item) > 0
+                                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                : 'border-rose-200 bg-rose-50 text-rose-700'
+                                        "
+                                    >
+                                        {{ ictAvailableCount(item) }}
+                                    </span>
+
+                                    <span
+                                        v-else
+                                        class="text-xs font-black text-slate-300"
+                                    >
+                                        —
+                                    </span>
                                 </td>
 
                                 <td class="px-4 py-4 align-middle">
@@ -6771,81 +7613,158 @@ const generateInventoryReport = () => {
                                 </td>
 
 
-                                <td class="px-3 py-4 text-center align-middle">
-                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
-                                        <button
-                                            v-if="canManageInventory"
-                                            type="button"
-                                            class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                            @click="openFullEditModal(item)"
-                                        >
-                                            Edit
-                                        </button>
-
-                                        <button
-                                            v-if="canManageInventory"
-                                            type="button"
-                                            class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                            :disabled="
-                                                currentAvailableValue(item) === null
-                                                || Number(currentAvailableValue(item)) <= 0
-                                                || !canReleaseInCurrentView(item)
-                                            "
-                                            @click="openReleaseItemModal(item)"
-                                        >
-                                            Release
-                                        </button>
-
-                                        <button
-                                            type="button"
-                                            title="View History"
-                                            aria-label="View History"
-                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                            @click="openHistoryModal(item)"
-                                        >
-                                            <svg
-                                                class="h-4 w-4"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                stroke-linecap="round"
-                                                stroke-linejoin="round"
-                                                aria-hidden="true"
+                                    <td class="px-3 py-4 text-center align-middle">
+                                        <div class="flex flex-wrap items-center justify-center gap-1.5">
+                                            <button
+                                                v-if="canManageInventory"
+                                                type="button"
+                                                class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                                @click="openFullEditModal(item)"
                                             >
-                                                <path d="M20 6v5h-5" />
-                                                <path d="M19 11a7 7 0 1 0 1 4" />
-                                            </svg>
-                                        </button>
+                                                Edit
+                                            </button>
 
-                                        <button
-                                            v-if="canManageInventory"
-                                            type="button"
-                                            title="Delete Item"
-                                            aria-label="Delete Item"
-                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                                            @click="openDeleteItemModal(item)"
-                                        >
-                                            <svg
-                                                class="h-4 w-4"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                stroke-linecap="round"
-                                                stroke-linejoin="round"
-                                                aria-hidden="true"
+                                            <button
+                                                v-if="canManageInventory"
+                                                type="button"
+                                                class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                                :disabled="
+                                                    !canReleaseInventoryItem(item)
+                                                    || !canReleaseInCurrentView(item)
+                                                "
+                                                @click="openReleaseItemModal(item)"
                                             >
-                                                <path d="M3 6h18" />
-                                                <path d="M8 6V4h8v2" />
-                                                <path d="M19 6l-1 14H6L5 6" />
-                                                <path d="M10 11v5" />
-                                                <path d="M14 11v5" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
+                                                Release
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                title="View History"
+                                                aria-label="View History"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                                @click="openHistoryModal(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M20 6v5h-5" />
+                                                    <path d="M19 11a7 7 0 1 0 1 4" />
+                                                </svg>
+                                            </button>
+
+                                            <button
+                                                v-if="canManageInventory"
+                                                type="button"
+                                                title="Delete Item"
+                                                aria-label="Delete Item"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+                                                @click="openDeleteItemModal(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M3 6h18" />
+                                                    <path d="M8 6V4h8v2" />
+                                                    <path d="M19 6l-1 14H6L5 6" />
+                                                    <path d="M10 11v5" />
+                                                    <path d="M14 11v5" />
+                                                </svg>
+                                            </button>
+
+                                            <button
+                                                v-if="hasIctAssetDetails(item)"
+                                                type="button"
+                                                title="Property Number / Current User"
+                                                aria-label="Property Number / Current User"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all duration-200"
+                                                :class="
+                                                    isIctExpanded(item)
+                                                        ? 'border-blue-800 bg-blue-800 text-white shadow-md shadow-blue-200 ring-4 ring-blue-100'
+                                                        : 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200 hover:border-blue-700 hover:bg-blue-700'
+                                                "
+                                                @click="toggleIctAssetDetails(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4 transition-transform duration-200"
+                                                    :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2.25"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="m6 9 6 6 6-6" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr
+                                    v-if="
+                                        hasIctAssetDetails(item)
+                                        && isIctExpanded(item)
+                                    "
+                                    class="bg-slate-50/80"
+                                >
+                                    <td
+                                        colspan="5"
+                                        class="px-4 pb-4 pt-0"
+                                    >
+                                        <div
+                                            class="overflow-hidden rounded-xl border border-blue-100 bg-white"
+                                        >
+                                            <div
+                                                class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white"
+                                            >
+                                                <span>Description</span>
+                                                <span>Property Number</span>
+                                                <span>Current User</span>
+                                            </div>
+
+                                            <div
+                                                v-for="(asset, assetIndex) in ictAssetDetails(item)"
+                                                :key="`ict-asset-row-${item.id}-${assetIndex}`"
+                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
+                                            >
+                                                <span
+                                                    class="break-words text-[11px] font-semibold text-slate-700"
+                                                >
+                                                    {{ asset.description || '—' }}
+                                                </span>
+
+                                                <span
+                                                    class="break-words text-[11px] font-black text-slate-800"
+                                                >
+                                                    {{ asset.property_number || '—' }}
+                                                </span>
+
+                                                <span
+                                                    class="break-words text-[11px] font-semibold text-slate-600"
+                                                >
+                                                    {{ asset.current_user || 'Unassigned' }}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
 
                             <tr v-if="!paginatedItems.length">
                                 <td colspan="5" class="px-6 py-16 text-center">
@@ -6883,167 +7802,258 @@ const generateInventoryReport = () => {
                             <tr>
                                 <th
                                     class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]"
-                                    :class="
-                                        currentOtherCategoryHasCount
-                                            ? 'w-[28%]'
-                                            : 'w-[36%]'
-                                    "
+                                    :class="currentOtherCategoryIsAssetTracked ? 'w-[22%]' : 'w-[28%]'"
                                 >
                                     Item
                                 </th>
 
-                                <th
-                                    v-if="currentOtherCategoryHasCount"
-                                    class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]"
-                                >
+                                <th class="w-[10%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Count
                                 </th>
 
-                                <th class="w-[25%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th
+                                    v-if="currentOtherCategoryIsAssetTracked"
+                                    class="w-[10%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]"
+                                >
+                                    Available
+                                </th>
+
+                                <th class="w-[20%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Location
                                 </th>
 
                                 <th
                                     class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]"
-                                    :class="
-                                        currentOtherCategoryHasCount
-                                            ? 'w-[23%]'
-                                            : 'w-[27%]'
-                                    "
+                                    :class="currentOtherCategoryIsAssetTracked ? 'w-[22%]' : 'w-[30%]'"
                                 >
                                     Remarks
                                 </th>
 
-                                <th class="w-[12%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[16%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Actions
                                 </th>
                             </tr>
                         </thead>
 
                         <tbody class="divide-y divide-slate-100">
-                            <tr
+                            <template
                                 v-for="item in paginatedItems"
                                 :key="`other-${item.category}-${item.id || item.item}`"
-                                class="bg-white transition hover:bg-blue-50/35"
                             >
-                                <td class="px-4 py-4 align-middle">
-                                    <p class="break-words text-xs font-black leading-5 text-slate-900">
-                                        {{ item.item }}
-                                    </p>
-                                </td>
-
-                                <td
-                                    v-if="currentOtherCategoryHasCount"
-                                    class="px-3 py-4 text-center align-middle"
+                                <tr
+                                    class="transition"
+                                    :class="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                            ? (
+                                                isIctExpanded(item)
+                                                    ? 'bg-blue-100/70'
+                                                    : 'bg-blue-50/45 hover:bg-blue-50'
+                                            )
+                                            : 'bg-white hover:bg-blue-50/35'
+                                    "
                                 >
-                                    <span class="inline-flex min-w-10 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-black tabular-nums text-slate-800">
-                                        {{ item.currently_available ?? 0 }}
-                                    </span>
-                                </td>
-
-                                <td class="px-4 py-4 align-middle">
-                                    <div class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-3 py-1.5 text-[11px] font-black text-blue-800">
-                                        {{ item.location || '—' }}
-                                    </div>
-                                </td>
-
-                                <td class="px-4 py-4 align-middle">
-                                    <p
-                                        v-if="String(item.remarks || '').trim()"
-                                        class="break-words text-[11px] font-semibold leading-5 text-slate-600"
+                                    <td
+                                        class="px-4 py-4 align-middle"
+                                        :class="
+                                            currentOtherCategoryIsAssetTracked
+                                            && hasIctAssetDetails(item)
+                                                ? 'border-l-4 border-blue-500'
+                                                : ''
+                                        "
                                     >
-                                        {{ item.remarks }}
-                                    </p>
+                                        <p
+                                            class="break-words text-xs font-black leading-5"
+                                            :class="
+                                                currentOtherCategoryIsAssetTracked
+                                                && hasIctAssetDetails(item)
+                                                    ? 'text-blue-950'
+                                                    : 'text-slate-900'
+                                            "
+                                        >
+                                            {{ item.item }}
+                                        </p>
+                                    </td>
 
-                                    <span
-                                        v-else
-                                        class="text-xs font-semibold text-slate-300"
+                                    <td class="px-3 py-4 text-center align-middle">
+                                        <span class="inline-flex min-w-10 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-black tabular-nums text-slate-800">
+                                            {{ item.currently_available ?? 0 }}
+                                        </span>
+                                    </td>
+
+                                    <td
+                                        v-if="currentOtherCategoryIsAssetTracked"
+                                        class="px-3 py-4 text-center align-middle"
                                     >
-                                        —
-                                    </span>
-                                </td>
-
-                                <td class="px-3 py-4 text-center align-middle">
-                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
-                                        <button
-                                            v-if="canManageInventory"
-                                            type="button"
-                                            class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                            @click="openFullEditModal(item)"
-                                        >
-                                            Edit
-                                        </button>
-
-                                        <button
-                                            v-if="
-                                                canManageInventory
-                                                && currentOtherCategoryCanRelease
+                                        <span
+                                            class="inline-flex min-w-10 justify-center rounded-lg border px-2.5 py-1.5 text-xs font-black tabular-nums"
+                                            :class="
+                                                ictAvailableCount(item) > 0
+                                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                    : 'border-rose-200 bg-rose-50 text-rose-700'
                                             "
-                                            type="button"
-                                            class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                            :disabled="
-                                                currentAvailableValue(item) === null
-                                                || Number(currentAvailableValue(item)) <= 0
-                                            "
-                                            @click="openReleaseItemModal(item)"
                                         >
-                                            Release
-                                        </button>
+                                            {{ ictAvailableCount(item) }}
+                                        </span>
+                                    </td>
 
-                                        <button
-                                            type="button"
-                                            title="View History"
-                                            aria-label="View History"
-                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                            @click="openHistoryModal(item)"
-                                        >
-                                            <svg
-                                                class="h-4 w-4"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                stroke-linecap="round"
-                                                stroke-linejoin="round"
-                                                aria-hidden="true"
-                                            >
-                                                <path d="M20 6v5h-5" />
-                                                <path d="M19 11a7 7 0 1 0 1 4" />
-                                            </svg>
-                                        </button>
+                                    <td class="px-4 py-4 align-middle">
+                                        <div class="inline-flex rounded-lg border border-blue-100 bg-blue-50 px-3 py-1.5 text-[11px] font-black text-blue-800">
+                                            {{ item.location || '—' }}
+                                        </div>
+                                    </td>
 
-                                        <button
-                                            v-if="canManageInventory"
-                                            type="button"
-                                            title="Delete Item"
-                                            aria-label="Delete Item"
-                                            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                                            @click="openDeleteItemModal(item)"
+                                    <td class="px-4 py-4 align-middle">
+                                        <p
+                                            v-if="String(item.remarks || '').trim()"
+                                            class="break-words text-[11px] font-semibold leading-5 text-slate-600"
                                         >
-                                            <svg
-                                                class="h-4 w-4"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                stroke-width="2"
-                                                stroke-linecap="round"
-                                                stroke-linejoin="round"
-                                                aria-hidden="true"
+                                            {{ item.remarks }}
+                                        </p>
+
+                                        <span
+                                            v-else
+                                            class="text-xs font-semibold text-slate-300"
+                                        >
+                                            —
+                                        </span>
+                                    </td>
+
+                                    <td class="px-3 py-4 text-center align-middle">
+                                        <div class="flex flex-wrap items-center justify-center gap-1.5">
+                                            <button
+                                                v-if="canManageInventory"
+                                                type="button"
+                                                class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
+                                                @click="openFullEditModal(item)"
                                             >
-                                                <path d="M3 6h18" />
-                                                <path d="M8 6V4h8v2" />
-                                                <path d="M19 6l-1 14H6L5 6" />
-                                                <path d="M10 11v5" />
-                                                <path d="M14 11v5" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
+                                                Edit
+                                            </button>
+
+                                            <button
+                                                v-if="canManageInventory && currentOtherCategoryCanRelease"
+                                                type="button"
+                                                class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
+                                                :disabled="!canReleaseInventoryItem(item)"
+                                                @click="openReleaseItemModal(item)"
+                                            >
+                                                Release
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                title="View History"
+                                                aria-label="View History"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
+                                                @click="openHistoryModal(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M20 6v5h-5" />
+                                                    <path d="M19 11a7 7 0 1 0 1 4" />
+                                                </svg>
+                                            </button>
+
+                                            <button
+                                                v-if="canManageInventory"
+                                                type="button"
+                                                title="Delete Item"
+                                                aria-label="Delete Item"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+                                                @click="openDeleteItemModal(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M3 6h18" />
+                                                    <path d="M8 6V4h8v2" />
+                                                    <path d="M19 6l-1 14H6L5 6" />
+                                                    <path d="M10 11v5" />
+                                                    <path d="M14 11v5" />
+                                                </svg>
+                                            </button>
+
+                                            <button
+                                                v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
+                                                type="button"
+                                                title="Property Number / Current User"
+                                                aria-label="Property Number / Current User"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 transition hover:bg-blue-100"
+                                                @click="toggleIctAssetDetails(item)"
+                                            >
+                                                <svg
+                                                    class="h-4 w-4 transition-transform"
+                                                    :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2.25"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="m6 9 6 6 6-6" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr
+                                    v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item) && isIctExpanded(item)"
+                                    class="bg-blue-50/80"
+                                >
+                                    <td
+                                        colspan="6"
+                                        class="border-l-4 border-blue-500 px-4 pb-4 pt-1"
+                                    >
+                                        <div class="overflow-hidden rounded-xl border-2 border-blue-200 bg-white shadow-md shadow-blue-100/80">
+                                            <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
+                                                <span>Description</span>
+                                                <span>Property Number</span>
+                                                <span>Current User</span>
+                                            </div>
+
+                                            <div
+                                                v-for="(asset, assetIndex) in ictAssetDetails(item)"
+                                                :key="`other-asset-row-${item.id}-${assetIndex}`"
+                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 transition last:border-b-0 hover:bg-blue-50/60"
+                                            >
+                                                <span class="break-words text-[11px] font-semibold text-slate-700">
+                                                    {{ asset.description || '—' }}
+                                                </span>
+
+                                                <span class="break-words text-[11px] font-black text-slate-800">
+                                                    {{ asset.property_number || '—' }}
+                                                </span>
+
+                                                <span class="break-words text-[11px] font-semibold text-slate-600">
+                                                    {{ asset.current_user || 'Unassigned' }}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
 
                             <tr v-if="!paginatedItems.length">
                                 <td
-                                    :colspan="currentOtherCategoryHasCount ? 5 : 4"
+                                    :colspan="currentOtherCategoryIsAssetTracked ? 6 : 5"
                                     class="px-6 py-16 text-center"
                                 >
                                     <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
@@ -7068,362 +8078,6 @@ const generateInventoryReport = () => {
                         </tbody>
                     </table>
                 </div>
-
-<!-- MOBILE LEDGER CARDS -->
-                <div v-if="activeTab === 'supplies'" class="space-y-3 p-4 lg:hidden">
-                    <article
-                        v-for="item in paginatedItems"
-                        :key="`mobile-${activeTab}-${item.id || item.item}`"
-                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
-                    >
-                        <div class="border-b border-slate-100 px-4 py-4">
-                            <div class="flex items-start justify-between gap-3">
-                                <div class="min-w-0">
-                                    <p class="break-words text-sm font-black leading-5 text-slate-900">
-                                        {{ item.item }}
-                                    </p>
-
-                                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                                        <span
-                                            class="rounded-md border px-2 py-0.5 text-[9px] font-black"
-                                            :class="unitBadgeClass(item.unit)"
-                                        >
-                                            {{ item.unit }}
-                                        </span>
-
-                                        <span
-                                            v-for="quarter in quarterBadges(item)"
-                                            :key="`mobile-${activeTab}-${item.item}-${quarter}`"
-                                            class="rounded-md border border-blue-100 bg-blue-50 px-2 py-0.5 text-[9px] font-black text-blue-700"
-                                        >
-                                            {{ quarter }}
-                                        </span>
-                                    </div>
-
-
-                                    <div
-                                        v-if="visibleQuarterBalanceEntries(item).length"
-                                        class="mt-2 flex flex-wrap gap-1"
-                                    >
-                                        <span
-                                            v-for="entry in visibleQuarterBalanceEntries(item)"
-                                            :key="`mobile-supply-balance-${item.id}-${entry.quarter}`"
-                                            class="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700"
-                                        >
-                                            {{ entry.quarter.toUpperCase() }}
-                                            · Added: {{ entry.added }}
-                                            · Remaining: {{ entry.current }}
-                                        </span>
-                                    </div>
-                                </div>
-
-                                <span
-                                    class="shrink-0 rounded-full border px-2.5 py-1 text-[9px] font-black"
-                                    :class="stockStatusClass(item)"
-                                >
-                                    {{ stockStatusLabel(item) }}
-                                </span>
-                            </div>
-                        </div>
-
-                        <div class="grid grid-cols-3 divide-x divide-slate-100 border-b border-slate-100">
-                            <div class="p-3 text-center">
-                                <p class="text-[8px] font-black uppercase tracking-[0.12em] text-slate-400">
-                                    Fixed
-                                </p>
-
-                                <p class="mt-1 text-base font-black tabular-nums text-slate-900">
-                                    {{ hasFixedBaseline(item) ? item.fixed : '—' }}
-                                </p>
-                            </div>
-
-                            <div class="p-3 text-center">
-                                <p class="text-[8px] font-black uppercase tracking-[0.12em] text-blue-500">
-                                    Released
-                                </p>
-
-                                <p
-                                    class="mt-1 text-base font-black tabular-nums text-blue-700"
-                                >
-                                    {{
-                                        quantityReleasedValue(item)
-                                        ?? '—'
-                                    }}
-                                </p>
-
-                            </div>
-
-                            <div class="bg-slate-50 p-3 text-center">
-                                <p class="text-[8px] font-black uppercase tracking-[0.12em] text-emerald-600">
-                                    {{ releaseCurrentLabel }}
-                                </p>
-
-                                <p class="mt-1 text-base font-black tabular-nums text-slate-900">
-                                    {{ currentAvailableValue(item) ?? '—' }}
-                                </p>
-                            </div>
-                        </div>
-
-                        <div
-                            v-if="
-                                differenceValue(displayInventoryItem(item)) !== null
-                                && item.fixed !== null
-                                && item.fixed !== undefined
-                                && Number(item.fixed) > 0
-                            "
-                            class="px-4 pt-4"
-                        >
-                            <div class="h-1.5 overflow-hidden rounded-full bg-slate-200">
-                                <div
-                                    class="h-full rounded-full transition-all duration-300"
-                                    :class="remainingBarClass(item)"
-                                    :style="{
-                                        width: `${remainingPercent(item)}%`,
-                                    }"
-                                ></div>
-                            </div>
-
-                            <p class="mt-1 text-right text-[9px] font-bold text-slate-400">
-                                {{ remainingPercent(item) }}% remaining
-                            </p>
-                        </div>
-
-                        <div class="space-y-3 p-4">
-                            <div
-                                class="rounded-xl border border-slate-100 bg-slate-50 p-3"
-                            >
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
-                                    Remarks
-                                </p>
-
-                                <p class="mt-1 text-xs font-semibold leading-5 text-slate-600">
-                                    {{ item.remarks || 'No remarks' }}
-                                </p>
-                            </div>
-
-                            <div class="flex justify-end gap-2">
-                                <button v-if="canManageInventory"
-                                    type="button"
-                                    class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                    @click="openFullEditModal(item)"
-                                >
-                                    Edit
-                                </button>
-
-                                <button v-if="canManageInventory"
-                                    type="button"
-                                    class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                    :disabled="
-                                        currentAvailableValue(item) === null
-                                        || Number(currentAvailableValue(item)) <= 0
-                                        || !canReleaseInCurrentView(item)
-                                    "
-                                    @click="openReleaseItemModal(item)"
-                                >
-                                    Release
-                                </button>
-
-                                <button
-                                    type="button"
-                                    title="View History"
-                                    aria-label="View History"
-                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                    @click="openHistoryModal(item)"
-                                >
-                                    <svg
-                                        class="h-5 w-5"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <path d="M20 6v5h-5" />
-                                        <path d="M19 11a7 7 0 1 0 1 4" />
-                                    </svg>
-                                </button>
-
-                                <button
-                                    v-if="canManageInventory"
-                                    type="button"
-                                    title="Delete Item"
-                                    aria-label="Delete Item"
-                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                                    @click="openDeleteItemModal(item)"
-                                >
-                                    <svg
-                                        class="h-5 w-5"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <path d="M3 6h18" />
-                                        <path d="M8 6V4h8v2" />
-                                        <path d="M19 6l-1 14H6L5 6" />
-                                        <path d="M10 11v5" />
-                                        <path d="M14 11v5" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                    </article>
-
-                    <div
-                        v-if="!paginatedItems.length"
-                        class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
-                    >
-                        <p class="text-sm font-black text-slate-700">
-                            No items found
-                        </p>
-
-                        <p
-                            v-if="quarterFilter !== 'all'"
-                            class="mt-1 text-xs font-semibold text-slate-400"
-                        >
-                            No items are assigned to {{ quarterFilter.toUpperCase() }}.
-                        </p>
-                    </div>
-                </div>
-
-                
-                <!-- ICT MOBILE -->
-                <div
-                    v-if="activeTab === 'ict'"
-                    class="space-y-3 p-4 lg:hidden"
-                >
-                    <article
-                        v-for="item in paginatedItems"
-                        :key="`mobile-${activeTab}-${item.category}-${item.id || item.item}`"
-                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
-                    >
-                        <div class="border-b border-slate-100 px-4 py-4">
-                            <div class="flex items-start justify-between gap-3">
-                                <div class="min-w-0">
-                                    <p class="break-words text-sm font-black leading-5 text-slate-900">
-                                        {{ item.item }}
-                                    </p>
-
-
-
-
-                                </div>
-
-                                <span
-                                    class="shrink-0 rounded-md border px-2 py-1 text-[9px] font-black"
-                                    :class="unitBadgeClass(item.unit)"
-                                >
-                                    {{ item.unit || '—' }}
-                                </span>
-                            </div>
-                        </div>
-
-                        <div class="space-y-3 p-4">
-                            <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
-                                    {{ ictQuantityLabel(item) }}
-                                </p>
-
-                                <p class="mt-1 text-sm font-black tabular-nums text-slate-900">
-                                    {{ ictQuantityDisplay(item) }}
-                                </p>
-                            </div>
-
-                            <div class="rounded-xl border border-blue-100 bg-blue-50 p-3">
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-blue-500">
-                                    Inventory Year
-                                </p>
-
-                                <p class="mt-1 text-sm font-black tabular-nums text-blue-900">
-                                    {{ item.inventory_year }}
-                                </p>
-                            </div>
-
-                            <div class="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
-                                    Remarks
-                                </p>
-
-                                <p class="mt-1 break-words text-xs font-semibold leading-5 text-slate-600">
-                                    {{ String(item.remarks || '').trim() || '—' }}
-                                </p>
-                            </div>
-
-
-                            <div class="flex justify-end gap-2">
-                                <button
-                                    v-if="canManageInventory"
-                                    type="button"
-                                    class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                    @click="openFullEditModal(item)"
-                                >
-                                    Edit
-                                </button>
-
-                                <button
-                                    v-if="canManageInventory"
-                                    type="button"
-                                    class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                    :disabled="
-                                        currentAvailableValue(item) === null
-                                        || Number(currentAvailableValue(item)) <= 0
-                                        || !canReleaseInCurrentView(item)
-                                    "
-                                    @click="openReleaseItemModal(item)"
-                                >
-                                    Release
-                                </button>
-
-                                <button
-                                    type="button"
-                                    title="View History"
-                                    aria-label="View History"
-                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                    @click="openHistoryModal(item)"
-                                >
-                                    <svg
-                                        class="h-5 w-5"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <path d="M20 6v5h-5" />
-                                        <path d="M19 11a7 7 0 1 0 1 4" />
-                                    </svg>
-                                </button>
-
-                                <button
-                                    v-if="canManageInventory"
-                                    type="button"
-                                    class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
-                                    @click="openDeleteItemModal(item)"
-                                >
-                                    Delete
-                                </button>
-                            </div>
-                        </div>
-                    </article>
-
-                    <div
-                        v-if="!paginatedItems.length"
-                        class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
-                    >
-                        <p class="text-sm font-black text-slate-700">
-                            No ICT items found
-                        </p>
-                    </div>
-                </div>
-
-
                 <!-- OTHER ITEMS MOBILE -->
                 <div
                     v-if="activeTab === 'other'"
@@ -7432,25 +8086,65 @@ const generateInventoryReport = () => {
                     <article
                         v-for="item in paginatedItems"
                         :key="`mobile-other-${item.category}-${item.id || item.item}`"
-                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                        class="overflow-hidden rounded-2xl border bg-white transition-all"
+                        :class="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                                ? (
+                                    isIctExpanded(item)
+                                        ? 'border-blue-400 shadow-md shadow-blue-100 ring-2 ring-blue-100'
+                                        : 'border-blue-200 shadow-sm'
+                                )
+                                : 'border-slate-200 shadow-sm'
+                        "
                     >
-                        <div class="border-b border-slate-100 px-4 py-4">
-                            <p class="break-words text-sm font-black leading-5 text-slate-900">
+                        <div
+                            class="border-b px-4 py-4"
+                            :class="
+                                currentOtherCategoryIsAssetTracked
+                                && hasIctAssetDetails(item)
+                                    ? (
+                                        isIctExpanded(item)
+                                            ? 'border-blue-200 bg-blue-100/70'
+                                            : 'border-blue-100 bg-blue-50/60'
+                                    )
+                                    : 'border-slate-100'
+                            "
+                        >
+                            <p
+                                class="break-words text-sm font-black leading-5"
+                                :class="
+                                    currentOtherCategoryIsAssetTracked
+                                    && hasIctAssetDetails(item)
+                                        ? 'text-blue-950'
+                                        : 'text-slate-900'
+                                "
+                            >
                                 {{ item.item }}
                             </p>
                         </div>
 
                         <div class="space-y-3 p-4">
-                            <div
-                                v-if="currentOtherCategoryHasCount"
-                                class="rounded-xl border border-slate-200 bg-slate-50 p-3"
-                            >
+                            <div class="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                 <p class="text-[9px] font-black uppercase tracking-[0.13em] text-slate-400">
                                     Count
                                 </p>
 
                                 <p class="mt-1 text-sm font-black tabular-nums text-slate-900">
                                     {{ item.currently_available ?? 0 }}
+                                </p>
+                            </div>
+
+                            <div
+                                v-if="currentOtherCategoryIsAssetTracked"
+                                class="rounded-xl border border-emerald-100 bg-emerald-50 p-3"
+                            >
+                                <p class="text-[9px] font-black uppercase tracking-[0.13em] text-emerald-600">
+                                    Available
+                                </p>
+
+                                <p class="mt-1 text-sm font-black tabular-nums text-emerald-900">
+                                    {{ ictAvailableCount(item) }}
                                 </p>
                             </div>
 
@@ -7474,7 +8168,34 @@ const generateInventoryReport = () => {
                                 </p>
                             </div>
 
-                            <div class="flex justify-end gap-2">
+                            <div
+                                v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item) && isIctExpanded(item)"
+                                class="overflow-hidden rounded-xl border-2 border-blue-200 bg-white shadow-sm shadow-blue-100"
+                            >
+                                <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
+                                    <span>Description</span>
+                                    <span>Property Number</span>
+                                    <span>Current User</span>
+                                </div>
+
+                                <div
+                                    v-for="(asset, assetIndex) in ictAssetDetails(item)"
+                                    :key="`mobile-other-asset-${item.id}-${assetIndex}`"
+                                    class="grid grid-cols-3 gap-3 border-b border-blue-100 px-3 py-2.5 last:border-b-0"
+                                >
+                                    <span class="break-words text-[10px] font-semibold text-slate-700">
+                                        {{ asset.description || '—' }}
+                                    </span>
+                                    <span class="break-words text-[10px] font-black text-slate-800">
+                                        {{ asset.property_number || '—' }}
+                                    </span>
+                                    <span class="break-words text-[10px] font-semibold text-slate-600">
+                                        {{ asset.current_user || 'Unassigned' }}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-wrap justify-end gap-2">
                                 <button
                                     v-if="canManageInventory"
                                     type="button"
@@ -7485,16 +8206,10 @@ const generateInventoryReport = () => {
                                 </button>
 
                                 <button
-                                    v-if="
-                                        canManageInventory
-                                        && currentOtherCategoryCanRelease
-                                    "
+                                    v-if="canManageInventory && currentOtherCategoryCanRelease"
                                     type="button"
                                     class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-                                    :disabled="
-                                        currentAvailableValue(item) === null
-                                        || Number(currentAvailableValue(item)) <= 0
-                                    "
+                                    :disabled="!canReleaseInventoryItem(item)"
                                     @click="openReleaseItemModal(item)"
                                 >
                                     Release
@@ -7530,20 +8245,47 @@ const generateInventoryReport = () => {
                                 >
                                     Delete
                                 </button>
+
+                                <button
+                                    v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
+                                    type="button"
+                                    title="Property Number / Current User"
+                                    aria-label="Property Number / Current User"
+                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-all duration-200"
+                                    :class="
+                                        isIctExpanded(item)
+                                            ? 'border-blue-800 bg-blue-800 text-white shadow-md shadow-blue-200 ring-4 ring-blue-100'
+                                            : 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200 hover:border-blue-700 hover:bg-blue-700'
+                                    "
+                                    @click="toggleIctAssetDetails(item)"
+                                >
+                                    <svg
+                                        class="h-4 w-4 transition-transform duration-200"
+                                        :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2.25"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="m6 9 6 6 6-6" />
+                                    </svg>
+                                </button>
                             </div>
                         </div>
                     </article>
 
                     <div
                         v-if="!paginatedItems.length"
-                        class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center"
+                        class="rounded-2xl border border-dashed border-slate-200 bg-white px-6 py-12 text-center"
                     >
-                        <p class="text-sm font-black text-slate-700">
+                        <p class="text-sm font-black text-slate-600">
                             No {{ currentOtherCategoryLabel.toLowerCase() }} found
                         </p>
                     </div>
                 </div>
-
 <!-- COMPACT PAGINATION -->
                 <div class="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/80 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
                     <p class="text-xs font-semibold text-slate-500">
@@ -7775,26 +8517,51 @@ const generateInventoryReport = () => {
 
                     <div
                         v-if="activeTab === 'other'"
-                        class="rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3"
+                        class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3"
                     >
-                        <p class="text-xs font-black text-blue-800">
-                            Other Items · {{ currentOtherCategoryLabel }}
+                        <p class="text-xs font-black text-blue-900">
+                            Add Other Item
                         </p>
-                        <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700/80">
-                            {{
-                                currentOtherCategoryHasCount
-                                    ? 'Enter the item name, count, current location, and optional remarks.'
-                                    : 'Enter only the item name, current location, and optional remarks.'
-                            }}
+                        <p class="mt-1 text-[11px] font-semibold leading-5 text-blue-700">
+                            Select Furniture/Fixtures, Emergency Kits, or Token and Giveaways, then complete the details below.
                         </p>
                     </div>
 
                     <div
                         class="grid grid-cols-1 gap-5 md:grid-cols-2"
                     >
-                        <!-- ITEM -->
+                        <!-- OTHER ITEMS CATEGORY -->
                         <div
-                            class="md:col-span-2"
+                            v-if="activeTab === 'other'"
+                        >
+                            <label
+                                class="mb-2 block text-sm font-black text-slate-800"
+                            >
+                                Category
+                            </label>
+
+                            <select
+                                v-model="newItemForm.other_category"
+                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            >
+                                <option
+                                    v-for="option in otherCategoryOptions"
+                                    :key="`add-other-${option.value}`"
+                                    :value="option.value"
+                                >
+                                    {{ option.label }}
+                                </option>
+                            </select>
+                        </div>
+
+
+                        <!-- ITEM NAME -->
+                        <div
+                            :class="
+                                activeTab === 'other'
+                                    ? ''
+                                    : 'md:col-span-2'
+                            "
                         >
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
@@ -7829,13 +8596,12 @@ const generateInventoryReport = () => {
                         </div>
 
 
-                        <!-- COUNT — OTHER ITEMS EXCEPT EMERGENCY KITS -->
+                        <!-- COUNT — OTHER ITEMS -->
                         <div
                             v-if="
                                 activeTab === 'other'
-                                && currentOtherCategoryHasCount
+                                && addOtherCategoryHasCount
                             "
-                            class="md:col-span-2"
                         >
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
@@ -7869,7 +8635,6 @@ const generateInventoryReport = () => {
                         <!-- LOCATION — OTHER ITEMS ONLY -->
                         <div
                             v-if="activeTab === 'other'"
-                            class="md:col-span-2"
                         >
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
@@ -7898,7 +8663,7 @@ const generateInventoryReport = () => {
                         </div>
 
 
-                        <!-- UNIT -->
+                        <!-- UNIT OF MEASURE -->
                         <div v-if="activeTab !== 'other'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
@@ -7953,8 +8718,46 @@ const generateInventoryReport = () => {
 
 
 
-                        <!-- ICT COUNT / SUBSCRIPTION DURATION -->
+                        <!-- ICT INVENTORY YEAR -->
                         <div v-if="activeTab === 'ict'">
+                            <label
+                                class="mb-2 block text-sm font-black text-slate-800"
+                            >
+                                Inventory Year
+                            </label>
+
+                            <select
+                                v-model.number="newItemForm.inventory_year"
+                                class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:ring-4 focus:ring-blue-100"
+                                :class="
+                                    addItemErrors.inventory_year
+                                        ? 'border-rose-400'
+                                        : 'border-slate-200 focus:border-blue-400'
+                                "
+                            >
+                                <option
+                                    v-for="year in yearOptions"
+                                    :key="`add-ict-year-${year}`"
+                                    :value="year"
+                                >
+                                    {{ year }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="addItemErrors.inventory_year"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.inventory_year }}
+                            </p>
+                        </div>
+
+
+                        <!-- ICT COUNT / SUBSCRIPTION DURATION -->
+                        <div
+                            v-if="activeTab === 'ict'"
+                            class="md:col-span-2"
+                        >
                             <label class="mb-2 block text-sm font-black text-slate-800">
                                 {{
                                     isIctMonthBased(newItemForm.unit)
@@ -7994,8 +8797,185 @@ const generateInventoryReport = () => {
                         </div>
 
 
-                        <!-- INVENTORY YEAR -->
-                        <div v-if="activeTab !== 'other'">
+                        <!-- ICT PROPERTY DETAILS -->
+                        <div
+                            v-if="
+                                (
+                                    activeTab === 'ict'
+                                    && !isIctSubscription(newItemForm.unit)
+                                )
+                                || (
+                                    activeTab === 'other'
+                                    && addOtherCategoryIsAssetTracked
+                                )
+                            "
+                            class="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
+                        >
+                            <div
+                                class="flex flex-wrap items-center justify-between gap-3"
+                            >
+                                <div>
+                                    <p class="text-sm font-black text-slate-900">
+                                        Property Details
+                                    </p>
+                                    <p class="mt-1 text-xs font-semibold text-slate-500">
+                                        {{
+                                            activeTab === 'ict'
+                                                ? 'Each ICT unit requires Description and Property Number. Current User is optional.'
+                                                : (
+                                                    activeTab === 'other'
+                                                    && addOtherCategoryIsAssetTracked
+                                                        ? 'Each Furniture/Fixtures unit requires Description and Property Number. Current User is optional.'
+                                                        : 'The number of property rows automatically follows the Count. Property Number is required; Current User is optional.'
+                                                )
+                                        }}
+                                    </p>
+                                </div>
+
+                                <span
+                                    class="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                >
+                                    {{
+                                        ictEquipmentCount(
+                                            newItemForm.currently_available
+                                        )
+                                    }}
+                                    Property
+                                    {{
+                                        ictEquipmentCount(
+                                            newItemForm.currently_available
+                                        ) === 1
+                                            ? 'Row'
+                                            : 'Rows'
+                                    }}
+                                </span>
+                            </div>
+
+                            <p
+                                v-if="addItemErrors.ict_assets"
+                                class="mt-3 text-xs font-bold text-rose-600"
+                            >
+                                {{ addItemErrors.ict_assets }}
+                            </p>
+
+                            <div
+                                v-if="newItemForm.ict_assets.length"
+                                class="mt-4 space-y-3"
+                            >
+                                <div
+                                    v-for="(asset, assetIndex) in newItemForm.ict_assets"
+                                    :key="`new-ict-asset-${assetIndex}`"
+                                    class="grid gap-3 rounded-xl border border-slate-200 bg-white p-3"
+                                    :class="
+                                        (
+                                            activeTab === 'ict'
+                                            || (
+                                                activeTab === 'other'
+                                                && addOtherCategoryIsAssetTracked
+                                            )
+                                        )
+                                            ? 'sm:grid-cols-3'
+                                            : 'sm:grid-cols-2'
+                                    "
+                                >
+                                    <div
+                                        v-if="
+                                            activeTab === 'ict'
+                                            || (
+                                                activeTab === 'other'
+                                                && addOtherCategoryIsAssetTracked
+                                            )
+                                        "
+                                    >
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                        >
+                                            Description
+                                            <span class="text-rose-500">*</span>
+                                        </label>
+
+                                        <input
+                                            v-model="asset.description"
+                                            type="text"
+                                            maxlength="255"
+                                            :placeholder="`Description #${assetIndex + 1}`"
+                                            class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                            :class="
+                                                addItemErrors[`ict_assets.${assetIndex}.description`]
+                                                    ? 'border-rose-400'
+                                                    : 'border-slate-200 focus:border-blue-400'
+                                            "
+                                        />
+
+                                        <p
+                                            v-if="addItemErrors[`ict_assets.${assetIndex}.description`]"
+                                            class="mt-1 text-[10px] font-bold text-rose-600"
+                                        >
+                                            {{ addItemErrors[`ict_assets.${assetIndex}.description`] }}
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                        >
+                                            Property Number
+                                            <span class="text-rose-500">*</span>
+                                        </label>
+
+                                        <input
+                                            v-model="asset.property_number"
+                                            type="text"
+                                            maxlength="100"
+                                            :placeholder="`Property #${assetIndex + 1}`"
+                                            class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                            :class="
+                                                addItemErrors[`ict_assets.${assetIndex}.property_number`]
+                                                    ? 'border-rose-400'
+                                                    : 'border-slate-200 focus:border-blue-400'
+                                            "
+                                        />
+
+                                        <p
+                                            v-if="addItemErrors[`ict_assets.${assetIndex}.property_number`]"
+                                            class="mt-1 text-[10px] font-bold text-rose-600"
+                                        >
+                                            {{ addItemErrors[`ict_assets.${assetIndex}.property_number`] }}
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                        >
+                                            Current User
+                                            <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                                (Optional)
+                                            </span>
+                                        </label>
+
+                                        <input
+                                            v-model="asset.current_user"
+                                            type="text"
+                                            maxlength="255"
+                                            placeholder="Employee / Office / User"
+                                            class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div
+                                v-else
+                                class="mt-4 rounded-xl border border-dashed border-blue-200 bg-white/70 px-4 py-5 text-center text-xs font-semibold text-slate-400"
+                            >
+                                Enter a Count above to generate the Property Detail rows.
+                            </div>
+                        </div>
+
+
+                        <!-- INVENTORY YEAR - SUPPLIES -->
+                        <div v-if="activeTab === 'supplies'">
                             <label
                                 class="mb-2 block text-sm font-black text-slate-800"
                             >
@@ -8339,7 +9319,10 @@ const generateInventoryReport = () => {
                                 Edit Inventory Item
                             </p>
                             <h3 class="mt-1 break-words text-xl font-black text-slate-900">
-                                {{ fullEditingItem.item || 'Inventory Item' }}
+                                {{
+                                    fullEditingItem.item
+                                    || 'Inventory Item'
+                                }}
                             </h3>
                             <p class="mt-1 text-xs font-semibold text-slate-500">
                                 Edit all item details here. Quantity Released remains automatic.
@@ -8368,7 +9351,7 @@ const generateInventoryReport = () => {
                         >
                             <option value="supplies">Supplies</option>
                             <option value="ict">ICT</option>
-                            <option value="furniture">Other Items - Furniture</option>
+                            <option value="furniture">Other Items - Furniture/Fixtures</option>
                             <option value="emergency_kits">Other Items - Emergency Kits</option>
                             <option value="token_giveaways">Other Items - Token and Giveaways</option>
                         </select>
@@ -8389,7 +9372,7 @@ const generateInventoryReport = () => {
                     </div>
 
                     <div>
-                        <label class="mb-2 block text-sm font-black text-slate-800">Item</label>
+                        <label class="mb-2 block text-sm font-black text-slate-800">Item Name</label>
                         <input
                             v-model="fullEditForm.item"
                             type="text"
@@ -8503,6 +9486,180 @@ const generateInventoryReport = () => {
                             {{ fullEditErrors.currently_available }}
                         </p>
                     </div>
+
+                    <div
+                        v-if="
+                            (
+                                fullEditForm.category === 'ict'
+                                && !isIctSubscription(fullEditForm.unit)
+                            )
+                            || isPropertyTrackedOtherCategory(
+                                fullEditForm.category
+                            )
+                        "
+                        class="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
+                    >
+                        <div
+                            class="flex flex-wrap items-center justify-between gap-3"
+                        >
+                            <div>
+                                <p class="text-sm font-black text-slate-900">
+                                    Property Details
+                                </p>
+                                <p class="mt-1 text-xs font-semibold text-slate-500">
+                                    {{
+                                        fullEditForm.category === 'ict'
+                                            ? 'Each ICT unit requires Description and Property Number. Current User is optional.'
+                                            : (
+                                                isPropertyTrackedOtherCategory(
+                                                    fullEditForm.category
+                                                )
+                                                    ? 'Each Furniture/Fixtures unit requires Description and Property Number. Current User is optional.'
+                                                    : 'Property rows automatically match the Count. Property Number is required; Current User is optional.'
+                                            )
+                                    }}
+                                </p>
+                            </div>
+
+                            <span
+                                class="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                            >
+                                {{
+                                    ictEquipmentCount(
+                                        fullEditForm.currently_available
+                                    )
+                                }}
+                                Property
+                                {{
+                                    ictEquipmentCount(
+                                        fullEditForm.currently_available
+                                    ) === 1
+                                        ? 'Row'
+                                        : 'Rows'
+                                }}
+                            </span>
+                        </div>
+
+                        <p
+                            v-if="fullEditErrors.ict_assets"
+                            class="mt-3 text-xs font-bold text-rose-600"
+                        >
+                            {{ fullEditErrors.ict_assets }}
+                        </p>
+
+                        <div
+                            v-if="fullEditForm.ict_assets.length"
+                            class="mt-4 space-y-3"
+                        >
+                            <div
+                                v-for="(asset, assetIndex) in fullEditForm.ict_assets"
+                                :key="`edit-ict-asset-${assetIndex}`"
+                                class="grid gap-3 rounded-xl border border-slate-200 bg-white p-3"
+                                :class="
+                                    (
+                                        fullEditForm.category === 'ict'
+                                        || isPropertyTrackedOtherCategory(
+                                            fullEditForm.category
+                                        )
+                                    )
+                                        ? 'sm:grid-cols-3'
+                                        : 'sm:grid-cols-2'
+                                "
+                            >
+                                <div
+                                    v-if="
+                                        fullEditForm.category === 'ict'
+                                        || isPropertyTrackedOtherCategory(
+                                            fullEditForm.category
+                                        )
+                                    "
+                                >
+                                    <label
+                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                    >
+                                        Description
+                                        <span class="text-rose-500">*</span>
+                                    </label>
+
+                                    <input
+                                        v-model="asset.description"
+                                        type="text"
+                                        maxlength="255"
+                                        :placeholder="`Description #${assetIndex + 1}`"
+                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                        :class="
+                                            fullEditErrors[`ict_assets.${assetIndex}.description`]
+                                                ? 'border-rose-400'
+                                                : 'border-slate-200 focus:border-blue-400'
+                                        "
+                                    />
+
+                                    <p
+                                        v-if="fullEditErrors[`ict_assets.${assetIndex}.description`]"
+                                        class="mt-1 text-[10px] font-bold text-rose-600"
+                                    >
+                                        {{ fullEditErrors[`ict_assets.${assetIndex}.description`] }}
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <label
+                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                    >
+                                        Property Number
+                                        <span class="text-rose-500">*</span>
+                                    </label>
+
+                                    <input
+                                        v-model="asset.property_number"
+                                        type="text"
+                                        maxlength="100"
+                                        :placeholder="`Property #${assetIndex + 1}`"
+                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                        :class="
+                                            fullEditErrors[`ict_assets.${assetIndex}.property_number`]
+                                                ? 'border-rose-400'
+                                                : 'border-slate-200 focus:border-blue-400'
+                                        "
+                                    />
+
+                                    <p
+                                        v-if="fullEditErrors[`ict_assets.${assetIndex}.property_number`]"
+                                        class="mt-1 text-[10px] font-bold text-rose-600"
+                                    >
+                                        {{ fullEditErrors[`ict_assets.${assetIndex}.property_number`] }}
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <label
+                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                    >
+                                        Current User
+                                        <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                            (Optional)
+                                        </span>
+                                    </label>
+
+                                    <input
+                                        v-model="asset.current_user"
+                                        type="text"
+                                        maxlength="255"
+                                        placeholder="Employee / Office / User"
+                                        class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div
+                            v-else
+                            class="mt-4 rounded-xl border border-dashed border-blue-200 bg-white/70 px-4 py-5 text-center text-xs font-semibold text-slate-400"
+                        >
+                            Set the Count above to generate the Property Detail rows.
+                        </div>
+                    </div>
+
 
                     <template v-if="fullEditForm.category === 'supplies'">
                         <div class="sm:col-span-2">
@@ -8814,20 +9971,37 @@ const generateInventoryReport = () => {
                                 class="text-[9px] font-black uppercase tracking-[0.12em] text-blue-500"
                             >
                                 {{
-                                    releaseIsIct
-                                        ? `${releaseQuantityLabel} Released`
-                                        : 'Quantity Released'
+                                    releaseIsIctAsset
+                                        ? 'Total Count'
+                                        : (
+                                            releaseIsIct
+                                                ? `${releaseQuantityLabel} Released`
+                                                : 'Quantity Released'
+                                        )
                                 }}
                             </p>
 
                             <p
                                 class="mt-1 text-2xl font-black tabular-nums text-blue-700"
                             >
-                                {{ releaseTotalReleased ?? '—' }}
+                                {{
+                                    releaseIsIctAsset
+                                        ? (
+                                            releasingItem?.currently_available
+                                            ?? 0
+                                        )
+                                        : (
+                                            releaseTotalReleased
+                                            ?? '—'
+                                        )
+                                }}
                             </p>
 
                             <p
-                                v-if="!releaseHasFixedBaseline"
+                                v-if="
+                                    !releaseHasFixedBaseline
+                                    && !releaseIsIctAsset
+                                "
                                 class="mt-1 text-[9px] font-bold leading-3 text-slate-400"
                             >
                                 System-tracked total · each release adds to this number.
@@ -8851,22 +10025,52 @@ const generateInventoryReport = () => {
                         </div>
                     </div>
 
-                    <!-- QUANTITY TO RELEASE -->
-                    <div>
-                        <div
-                            class="mb-2 flex items-end justify-between gap-3"
+                    <!-- ICT PROPERTY TO RELEASE -->
+                    <div v-if="releaseIsIctAsset">
+                        <div class="mb-2 flex items-end justify-between gap-3">
+                            <label class="block text-sm font-black text-slate-800">
+                                Available Property Number
+                            </label>
+                            <span class="text-[10px] font-bold text-slate-400">
+                                {{ releaseAvailableProperties.length }} available
+                            </span>
+                        </div>
+
+                        <select
+                            v-model="releaseItemForm.releasePropertyNumber"
+                            class="h-12 w-full rounded-xl border bg-white px-4 text-sm font-black text-slate-900 outline-none transition focus:ring-4 focus:ring-blue-100"
+                            :class="
+                                releaseItemErrors.releasePropertyNumber
+                                    ? 'border-rose-400'
+                                    : 'border-slate-200 focus:border-blue-400'
+                            "
                         >
-                            <label
-                                class="block text-sm font-black text-slate-800"
+                            <option value="" disabled>Select available property number</option>
+                            <option
+                                v-for="asset in releaseAvailableProperties"
+                                :key="`release-property-${asset.property_number}`"
+                                :value="asset.property_number"
                             >
+                                {{ asset.property_number }}
+                            </option>
+                        </select>
+
+                        <p
+                            v-if="releaseItemErrors.releasePropertyNumber"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ releaseItemErrors.releasePropertyNumber }}
+                        </p>
+                    </div>
+
+                    <!-- QUANTITY / DURATION TO RELEASE -->
+                    <div v-else>
+                        <div class="mb-2 flex items-end justify-between gap-3">
+                            <label class="block text-sm font-black text-slate-800">
                                 {{ releaseActionLabel }}
                             </label>
-
-                            <span
-                                class="text-[10px] font-bold text-slate-400"
-                            >
-                                Max:
-                                {{ releaseCurrentAvailable }}
+                            <span class="text-[10px] font-bold text-slate-400">
+                                Max: {{ releaseCurrentAvailable }}
                             </span>
                         </div>
 
@@ -8893,9 +10097,7 @@ const generateInventoryReport = () => {
                             v-if="releaseItemErrors.releaseQuantity"
                             class="mt-2 text-xs font-bold text-rose-600"
                         >
-                            {{
-                                releaseItemErrors.releaseQuantity
-                            }}
+                            {{ releaseItemErrors.releaseQuantity }}
                         </p>
                     </div>
 
@@ -8928,8 +10130,15 @@ const generateInventoryReport = () => {
                                     class="mt-1 text-lg font-black tabular-nums text-slate-900"
                                 >
                                     {{
-                                        releaseTotalReleasedAfter
-                                        ?? '—'
+                                        releaseIsIctAsset
+                                            ? (
+                                                releaseItemForm.releasePropertyNumber
+                                                || '—'
+                                            )
+                                            : (
+                                                releaseTotalReleasedAfter
+                                                ?? '—'
+                                            )
                                     }}
                                 </p>
                             </div>
@@ -8962,13 +10171,21 @@ const generateInventoryReport = () => {
                         <label
                             class="mb-2 block text-sm font-black text-slate-800"
                         >
-                            Released To / Destination
+                            {{
+                                releaseIsIctAsset
+                                    ? 'Current User / Released To'
+                                    : 'Released To / Destination'
+                            }}
                         </label>
 
                         <input
                             v-model="releaseItemForm.releaseDestination"
                             type="text"
-                            placeholder="Example: SPD Library, MIS Staff, Conference Room"
+                            :placeholder="
+                                releaseIsIctAsset
+                                    ? 'Example: Juan Dela Cruz'
+                                    : 'Example: SPD Library, MIS Staff, Conference Room'
+                            "
                             class="h-12 w-full rounded-xl border bg-white px-4 text-sm font-semibold text-slate-800 outline-none transition focus:ring-4 focus:ring-blue-100"
                             :class="
                                 releaseItemErrors.releaseDestination
@@ -9025,6 +10242,13 @@ const generateInventoryReport = () => {
                             class="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                             :disabled="
                                 releaseCurrentAvailable <= 0
+                                || (
+                                    releaseIsIctAsset
+                                    && !String(
+                                        releaseItemForm.releasePropertyNumber
+                                        || ''
+                                    ).trim()
+                                )
                             "
                         >
                             Release Item
@@ -9665,7 +10889,7 @@ const generateInventoryReport = () => {
     text-size-adjust: 100%;
 }
 
-.inventory-accessibility-root.a11y-readable-font,
+.inventory-accessibility-root.a11y-readable-font,   
 .inventory-accessibility-root.a11y-readable-font * {
     font-family:
         Arial,
