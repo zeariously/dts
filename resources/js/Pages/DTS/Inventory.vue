@@ -17,6 +17,16 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+
+    reconciliations: {
+        type: Object,
+        default: () => ({}),
+    },
+
+    purchaseRequestValidations: {
+        type: Object,
+        default: () => ({}),
+    },
 })
 
 const canManageInventory = computed(() =>
@@ -31,6 +41,788 @@ const quarterFilter = ref('all')
 const currentPage = ref(1)
 
 const perPage = 8
+
+
+const prValidationCategory = ref('supplies')
+const prValidationReturnTab = ref('supplies')
+const prValidationReturnOtherCategory = ref('furniture_fixtures')
+const prValidationYear = ref(2026)
+const prValidationFileInput = ref(null)
+const prValidationUploading = ref(false)
+const prValidationUploadError = ref('')
+const prValidationSearch = ref('')
+const prValidationStatusFilter = ref('all')
+
+const purchaseRequestCategoryLabel = (category) => {
+    return {
+        supplies: 'Supplies',
+        ict: 'ICT',
+        furniture_fixtures: 'Furniture/Fixtures',
+        emergency_kits: 'Emergency Kits',
+        token_giveaways: 'Token and Giveaways',
+    }[category] || 'Inventory'
+}
+
+const prValidationRequiresYear = computed(() =>
+    ['supplies', 'ict'].includes(
+        prValidationCategory.value
+    )
+)
+
+const prValidationUsesUnit = computed(() =>
+    ['supplies', 'ict'].includes(
+        prValidationCategory.value
+    )
+)
+
+const prValidationUsesQuarter = computed(() =>
+    prValidationCategory.value === 'supplies'
+)
+
+const prValidationRequiredFields = computed(() => {
+    if (prValidationCategory.value === 'supplies') {
+        return 'Item | Unit | Quarter | Quantity'
+    }
+
+    if (prValidationCategory.value === 'ict') {
+        return 'Item | Unit | Quantity'
+    }
+
+    return 'Item | Quantity'
+})
+
+const emptyPurchaseRequestValidation = (category) => ({
+    has_file: false,
+    file: null,
+    context: {
+        validation_category: category,
+        category_label:
+            purchaseRequestCategoryLabel(
+                category
+            ),
+        inventory_year: null,
+    },
+    summary: {
+        total: 0,
+        match: 0,
+        not_match: 0,
+        not_found: 0,
+    },
+    rows: [],
+    error: null,
+})
+
+const prValidationData = computed(() => {
+    const category =
+        prValidationCategory.value
+
+    return (
+        props.purchaseRequestValidations?.[category]
+        || emptyPurchaseRequestValidation(
+            category
+        )
+    )
+})
+
+const prQuarterLabel = (quarter) =>
+    String(quarter || '')
+        .trim()
+        .toUpperCase()
+
+const prButtonLabel = computed(() =>
+    'Validate Purchase Request'
+)
+
+const prValidationRows = computed(() => {
+    const rows =
+        Array.isArray(
+            prValidationData.value.rows
+        )
+            ? [...prValidationData.value.rows]
+            : []
+
+    const term =
+        String(
+            prValidationSearch.value || ''
+        )
+            .trim()
+            .toLowerCase()
+
+    const filtered =
+        rows.filter((row) => {
+            if (
+                prValidationStatusFilter.value !== 'all'
+                && row.status !== prValidationStatusFilter.value
+            ) {
+                return false
+            }
+
+            if (!term) {
+                return true
+            }
+
+            const haystack = [
+                row.item,
+                row.unit,
+                row.quarter,
+                row.quantity,
+                row.status,
+                row.notes,
+            ]
+                .map(
+                    (value) =>
+                        String(value ?? '')
+                            .toLowerCase()
+                )
+                .join(' ')
+
+            return haystack.includes(term)
+        })
+
+    const priority = {
+        not_match: 1,
+        not_found: 2,
+        match: 3,
+    }
+
+    return filtered.sort(
+        (a, b) =>
+            (priority[a.status] || 99)
+            - (priority[b.status] || 99)
+    )
+})
+
+const prStatusLabel = (status) => {
+    return {
+        match: 'Match',
+        not_match: 'Not Match',
+        not_found: 'Not Found',
+    }[status] || 'Not Match'
+}
+
+const prStatusClass = (status) => {
+    if (status === 'match') {
+        return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    }
+
+    if (status === 'not_found') {
+        return 'border-rose-200 bg-rose-50 text-rose-700'
+    }
+
+    return 'border-amber-200 bg-amber-50 text-amber-700'
+}
+
+const prDisplayNumber = (value) => {
+    if (
+        value === null
+        || value === undefined
+        || String(value).trim() === ''
+    ) {
+        return '—'
+    }
+
+    const number =
+        Number(value)
+
+    return Number.isFinite(number)
+        ? number.toLocaleString()
+        : String(value)
+}
+
+const prUploadedAt = computed(() => {
+    const raw =
+        prValidationData.value
+            ?.file
+            ?.uploaded_at
+
+    if (!raw) {
+        return '—'
+    }
+
+    const date =
+        new Date(raw)
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+        return String(raw)
+    }
+
+    return date.toLocaleString(
+        'en-PH',
+        {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        }
+    )
+})
+
+const currentPurchaseRequestCategory = () => {
+    if (activeTab.value === 'supplies') {
+        return 'supplies'
+    }
+
+    if (activeTab.value === 'ict') {
+        return 'ict'
+    }
+
+    if (activeTab.value === 'other') {
+        return otherCategoryFilter.value
+    }
+
+    return prValidationCategory.value
+}
+
+const openPurchaseRequestValidation = () => {
+    const category =
+        currentPurchaseRequestCategory()
+
+    prValidationReturnTab.value =
+        activeTab.value
+
+    prValidationReturnOtherCategory.value =
+        otherCategoryFilter.value
+
+    prValidationCategory.value =
+        category
+
+    if (
+        ['supplies', 'ict'].includes(
+            category
+        )
+    ) {
+        prValidationYear.value =
+            Number(
+                yearFilter.value
+            ) || 2026
+    }
+
+    prValidationUploadError.value = ''
+    prValidationSearch.value = ''
+    prValidationStatusFilter.value = 'all'
+
+    activeTab.value =
+        'purchase_request'
+}
+
+const backFromPurchaseRequestValidation = () => {
+    const destination =
+        prValidationReturnTab.value
+
+    if (
+        ['supplies', 'ict'].includes(
+            destination
+        )
+    ) {
+        yearFilter.value =
+            Number(
+                prValidationYear.value
+            ) || 2026
+    }
+
+    if (destination === 'other') {
+        otherCategoryFilter.value =
+            prValidationReturnOtherCategory.value
+    }
+
+    activeTab.value =
+        ['supplies', 'ict', 'other'].includes(
+            destination
+        )
+            ? destination
+            : 'supplies'
+
+    currentPage.value = 1
+}
+
+const choosePurchaseRequestFile = () => {
+    prValidationUploadError.value = ''
+
+    prValidationFileInput.value?.click()
+}
+
+const uploadPurchaseRequestFile = (event) => {
+    const file =
+        event?.target?.files?.[0]
+
+    if (!file) {
+        return
+    }
+
+    const extension =
+        String(
+            file.name
+                .split('.')
+                .pop()
+                || ''
+        ).toLowerCase()
+
+    if (
+        !['xlsx', 'csv'].includes(
+            extension
+        )
+    ) {
+        prValidationUploadError.value =
+            'Please select an XLSX or CSV Purchase Request file.'
+
+        event.target.value = ''
+        return
+    }
+
+    const formData =
+        new FormData()
+
+    formData.append(
+        'validation_category',
+        prValidationCategory.value
+    )
+
+    if (prValidationRequiresYear.value) {
+        formData.append(
+            'inventory_year',
+            String(
+                prValidationYear.value
+            )
+        )
+    }
+
+    formData.append(
+        'pr_file',
+        file
+    )
+
+    prValidationUploading.value = true
+    prValidationUploadError.value = ''
+
+    router.post(
+        '/dts/inventory/purchase-request/validate',
+        formData,
+        {
+            forceFormData: true,
+            preserveScroll: true,
+            preserveState: true,
+
+            onSuccess: () => {
+                activeTab.value =
+                    'purchase_request'
+
+                prValidationSearch.value =
+                    ''
+
+                prValidationStatusFilter.value =
+                    'all'
+            },
+
+            onError: (errors) => {
+                prValidationUploadError.value =
+                    errors?.pr_file
+                    || errors?.inventory_year
+                    || errors?.validation_category
+                    || 'Unable to validate the Purchase Request file.'
+            },
+
+            onFinish: () => {
+                prValidationUploading.value =
+                    false
+
+                if (
+                    prValidationFileInput.value
+                ) {
+                    prValidationFileInput.value.value =
+                        ''
+                }
+            },
+        }
+    )
+}
+
+
+const reconciliationSearch = ref('')
+const reconciliationStatusFilter = ref('all')
+const reconciliationReferenceCategory = ref('supplies')
+const reconciliationReturnTab = ref('supplies')
+const reconciliationReturnOtherCategory = ref('furniture_fixtures')
+const reconciliationFileInput = ref(null)
+const reconciliationUploading = ref(false)
+const reconciliationUploadError = ref('')
+
+const emptyReconciliationData = (category) => ({
+    has_reference: false,
+    reference: {
+        reference_category: category,
+        reference_category_label:
+            {
+                supplies: 'Supplies',
+                ict: 'ICT',
+                furniture_fixtures: 'Furniture/Fixtures',
+                emergency_kits: 'Emergency Kits',
+                token_giveaways: 'Token and Giveaways',
+            }[category] || 'Inventory',
+        original_name: null,
+        uploaded_at: null,
+        uploaded_by: null,
+        row_count: 0,
+    },
+    summary: {
+        total: 0,
+        equal: 0,
+        not_equal: 0,
+        missing: 0,
+    },
+    rows: [],
+    error: null,
+})
+
+const reconciliationData = computed(() => {
+    const category =
+        reconciliationReferenceCategory.value
+
+    return (
+        props.reconciliations?.[category]
+        || emptyReconciliationData(
+            category
+        )
+    )
+})
+
+const reconciliationRows = computed(() => {
+    const rows =
+        Array.isArray(
+            reconciliationData.value.rows
+        )
+            ? reconciliationData.value.rows
+            : []
+
+    const term =
+        String(
+            reconciliationSearch.value || ''
+        )
+            .trim()
+            .toLowerCase()
+
+    return rows.filter((row) => {
+        if (
+            reconciliationStatusFilter.value !== 'all'
+            && row.status
+                !== reconciliationStatusFilter.value
+        ) {
+            return false
+        }
+
+        if (!term) {
+            return true
+        }
+
+        const haystack = [
+            row.category_label,
+            row.item,
+            row.property_number,
+            row.website?.item,
+            row.website?.description,
+            row.website?.property_number,
+            row.website?.current_user,
+            row.website?.location,
+            row.excel?.item,
+            row.excel?.description,
+            row.excel?.property_number,
+            row.excel?.current_user,
+            row.excel?.location,
+        ]
+            .map(
+                (value) =>
+                    String(value || '')
+                        .toLowerCase()
+            )
+            .join(' ')
+
+        return haystack.includes(term)
+    })
+})
+
+const reconciliationStatusLabel = (status) => {
+    return {
+        equal: 'Equal',
+        not_equal: 'Not Equal',
+        missing_in_website:
+            'Missing in Website',
+        missing_in_excel:
+            'Missing in Excel',
+    }[status] || 'Needs Review'
+}
+
+const reconciliationStatusClass = (status) => {
+    if (status === 'equal') {
+        return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    }
+
+    if (status === 'not_equal') {
+        return 'border-rose-200 bg-rose-50 text-rose-700'
+    }
+
+    return 'border-amber-200 bg-amber-50 text-amber-700'
+}
+
+const reconciliationPrimaryLabel = (row) => {
+    const item =
+        String(row?.item || '').trim()
+
+    const propertyNumber =
+        String(
+            row?.property_number || ''
+        ).trim()
+
+    if (
+        item
+        && propertyNumber
+    ) {
+        return `${item} · ${propertyNumber}`
+    }
+
+    return (
+        item
+        || propertyNumber
+        || 'Inventory Record'
+    )
+}
+
+const reconciliationDetailLines = (record) => {
+    if (!record) {
+        return []
+    }
+
+    const lines = []
+
+    const push = (
+        label,
+        value,
+        {
+            blankLabel = '—',
+        } = {}
+    ) => {
+        const text =
+            String(value ?? '').trim()
+
+        lines.push({
+            label,
+            value:
+                text || blankLabel,
+        })
+    }
+
+    if (
+        String(
+            record.description || ''
+        ).trim()
+    ) {
+        push(
+            'Description',
+            record.description
+        )
+    }
+
+    if (
+        String(
+            record.property_number || ''
+        ).trim()
+    ) {
+        push(
+            'Property Number',
+            record.property_number
+        )
+
+        push(
+            'Current User',
+            record.current_user,
+            {
+                blankLabel:
+                    'Unassigned',
+            }
+        )
+    } else {
+        if (
+            String(
+                record.unit || ''
+            ).trim()
+        ) {
+            push(
+                'Unit',
+                record.unit
+            )
+        }
+
+        if (
+            String(
+                record.inventory_year || ''
+            ).trim()
+        ) {
+            push(
+                'Year',
+                record.inventory_year
+            )
+        }
+
+        if (
+            String(
+                record.available || ''
+            ).trim()
+        ) {
+            push(
+                'Available / Count',
+                record.available
+            )
+        }
+    }
+
+    if (
+        String(
+            record.location || ''
+        ).trim()
+    ) {
+        push(
+            'Location',
+            record.location
+        )
+    }
+
+    return lines
+}
+
+const reconciliationReferenceCategoryOptions = [
+    { value: 'supplies', label: 'Supplies' },
+    { value: 'ict', label: 'ICT' },
+    { value: 'furniture_fixtures', label: 'Furniture/Fixtures' },
+    { value: 'emergency_kits', label: 'Emergency Kits' },
+    { value: 'token_giveaways', label: 'Token and Giveaways' },
+]
+
+const reconciliationReferenceCategoryLabel = (value) => {
+    return reconciliationReferenceCategoryOptions.find(
+        (option) => option.value === value
+    )?.label || 'Inventory'
+}
+
+const reconciliationUploadedAt = computed(() => {
+    const raw =
+        reconciliationData.value
+            ?.reference
+            ?.uploaded_at
+
+    if (!raw) {
+        return '—'
+    }
+
+    const date = new Date(raw)
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+        return String(raw)
+    }
+
+    return date.toLocaleString(
+        'en-PH',
+        {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        }
+    )
+})
+
+const chooseReconciliationFile = () => {
+    reconciliationUploadError.value = ''
+
+    reconciliationFileInput.value?.click()
+}
+
+const uploadReconciliationReference = (event) => {
+    const file =
+        event?.target?.files?.[0]
+
+    if (!file) {
+        return
+    }
+
+    const extension =
+        String(
+            file.name
+                .split('.')
+                .pop()
+                || ''
+        ).toLowerCase()
+
+    if (
+        !['xlsx', 'csv'].includes(
+            extension
+        )
+    ) {
+        reconciliationUploadError.value =
+            'Please select an XLSX or CSV file.'
+
+        event.target.value = ''
+        return
+    }
+
+    const formData =
+        new FormData()
+
+    formData.append(
+        'reference_category',
+        reconciliationReferenceCategory.value
+    )
+
+    formData.append(
+        'reference_file',
+        file
+    )
+
+    reconciliationUploading.value = true
+    reconciliationUploadError.value = ''
+
+    router.post(
+        '/dts/inventory/reconciliation/reference',
+        formData,
+        {
+            forceFormData: true,
+            preserveScroll: true,
+
+            onSuccess: () => {
+                reconciliationStatusFilter.value =
+                    'all'
+
+                reconciliationSearch.value =
+                    ''
+            },
+
+            onError: (errors) => {
+                reconciliationUploadError.value =
+                    errors?.reference_file
+                    || 'Unable to save the reference file.'
+            },
+
+            onFinish: () => {
+                reconciliationUploading.value =
+                    false
+
+                if (
+                    reconciliationFileInput.value
+                ) {
+                    reconciliationFileInput.value.value =
+                        ''
+                }
+            },
+        }
+    )
+}
 
 
 const CUSTOM_UNIT_STORAGE_KEY =
@@ -2202,6 +2994,24 @@ const currentTitle = computed(() => {
         return 'ICT'
     }
 
+    if (
+        activeTab.value
+        === 'purchase_request'
+    ) {
+        return 'Purchase Request Validation'
+    }
+
+    if (
+        activeTab.value
+        === 'reconciliation'
+    ) {
+        return `${
+            reconciliationReferenceCategoryLabel(
+                reconciliationReferenceCategory.value
+            )
+        } Reconciliation`
+    }
+
     return `Other Items · ${currentOtherCategoryLabel.value}`
 })
 
@@ -3589,6 +4399,67 @@ const switchTab = (tab) => {
     currentPage.value = 1
 }
 
+const currentReconciliationCategory = computed(() => {
+    if (activeTab.value === 'supplies') {
+        return 'supplies'
+    }
+
+    if (activeTab.value === 'ict') {
+        return 'ict'
+    }
+
+    if (activeTab.value === 'other') {
+        return otherCategoryFilter.value
+    }
+
+    return reconciliationReferenceCategory.value
+})
+
+const currentReconciliationLabel = computed(() =>
+    reconciliationReferenceCategoryLabel(
+        currentReconciliationCategory.value
+    )
+)
+
+const openCurrentTabReconciliation = () => {
+    if (activeTab.value === 'reconciliation') {
+        return
+    }
+
+    reconciliationReturnTab.value =
+        activeTab.value
+
+    reconciliationReturnOtherCategory.value =
+        otherCategoryFilter.value
+
+    reconciliationReferenceCategory.value =
+        currentReconciliationCategory.value
+
+    reconciliationSearch.value = ''
+    reconciliationStatusFilter.value = 'all'
+
+    activeTab.value =
+        'reconciliation'
+}
+
+const backFromReconciliation = () => {
+    const destination =
+        reconciliationReturnTab.value
+
+    if (destination === 'other') {
+        otherCategoryFilter.value =
+            reconciliationReturnOtherCategory.value
+    }
+
+    switchTab(
+        ['supplies', 'ict', 'other'].includes(
+            destination
+        )
+            ? destination
+            : 'supplies'
+    )
+}
+
 const switchOtherCategory = (category) => {
     if (
         !otherCategoryFilterValues.includes(
@@ -4563,7 +5434,33 @@ const saveFullEditItem = () => {
     }
 
 
-    if (
+    /*
+     * Property Detail validation during EDIT.
+     *
+     * ICT equipment always requires complete Property Details.
+     *
+     * Furniture/Fixtures may contain legacy records that were created
+     * before per-property tracking was introduced. Those records can have
+     * a Count but no ict_assets at all. The edit form still generates blank
+     * rows so the user can add Property Details later, but those generated
+     * blank rows must NOT block ordinary edits such as Item Name, Count,
+     * Location, or Remarks.
+     *
+     * Once a Furniture/Fixtures record already has Property Details, or the
+     * user starts entering Property Details during this edit, validation
+     * becomes strict again and every property row must be complete.
+     */
+    const existingPropertyAssets =
+        normalizeIctAssets(
+            original?.ict_assets
+        )
+
+    const editedPropertyAssets =
+        normalizeIctAssets(
+            fullEditForm.value.ict_assets
+        )
+
+    const shouldValidatePropertyDetails =
         (
             isIct
             && !isIctSubscription(unit)
@@ -4573,8 +5470,13 @@ const saveFullEditItem = () => {
             && isPropertyTrackedOtherCategory(
                 category
             )
+            && (
+                existingPropertyAssets.length > 0
+                || editedPropertyAssets.length > 0
+            )
         )
-    ) {
+
+    if (shouldValidatePropertyDetails) {
         validateIctAssetRows(
             fullEditForm.value.ict_assets,
             fullEditErrors.value,
@@ -6795,7 +7697,7 @@ const generateInventoryReport = () => {
     <Head title="Inventory" />
 
     <div
-        class="inventory-accessibility-root min-h-screen bg-[#f7faff]"
+        class="inventory-accessibility-root inventory-comfort-theme min-h-screen bg-[#e8eef5]"
         :class="accessibilityRootClasses"
     >
         <main
@@ -6831,8 +7733,19 @@ const generateInventoryReport = () => {
                                 </p>
 
                                 <h1 class="mt-0.5 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
-                                    Inventory Monitoring
+                                    {{
+                                        activeTab === 'purchase_request'
+                                            ? 'Purchase Request Validation'
+                                            : 'Inventory Monitoring'
+                                    }}
                                 </h1>
+
+                                <p
+                                    v-if="activeTab === 'purchase_request'"
+                                    class="mt-1 text-xs font-semibold text-slate-500"
+                                >
+                                    {{ purchaseRequestCategoryLabel(prValidationCategory) }} Purchase Request
+                                </p>
                             </div>
                         </div>
 
@@ -6840,9 +7753,59 @@ const generateInventoryReport = () => {
                     </div>
 
                     <div
-                        class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row"
+                        class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end"
                     >
+                        <!-- PURCHASE REQUEST VALIDATION -->
                         <button
+                            v-if="['supplies', 'ict', 'other'].includes(activeTab)"
+                            type="button"
+                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border-2 border-blue-600 bg-blue-600 px-5 text-sm font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                            @click="openPurchaseRequestValidation"
+                        >
+                            <svg
+                                class="h-4 w-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                            >
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                <path d="M14 2v6h6" />
+                                <path d="m9 15 2 2 4-4" />
+                            </svg>
+
+                            <span>{{ prButtonLabel }}</span>
+                        </button>
+
+                        <button
+                            v-if="activeTab === 'purchase_request'"
+                            type="button"
+                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-slate-100"
+                            @click="backFromPurchaseRequestValidation"
+                        >
+                            <svg
+                                class="h-4 w-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                aria-hidden="true"
+                            >
+                                <path d="m15 18-6-6 6-6" />
+                            </svg>
+
+                            <span>
+                                Back to {{ purchaseRequestCategoryLabel(prValidationCategory) }}
+                            </span>
+                        </button>
+
+                        <button
+                            v-if="activeTab !== 'reconciliation' && activeTab !== 'purchase_request'"
                             type="button"
                             class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 text-sm font-black text-blue-700 transition hover:bg-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-100"
                             @click="generateInventoryReport"
@@ -6866,7 +7829,11 @@ const generateInventoryReport = () => {
                         </button>
 
                         <button
-                            v-if="canManageInventory"
+                            v-if="
+                                canManageInventory
+                                && activeTab !== 'reconciliation'
+                                && activeTab !== 'purchase_request'
+                            "
                             type="button"
                             class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 px-5 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-100"
                             @click="openAddItemModal"
@@ -6876,7 +7843,11 @@ const generateInventoryReport = () => {
                         </button>
 
                         <div
-                            v-if="!canManageInventory"
+                            v-if="
+                                !canManageInventory
+                                && activeTab !== 'reconciliation'
+                                && activeTab !== 'purchase_request'
+                            "
                             class="inline-flex h-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-xs font-black text-slate-500"
                         >
                             View Only
@@ -6886,7 +7857,7 @@ const generateInventoryReport = () => {
 
                 <!-- SEGMENTED TABS -->
                 <div class="border-t border-slate-100 bg-slate-50/70 px-5 py-3 sm:px-6">
-                    <div class="inline-flex w-full rounded-xl border border-slate-200 bg-white p-1 sm:w-auto">
+                    <div class="flex w-full flex-wrap rounded-xl border border-slate-200 bg-white p-1 sm:w-auto">
                         <button
                             type="button"
                             class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[190px]"
@@ -6925,6 +7896,7 @@ const generateInventoryReport = () => {
                         >
                             <span>Other Items</span>
                         </button>
+
                     </div>
 
                     <div
@@ -6949,8 +7921,471 @@ const generateInventoryReport = () => {
                 </div>
             </section>
 
+
+            <!-- PURCHASE REQUEST VALIDATION -->
+            <section
+                v-if="activeTab === 'purchase_request'"
+                class="mt-4 space-y-4"
+            >
+                <div
+                    class="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
+                >
+                    <div
+                        class="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 sm:px-6 xl:flex-row xl:items-end xl:justify-between"
+                    >
+                        <div class="min-w-0">
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.14em] text-blue-600"
+                            >
+                                {{ purchaseRequestCategoryLabel(prValidationCategory) }} Purchase Request
+                            </p>
+
+                            <h2
+                                class="mt-1 text-lg font-black text-slate-900"
+                            >
+                                Purchase Request Validation
+                            </h2>
+                        </div>
+
+                        <div
+                            class="grid w-full gap-2 sm:grid-cols-[150px_1fr] xl:w-auto xl:grid-cols-[150px_auto]"
+                            :class="!prValidationRequiresYear ? 'sm:grid-cols-1 xl:grid-cols-1' : ''"
+                        >
+                            <div
+                                v-if="prValidationRequiresYear"
+                            >
+                                <label
+                                    class="mb-1.5 block text-[9px] font-black uppercase tracking-[0.10em] text-slate-500"
+                                >
+                                    Inventory Year
+                                </label>
+
+                                <select
+                                    v-model="prValidationYear"
+                                    class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                >
+                                    <option
+                                        v-for="year in yearOptions"
+                                        :key="`pr-year-${year}`"
+                                        :value="year"
+                                    >
+                                        {{ year }}
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div
+                                v-if="canManageInventory"
+                                class="sm:self-end"
+                            >
+                                <input
+                                    ref="prValidationFileInput"
+                                    type="file"
+                                    accept=".xlsx,.csv"
+                                    class="hidden"
+                                    @change="uploadPurchaseRequestFile"
+                                />
+
+                                <button
+                                    type="button"
+                                    class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 text-xs font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                    :disabled="prValidationUploading"
+                                    @click="choosePurchaseRequestFile"
+                                >
+                                    <svg
+                                        class="h-4 w-4"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        aria-hidden="true"
+                                    >
+                                        <path d="M12 3v12" />
+                                        <path d="m7 8 5-5 5 5" />
+                                        <path d="M5 21h14a2 2 0 0 0 2-2v-4" />
+                                        <path d="M3 15v4a2 2 0 0 0 2 2" />
+                                    </svg>
+
+                                    <span>
+                                        {{
+                                            prValidationUploading
+                                                ? 'Checking...'
+                                                : (
+                                                    prValidationData.has_file
+                                                        ? 'Replace Purchase Request'
+                                                        : 'Upload Purchase Request'
+                                                )
+                                        }}
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div
+                        v-if="prValidationUploadError"
+                        class="border-b border-rose-100 bg-rose-50 px-5 py-3 text-xs font-bold text-rose-700 sm:px-6"
+                    >
+                        {{ prValidationUploadError }}
+                    </div>
+
+                    <div
+                        v-if="prValidationData.error"
+                        class="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs font-bold text-amber-700 sm:px-6"
+                    >
+                        {{ prValidationData.error }}
+                    </div>
+
+                    <div
+                        v-if="prValidationData.has_file"
+                        class="grid gap-3 px-5 py-4 sm:grid-cols-2 lg:grid-cols-4 sm:px-6"
+                    >
+                        <div>
+                            <p
+                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                            >
+                                PR File
+                            </p>
+                            <p
+                                class="mt-1 break-words text-xs font-black text-slate-800"
+                            >
+                                {{
+                                    prValidationData.file?.original_name
+                                    || 'Purchase Request'
+                                }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <p
+                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                            >
+                                Inventory
+                            </p>
+                            <p
+                                class="mt-1 text-xs font-black text-slate-800"
+                            >
+                                {{ purchaseRequestCategoryLabel(prValidationCategory) }}
+                                <template
+                                    v-if="prValidationRequiresYear"
+                                >
+                                    · {{ prValidationData.context?.inventory_year || prValidationYear }}
+                                </template>
+                            </p>
+                        </div>
+
+                        <div>
+                            <p
+                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                            >
+                                Uploaded By
+                            </p>
+                            <p
+                                class="mt-1 text-xs font-black text-slate-800"
+                            >
+                                {{ prValidationData.file?.uploaded_by || '—' }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <p
+                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                            >
+                                Uploaded
+                            </p>
+                            <p
+                                class="mt-1 text-xs font-black text-slate-800"
+                            >
+                                {{ prUploadedAt }}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    v-if="!prValidationData.has_file"
+                    class="rounded-[1.75rem] border border-dashed border-blue-200 bg-white px-6 py-14 text-center shadow-sm"
+                >
+                    <div
+                        class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"
+                    >
+                        <svg
+                            class="h-7 w-7"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            aria-hidden="true"
+                        >
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 2v6h6" />
+                            <path d="m9 15 2 2 4-4" />
+                        </svg>
+                    </div>
+
+                    <h3
+                        class="mt-4 text-lg font-black text-slate-900"
+                    >
+                        Upload the Purchase Request
+                    </h3>
+
+                    <p
+                        class="mx-auto mt-2 max-w-2xl text-xs font-semibold leading-6 text-slate-500"
+                    >
+                        Required columns: {{ prValidationRequiredFields }}
+                    </p>
+                </div>
+
+                <template v-else>
+                    <div
+                        class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+                    >
+                        <div
+                            class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                        >
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400"
+                            >
+                                PR Items
+                            </p>
+                            <p
+                                class="mt-2 text-2xl font-black tabular-nums text-slate-900"
+                            >
+                                {{ prValidationData.summary?.total || 0 }}
+                            </p>
+                        </div>
+
+                        <div
+                            class="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 shadow-sm"
+                        >
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.12em] text-emerald-600"
+                            >
+                                Match
+                            </p>
+                            <p
+                                class="mt-2 text-2xl font-black tabular-nums text-emerald-700"
+                            >
+                                {{ prValidationData.summary?.match || 0 }}
+                            </p>
+                        </div>
+
+                        <div
+                            class="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 shadow-sm"
+                        >
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.12em] text-amber-600"
+                            >
+                                Not Match
+                            </p>
+                            <p
+                                class="mt-2 text-2xl font-black tabular-nums text-amber-700"
+                            >
+                                {{ prValidationData.summary?.not_match || 0 }}
+                            </p>
+                        </div>
+
+                        <div
+                            class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 shadow-sm"
+                        >
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.12em] text-rose-600"
+                            >
+                                Not Found
+                            </p>
+                            <p
+                                class="mt-2 text-2xl font-black tabular-nums text-rose-700"
+                            >
+                                {{ prValidationData.summary?.not_found || 0 }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div
+                        class="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
+                    >
+                        <div
+                            class="border-b border-slate-200 px-5 py-4 sm:px-6"
+                        >
+                            <div
+                                class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between"
+                            >
+                                <div>
+                                    <h3
+                                        class="text-base font-black text-slate-900"
+                                    >
+                                        Validation Results
+                                    </h3>
+                                </div>
+
+                                <div
+                                    class="grid gap-2 sm:grid-cols-2 xl:w-[520px]"
+                                >
+                                    <input
+                                        v-model="prValidationSearch"
+                                        type="text"
+                                        placeholder="Search item or notes..."
+                                        class="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 outline-none focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                                    />
+
+                                    <select
+                                        v-model="prValidationStatusFilter"
+                                        class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                    >
+                                        <option value="all">
+                                            All results
+                                        </option>
+                                        <option value="match">
+                                            Match
+                                        </option>
+                                        <option value="not_match">
+                                            Not Match
+                                        </option>
+                                        <option value="not_found">
+                                            Not Found
+                                        </option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div
+                            v-if="prValidationRows.length"
+                            class="overflow-x-auto"
+                        >
+                            <table
+                                class="min-w-[820px] w-full table-fixed"
+                            >
+                                <thead
+                                    class="bg-blue-600 text-white"
+                                >
+                                    <tr>
+                                        <th
+                                            class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Item
+                                        </th>
+
+                                        <th
+                                            v-if="prValidationUsesUnit"
+                                            class="w-[12%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Unit
+                                        </th>
+
+                                        <th
+                                            v-if="prValidationUsesQuarter"
+                                            class="w-[12%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Quarter
+                                        </th>
+
+                                        <th
+                                            class="w-[13%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Quantity
+                                        </th>
+
+                                        <th
+                                            class="w-[14%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Result
+                                        </th>
+
+                                        <th
+                                            class="w-[32%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.1em]"
+                                        >
+                                            Notes
+                                        </th>
+                                    </tr>
+                                </thead>
+
+                                <tbody
+                                    class="divide-y divide-slate-100"
+                                >
+                                    <tr
+                                        v-for="row in prValidationRows"
+                                        :key="row.id"
+                                        class="align-top transition hover:bg-blue-50/30"
+                                    >
+                                        <td class="px-4 py-4">
+                                            <p
+                                                class="break-words text-xs font-black leading-5 text-slate-900"
+                                            >
+                                                {{ row.item || '—' }}
+                                            </p>
+                                        </td>
+
+                                        <td
+                                            v-if="prValidationUsesUnit"
+                                            class="px-4 py-4 text-center text-xs font-black text-slate-800"
+                                        >
+                                            {{ row.unit || '—' }}
+                                        </td>
+
+                                        <td
+                                            v-if="prValidationUsesQuarter"
+                                            class="px-4 py-4 text-center text-xs font-black text-blue-700"
+                                        >
+                                            {{ prQuarterLabel(row.quarter) || '—' }}
+                                        </td>
+
+                                        <td
+                                            class="px-4 py-4 text-center text-sm font-black tabular-nums text-slate-900"
+                                        >
+                                            {{ prDisplayNumber(row.quantity) }}
+                                        </td>
+
+                                        <td
+                                            class="px-4 py-4 text-center"
+                                        >
+                                            <span
+                                                class="inline-flex rounded-full border px-2.5 py-1.5 text-[10px] font-black"
+                                                :class="prStatusClass(row.status)"
+                                            >
+                                                {{ prStatusLabel(row.status) }}
+                                            </span>
+                                        </td>
+
+                                        <td class="px-4 py-4">
+                                            <p
+                                                class="text-[11px] font-semibold leading-5"
+                                                :class="
+                                                    row.status === 'match'
+                                                        ? 'text-emerald-700'
+                                                        : row.status === 'not_found'
+                                                            ? 'text-rose-700'
+                                                            : 'text-amber-700'
+                                                "
+                                            >
+                                                {{ row.notes || '—' }}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div
+                            v-else
+                            class="px-6 py-12 text-center"
+                        >
+                            <p
+                                class="text-sm font-black text-slate-700"
+                            >
+                                No PR rows match the current filters.
+                            </p>
+                        </div>
+                    </div>
+                </template>
+            </section>
+
+
             <!-- LEDGER WORKSPACE -->
-            <section class="mt-4 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
+            <section
+                v-if="activeTab !== 'reconciliation' && activeTab !== 'purchase_request'"
+                class="inventory-ledger-surface mt-4 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
+            >
                 <!-- TOOLBAR -->
                 <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                     <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -7229,7 +8664,7 @@ const generateInventoryReport = () => {
 
                 <!-- DESKTOP LEDGER -->
                 <div v-if="activeTab === 'supplies'" class="hidden overflow-hidden lg:block">
-                    <table class="w-full table-fixed">
+                    <table class="inventory-ledger-table w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
                                 <th class="w-[20%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
@@ -7522,7 +8957,7 @@ const generateInventoryReport = () => {
                     v-if="activeTab === 'ict'"
                     class="hidden overflow-hidden lg:block"
                 >
-                    <table class="w-full table-fixed">
+                    <table class="inventory-ledger-table w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
                                 <th class="w-[28%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
@@ -7553,65 +8988,106 @@ const generateInventoryReport = () => {
                                 :key="`${activeTab}-${item.category}-${item.id || item.item}`"
                             >
                                 <tr
-                                    class="bg-white transition hover:bg-blue-50/35"
+                                    :role="hasIctAssetDetails(item) ? 'button' : undefined"
+                                    :tabindex="hasIctAssetDetails(item) ? 0 : -1"
+                                    :aria-expanded="hasIctAssetDetails(item) ? isIctExpanded(item) : undefined"
+                                    :title="hasIctAssetDetails(item) ? 'Click to view Property Details' : undefined"
+                                    class="bg-white transition"
+                                    :class="
+                                        hasIctAssetDetails(item)
+                                            ? (
+                                                isIctExpanded(item)
+                                                    ? 'cursor-pointer bg-blue-50/70 hover:bg-blue-50'
+                                                    : 'cursor-pointer hover:bg-blue-50/55'
+                                            )
+                                            : 'cursor-default hover:bg-blue-50/35'
+                                    "
+                                    @click="
+                                        hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
+                                    "
+                                    @keydown.enter.prevent="
+                                        hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
+                                    "
+                                    @keydown.space.prevent="
+                                        hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
+                                    "
                                 >
                                     <td class="px-4 py-4 align-middle">
-                                        <p class="break-words text-xs font-black leading-5 text-blue-950">
-                                            {{ item.item || '—' }}
-                                        </p>
+                                        <div class="flex items-center gap-2">
+                                            <p class="min-w-0 flex-1 break-words text-xs font-black leading-5 text-blue-950">
+                                                {{ item.item || '—' }}
+                                            </p>
+
+                                            <svg
+                                                v-if="hasIctAssetDetails(item)"
+                                                class="h-4 w-4 shrink-0 text-blue-600 transition-transform duration-200"
+                                                :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2.25"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="m6 9 6 6 6-6" />
+                                            </svg>
+                                        </div>
                                     </td>
 
-                                <td class="px-3 py-4 text-center align-middle">
-                                    <div class="flex flex-col items-center gap-1">
+                                    <td class="px-3 py-4 text-center align-middle">
+                                        <div class="flex flex-col items-center gap-1">
+                                            <span
+                                                class="inline-flex min-w-12 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black tabular-nums text-slate-800"
+                                            >
+                                                {{ ictQuantityDisplay(item) }}
+                                            </span>
+
+                                            <span class="text-[8px] font-black uppercase tracking-[0.08em] text-slate-400">
+                                                {{ ictQuantityLabel(item) }}
+                                            </span>
+                                        </div>
+                                    </td>
+
+                                    <td class="px-3 py-4 text-center align-middle">
                                         <span
-                                            class="inline-flex min-w-12 justify-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-black tabular-nums text-slate-800"
+                                            v-if="!isIctSubscription(item)"
+                                            class="inline-flex min-w-12 justify-center rounded-lg border px-2.5 py-1 text-[10px] font-black tabular-nums"
+                                            :class="
+                                                ictAvailableCount(item) > 0
+                                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                    : 'border-rose-200 bg-rose-50 text-rose-700'
+                                            "
                                         >
-                                            {{ ictQuantityDisplay(item) }}
+                                            {{ ictAvailableCount(item) }}
                                         </span>
 
-                                        <span class="text-[8px] font-black uppercase tracking-[0.08em] text-slate-400">
-                                            {{ ictQuantityLabel(item) }}
+                                        <span
+                                            v-else
+                                            class="text-xs font-black text-slate-300"
+                                        >
+                                            —
                                         </span>
-                                    </div>
-                                </td>
+                                    </td>
 
-                                <td class="px-3 py-4 text-center align-middle">
-                                    <span
-                                        v-if="!isIctSubscription(item)"
-                                        class="inline-flex min-w-12 justify-center rounded-lg border px-2.5 py-1 text-[10px] font-black tabular-nums"
-                                        :class="
-                                            ictAvailableCount(item) > 0
-                                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                                : 'border-rose-200 bg-rose-50 text-rose-700'
-                                        "
-                                    >
-                                        {{ ictAvailableCount(item) }}
-                                    </span>
+                                    <td class="px-4 py-4 align-middle">
+                                        <p
+                                            v-if="String(item.remarks || '').trim()"
+                                            class="break-words text-[11px] font-semibold leading-5 text-slate-600"
+                                        >
+                                            {{ item.remarks }}
+                                        </p>
 
-                                    <span
-                                        v-else
-                                        class="text-xs font-black text-slate-300"
-                                    >
-                                        —
-                                    </span>
-                                </td>
-
-                                <td class="px-4 py-4 align-middle">
-                                    <p
-                                        v-if="String(item.remarks || '').trim()"
-                                        class="break-words text-[11px] font-semibold leading-5 text-slate-600"
-                                    >
-                                        {{ item.remarks }}
-                                    </p>
-
-                                    <span
-                                        v-else
-                                        class="text-xs font-semibold text-slate-300"
-                                    >
-                                        —
-                                    </span>
-                                </td>
-
+                                        <span
+                                            v-else
+                                            class="text-xs font-semibold text-slate-300"
+                                        >
+                                            —
+                                        </span>
+                                    </td>
 
                                     <td class="px-3 py-4 text-center align-middle">
                                         <div class="flex flex-wrap items-center justify-center gap-1.5">
@@ -7619,7 +9095,7 @@ const generateInventoryReport = () => {
                                                 v-if="canManageInventory"
                                                 type="button"
                                                 class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                                @click="openFullEditModal(item)"
+                                                @click.stop="openFullEditModal(item)"
                                             >
                                                 Edit
                                             </button>
@@ -7632,7 +9108,7 @@ const generateInventoryReport = () => {
                                                     !canReleaseInventoryItem(item)
                                                     || !canReleaseInCurrentView(item)
                                                 "
-                                                @click="openReleaseItemModal(item)"
+                                                @click.stop="openReleaseItemModal(item)"
                                             >
                                                 Release
                                             </button>
@@ -7642,7 +9118,7 @@ const generateInventoryReport = () => {
                                                 title="View History"
                                                 aria-label="View History"
                                                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                                @click="openHistoryModal(item)"
+                                                @click.stop="openHistoryModal(item)"
                                             >
                                                 <svg
                                                     class="h-4 w-4"
@@ -7665,7 +9141,7 @@ const generateInventoryReport = () => {
                                                 title="Delete Item"
                                                 aria-label="Delete Item"
                                                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                                                @click="openDeleteItemModal(item)"
+                                                @click.stop="openDeleteItemModal(item)"
                                             >
                                                 <svg
                                                     class="h-4 w-4"
@@ -7684,55 +9160,20 @@ const generateInventoryReport = () => {
                                                     <path d="M14 11v5" />
                                                 </svg>
                                             </button>
-
-                                            <button
-                                                v-if="hasIctAssetDetails(item)"
-                                                type="button"
-                                                title="Property Number / Current User"
-                                                aria-label="Property Number / Current User"
-                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all duration-200"
-                                                :class="
-                                                    isIctExpanded(item)
-                                                        ? 'border-blue-800 bg-blue-800 text-white shadow-md shadow-blue-200 ring-4 ring-blue-100'
-                                                        : 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200 hover:border-blue-700 hover:bg-blue-700'
-                                                "
-                                                @click="toggleIctAssetDetails(item)"
-                                            >
-                                                <svg
-                                                    class="h-4 w-4 transition-transform duration-200"
-                                                    :class="isIctExpanded(item) ? 'rotate-180' : ''"
-                                                    viewBox="0 0 24 24"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    stroke-width="2.25"
-                                                    stroke-linecap="round"
-                                                    stroke-linejoin="round"
-                                                    aria-hidden="true"
-                                                >
-                                                    <path d="m6 9 6 6 6-6" />
-                                                </svg>
-                                            </button>
                                         </div>
                                     </td>
                                 </tr>
 
                                 <tr
-                                    v-if="
-                                        hasIctAssetDetails(item)
-                                        && isIctExpanded(item)
-                                    "
+                                    v-if="hasIctAssetDetails(item) && isIctExpanded(item)"
                                     class="bg-slate-50/80"
                                 >
                                     <td
                                         colspan="5"
-                                        class="px-4 pb-4 pt-0"
+                                        class="px-4 pb-4 pt-1"
                                     >
-                                        <div
-                                            class="overflow-hidden rounded-xl border border-blue-100 bg-white"
-                                        >
-                                            <div
-                                                class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white"
-                                            >
+                                        <div class="overflow-hidden rounded-xl border border-blue-100 bg-white">
+                                            <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
                                                 <span>Description</span>
                                                 <span>Property Number</span>
                                                 <span>Current User</span>
@@ -7743,21 +9184,15 @@ const generateInventoryReport = () => {
                                                 :key="`ict-asset-row-${item.id}-${assetIndex}`"
                                                 class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
                                             >
-                                                <span
-                                                    class="break-words text-[11px] font-semibold text-slate-700"
-                                                >
+                                                <span class="break-words text-[11px] font-semibold text-slate-700">
                                                     {{ asset.description || '—' }}
                                                 </span>
 
-                                                <span
-                                                    class="break-words text-[11px] font-black text-slate-800"
-                                                >
+                                                <span class="break-words text-[11px] font-black text-slate-800">
                                                     {{ asset.property_number || '—' }}
                                                 </span>
 
-                                                <span
-                                                    class="break-words text-[11px] font-semibold text-slate-600"
-                                                >
+                                                <span class="break-words text-[11px] font-semibold text-slate-600">
                                                     {{ asset.current_user || 'Unassigned' }}
                                                 </span>
                                             </div>
@@ -7767,7 +9202,10 @@ const generateInventoryReport = () => {
                             </template>
 
                             <tr v-if="!paginatedItems.length">
-                                <td colspan="5" class="px-6 py-16 text-center">
+                                <td
+                                    colspan="5"
+                                    class="px-6 py-16 text-center"
+                                >
                                     <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
                                         <svg
                                             class="h-5 w-5"
@@ -7791,13 +9229,12 @@ const generateInventoryReport = () => {
                     </table>
                 </div>
 
-
                 <!-- OTHER ITEMS TABLE -->
                 <div
                     v-if="activeTab === 'other'"
                     class="hidden overflow-hidden lg:block"
                 >
-                    <table class="w-full table-fixed">
+                    <table class="inventory-ledger-table w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
                                 <th
@@ -7841,38 +9278,84 @@ const generateInventoryReport = () => {
                                 :key="`other-${item.category}-${item.id || item.item}`"
                             >
                                 <tr
-                                    class="transition"
+                                    :role="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                            ? 'button'
+                                            : undefined
+                                    "
+                                    :tabindex="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                            ? 0
+                                            : -1
+                                    "
+                                    :aria-expanded="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                            ? isIctExpanded(item)
+                                            : undefined
+                                    "
+                                    :title="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                            ? 'Click to view Property Details'
+                                            : undefined
+                                    "
+                                    class="bg-white transition"
                                     :class="
                                         currentOtherCategoryIsAssetTracked
                                         && hasIctAssetDetails(item)
                                             ? (
                                                 isIctExpanded(item)
-                                                    ? 'bg-blue-100/70'
-                                                    : 'bg-blue-50/45 hover:bg-blue-50'
+                                                    ? 'cursor-pointer bg-blue-50/70 hover:bg-blue-50'
+                                                    : 'cursor-pointer hover:bg-blue-50/55'
                                             )
-                                            : 'bg-white hover:bg-blue-50/35'
+                                            : 'cursor-default hover:bg-blue-50/35'
+                                    "
+                                    @click="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
+                                    "
+                                    @keydown.enter.prevent="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
+                                    "
+                                    @keydown.space.prevent="
+                                        currentOtherCategoryIsAssetTracked
+                                        && hasIctAssetDetails(item)
+                                        && toggleIctAssetDetails(item)
                                     "
                                 >
                                     <td
                                         class="px-4 py-4 align-middle"
-                                        :class="
-                                            currentOtherCategoryIsAssetTracked
-                                            && hasIctAssetDetails(item)
-                                                ? 'border-l-4 border-blue-500'
-                                                : ''
-                                        "
                                     >
-                                        <p
-                                            class="break-words text-xs font-black leading-5"
-                                            :class="
-                                                currentOtherCategoryIsAssetTracked
-                                                && hasIctAssetDetails(item)
-                                                    ? 'text-blue-950'
-                                                    : 'text-slate-900'
-                                            "
+                                        <div
+                                            class="flex items-center gap-2"
                                         >
-                                            {{ item.item }}
-                                        </p>
+                                            <p
+                                                class="min-w-0 flex-1 break-words text-xs font-black leading-5 text-slate-900"
+                                            >
+                                                {{ item.item }}
+                                            </p>
+
+                                            <svg
+                                                v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
+                                                class="h-4 w-4 shrink-0 text-blue-600 transition-transform duration-200"
+                                                :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2.25"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="m6 9 6 6 6-6" />
+                                            </svg>
+                                        </div>
                                     </td>
 
                                     <td class="px-3 py-4 text-center align-middle">
@@ -7925,7 +9408,7 @@ const generateInventoryReport = () => {
                                                 v-if="canManageInventory"
                                                 type="button"
                                                 class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                                @click="openFullEditModal(item)"
+                                                @click.stop="openFullEditModal(item)"
                                             >
                                                 Edit
                                             </button>
@@ -7935,7 +9418,7 @@ const generateInventoryReport = () => {
                                                 type="button"
                                                 class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
                                                 :disabled="!canReleaseInventoryItem(item)"
-                                                @click="openReleaseItemModal(item)"
+                                                @click.stop="openReleaseItemModal(item)"
                                             >
                                                 Release
                                             </button>
@@ -7945,7 +9428,7 @@ const generateInventoryReport = () => {
                                                 title="View History"
                                                 aria-label="View History"
                                                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                                @click="openHistoryModal(item)"
+                                                @click.stop="openHistoryModal(item)"
                                             >
                                                 <svg
                                                     class="h-4 w-4"
@@ -7968,7 +9451,7 @@ const generateInventoryReport = () => {
                                                 title="Delete Item"
                                                 aria-label="Delete Item"
                                                 class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
-                                                @click="openDeleteItemModal(item)"
+                                                @click.stop="openDeleteItemModal(item)"
                                             >
                                                 <svg
                                                     class="h-4 w-4"
@@ -7988,41 +9471,19 @@ const generateInventoryReport = () => {
                                                 </svg>
                                             </button>
 
-                                            <button
-                                                v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
-                                                type="button"
-                                                title="Property Number / Current User"
-                                                aria-label="Property Number / Current User"
-                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 transition hover:bg-blue-100"
-                                                @click="toggleIctAssetDetails(item)"
-                                            >
-                                                <svg
-                                                    class="h-4 w-4 transition-transform"
-                                                    :class="isIctExpanded(item) ? 'rotate-180' : ''"
-                                                    viewBox="0 0 24 24"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    stroke-width="2.25"
-                                                    stroke-linecap="round"
-                                                    stroke-linejoin="round"
-                                                    aria-hidden="true"
-                                                >
-                                                    <path d="m6 9 6 6 6-6" />
-                                                </svg>
-                                            </button>
                                         </div>
                                     </td>
                                 </tr>
 
                                 <tr
                                     v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item) && isIctExpanded(item)"
-                                    class="bg-blue-50/80"
+                                    class="bg-slate-50/80"
                                 >
                                     <td
                                         colspan="6"
-                                        class="border-l-4 border-blue-500 px-4 pb-4 pt-1"
+                                        class="px-4 pb-4 pt-1"
                                     >
-                                        <div class="overflow-hidden rounded-xl border-2 border-blue-200 bg-white shadow-md shadow-blue-100/80">
+                                        <div class="overflow-hidden rounded-xl border border-blue-100 bg-white">
                                             <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
                                                 <span>Description</span>
                                                 <span>Property Number</span>
@@ -8032,7 +9493,7 @@ const generateInventoryReport = () => {
                                             <div
                                                 v-for="(asset, assetIndex) in ictAssetDetails(item)"
                                                 :key="`other-asset-row-${item.id}-${assetIndex}`"
-                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 transition last:border-b-0 hover:bg-blue-50/60"
+                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
                                             >
                                                 <span class="break-words text-[11px] font-semibold text-slate-700">
                                                     {{ asset.description || '—' }}
@@ -8086,42 +9547,78 @@ const generateInventoryReport = () => {
                     <article
                         v-for="item in paginatedItems"
                         :key="`mobile-other-${item.category}-${item.id || item.item}`"
-                        class="overflow-hidden rounded-2xl border bg-white transition-all"
+                        :role="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                                ? 'button'
+                                : undefined
+                        "
+                        :tabindex="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                                ? 0
+                                : -1
+                        "
+                        :aria-expanded="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                                ? isIctExpanded(item)
+                                : undefined
+                        "
+                        class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition"
                         :class="
                             currentOtherCategoryIsAssetTracked
                             && hasIctAssetDetails(item)
                                 ? (
                                     isIctExpanded(item)
-                                        ? 'border-blue-400 shadow-md shadow-blue-100 ring-2 ring-blue-100'
-                                        : 'border-blue-200 shadow-sm'
+                                        ? 'cursor-pointer border-blue-200 bg-blue-50/40'
+                                        : 'cursor-pointer hover:border-blue-200 hover:bg-blue-50/35'
                                 )
-                                : 'border-slate-200 shadow-sm'
+                                : 'cursor-default'
+                        "
+                        @click="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                            && toggleIctAssetDetails(item)
+                        "
+                        @keydown.enter.prevent="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                            && toggleIctAssetDetails(item)
+                        "
+                        @keydown.space.prevent="
+                            currentOtherCategoryIsAssetTracked
+                            && hasIctAssetDetails(item)
+                            && toggleIctAssetDetails(item)
                         "
                     >
                         <div
-                            class="border-b px-4 py-4"
-                            :class="
-                                currentOtherCategoryIsAssetTracked
-                                && hasIctAssetDetails(item)
-                                    ? (
-                                        isIctExpanded(item)
-                                            ? 'border-blue-200 bg-blue-100/70'
-                                            : 'border-blue-100 bg-blue-50/60'
-                                    )
-                                    : 'border-slate-100'
-                            "
+                            class="border-b border-slate-100 px-4 py-4"
                         >
-                            <p
-                                class="break-words text-sm font-black leading-5"
-                                :class="
-                                    currentOtherCategoryIsAssetTracked
-                                    && hasIctAssetDetails(item)
-                                        ? 'text-blue-950'
-                                        : 'text-slate-900'
-                                "
+                            <div
+                                class="flex items-center gap-2"
                             >
-                                {{ item.item }}
-                            </p>
+                                <p
+                                    class="min-w-0 flex-1 break-words text-sm font-black leading-5 text-slate-900"
+                                >
+                                    {{ item.item }}
+                                </p>
+
+                                <svg
+                                    v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
+                                    class="h-4 w-4 shrink-0 text-blue-600 transition-transform duration-200"
+                                    :class="isIctExpanded(item) ? 'rotate-180' : ''"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2.25"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="m6 9 6 6 6-6" />
+                                </svg>
+                            </div>
                         </div>
 
                         <div class="space-y-3 p-4">
@@ -8170,7 +9667,9 @@ const generateInventoryReport = () => {
 
                             <div
                                 v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item) && isIctExpanded(item)"
-                                class="overflow-hidden rounded-xl border-2 border-blue-200 bg-white shadow-sm shadow-blue-100"
+                                class="overflow-hidden rounded-xl border border-blue-100 bg-white"
+                                @click.stop
+                                @keydown.stop
                             >
                                 <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
                                     <span>Description</span>
@@ -8200,7 +9699,7 @@ const generateInventoryReport = () => {
                                     v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-[10px] font-black text-slate-700 transition hover:bg-slate-50"
-                                    @click="openFullEditModal(item)"
+                                    @click.stop="openFullEditModal(item)"
                                 >
                                     Edit
                                 </button>
@@ -8210,7 +9709,7 @@ const generateInventoryReport = () => {
                                     type="button"
                                     class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
                                     :disabled="!canReleaseInventoryItem(item)"
-                                    @click="openReleaseItemModal(item)"
+                                    @click.stop="openReleaseItemModal(item)"
                                 >
                                     Release
                                 </button>
@@ -8220,7 +9719,7 @@ const generateInventoryReport = () => {
                                     title="View History"
                                     aria-label="View History"
                                     class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700"
-                                    @click="openHistoryModal(item)"
+                                    @click.stop="openHistoryModal(item)"
                                 >
                                     <svg
                                         class="h-5 w-5"
@@ -8241,38 +9740,11 @@ const generateInventoryReport = () => {
                                     v-if="canManageInventory"
                                     type="button"
                                     class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-[10px] font-black text-rose-700 transition hover:bg-rose-100"
-                                    @click="openDeleteItemModal(item)"
+                                    @click.stop="openDeleteItemModal(item)"
                                 >
                                     Delete
                                 </button>
 
-                                <button
-                                    v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item)"
-                                    type="button"
-                                    title="Property Number / Current User"
-                                    aria-label="Property Number / Current User"
-                                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-all duration-200"
-                                    :class="
-                                        isIctExpanded(item)
-                                            ? 'border-blue-800 bg-blue-800 text-white shadow-md shadow-blue-200 ring-4 ring-blue-100'
-                                            : 'border-blue-600 bg-blue-600 text-white shadow-sm shadow-blue-200 hover:border-blue-700 hover:bg-blue-700'
-                                    "
-                                    @click="toggleIctAssetDetails(item)"
-                                >
-                                    <svg
-                                        class="h-4 w-4 transition-transform duration-200"
-                                        :class="isIctExpanded(item) ? 'rotate-180' : ''"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2.25"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <path d="m6 9 6 6 6-6" />
-                                    </svg>
-                                </button>
                             </div>
                         </div>
                     </article>
@@ -9387,8 +10859,7 @@ const generateInventoryReport = () => {
                                 fullEditForm.category
                             )
                         "
-                        class="sm:col-span-2"
-                    >
+                        class="sm:col-span-2">
                         <label class="mb-2 block text-sm font-black text-slate-800">Count</label>
                         <input
                             v-model.number="fullEditForm.currently_available"
@@ -9396,20 +10867,17 @@ const generateInventoryReport = () => {
                             min="0"
                             step="1"
                             placeholder="Enter number of items"
-                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                        />
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100" />
                         <p
                             v-if="fullEditErrors.currently_available"
-                            class="mt-2 text-xs font-bold text-rose-600"
-                        >
+                            class="mt-2 text-xs font-bold text-rose-600">
                             {{ fullEditErrors.currently_available }}
                         </p>
                     </div>
 
                     <div
                         v-if="otherCategoryValues.includes(fullEditForm.category)"
-                        class="sm:col-span-2"
-                    >
+                        class="sm:col-span-2">
                         <label class="mb-2 block text-sm font-black text-slate-800">Location</label>
                         <input
                             v-model="fullEditForm.location"
@@ -9421,18 +10889,15 @@ const generateInventoryReport = () => {
                     </div>
 
                     <div
-                        v-if="!otherCategoryValues.includes(fullEditForm.category)"
-                    >
+                        v-if="!otherCategoryValues.includes(fullEditForm.category)">
                         <label
-                            class="mb-2 block text-sm font-black text-slate-800"
-                        >
+                            class="mb-2 block text-sm font-black text-slate-800">
                             Unit of Measure
                         </label>
 
                         <select
                             v-model="fullEditForm.unit"
-                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                        >
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100">
                             <option
                                 v-for="
                                     unitOption in editUnitOptions
@@ -10356,18 +11821,7 @@ const generateInventoryReport = () => {
                         </h3>
 
                         <div
-                            class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-semibold text-slate-500"
-                        >
-                            <span>
-                                Unit:
-                                <strong class="text-slate-700">
-                                    {{
-                                        historyItem?.unit
-                                        || '—'
-                                    }}
-                                </strong>
-                            </span>
-
+                            class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-semibold text-slate-500">
                             <span>
                                 Currently Available:
                                 <strong class="text-emerald-700">
@@ -10889,7 +12343,7 @@ const generateInventoryReport = () => {
     text-size-adjust: 100%;
 }
 
-.inventory-accessibility-root.a11y-readable-font,   
+.inventory-accessibility-root.a11y-readable-font,
 .inventory-accessibility-root.a11y-readable-font * {
     font-family:
         Arial,
@@ -10920,4 +12374,180 @@ const generateInventoryReport = () => {
         cursor: auto !important;
     }
 }
+
+
+/*
+|--------------------------------------------------------------------------
+| Inventory Comfort Theme
+|--------------------------------------------------------------------------
+| Softer blue-gray surfaces reduce glare while keeping strong contrast.
+| This intentionally avoids a mostly-white interface, especially for
+| users who may find bright screens tiring to read.
+*/
+.inventory-comfort-theme {
+    background:
+        linear-gradient(
+            180deg,
+            #e8eef5 0%,
+            #edf2f7 46%,
+            #e7edf4 100%
+        ) !important;
+    color: #172033;
+}
+
+/* Main cards and neutral buttons are no longer pure white. */
+.inventory-comfort-theme .bg-white {
+    background-color: #f7f9fc !important;
+}
+
+.inventory-comfort-theme .bg-slate-50 {
+    background-color: #edf2f7 !important;
+}
+
+/* Slightly stronger borders make cards, rows, and controls easier to separate. */
+.inventory-comfort-theme .border-slate-100 {
+    border-color: #d4dde7 !important;
+}
+
+.inventory-comfort-theme .border-slate-200 {
+    border-color: #becbd8 !important;
+}
+
+.inventory-comfort-theme .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+    border-color: #d4dde7 !important;
+}
+
+/* Improve secondary-text contrast for older eyes. */
+.inventory-comfort-theme .text-slate-300 {
+    color: #7b8ba0 !important;
+}
+
+.inventory-comfort-theme .text-slate-400 {
+    color: #64748b !important;
+}
+
+.inventory-comfort-theme .text-slate-500 {
+    color: #4b5f76 !important;
+}
+
+.inventory-comfort-theme .text-slate-600 {
+    color: #334a62 !important;
+}
+
+/* Controls use a soft gray-blue fill instead of bright white. */
+.inventory-comfort-theme
+    input:not([type="checkbox"]):not([type="radio"]),
+.inventory-comfort-theme select,
+.inventory-comfort-theme textarea {
+    background-color: #f1f5f9 !important;
+    border-color: #b8c6d4 !important;
+    color: #1e293b !important;
+}
+
+.inventory-comfort-theme
+    input:not([type="checkbox"]):not([type="radio"])::placeholder,
+.inventory-comfort-theme textarea::placeholder {
+    color: #64748b !important;
+}
+
+/* Stronger keyboard/focus visibility. */
+.inventory-comfort-theme input:focus,
+.inventory-comfort-theme select:focus,
+.inventory-comfort-theme textarea:focus,
+.inventory-comfort-theme button:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px;
+}
+
+/* Ledger area gets a calm neutral background. */
+.inventory-comfort-theme .inventory-ledger-surface {
+    background-color: #f5f8fb !important;
+    border-color: #b8c6d4 !important;
+    box-shadow:
+        0 10px 28px rgba(51, 65, 85, 0.08);
+}
+
+/* Keep headers blue, but use a deeper less-glary blue. */
+.inventory-comfort-theme .inventory-ledger-table thead {
+    background-color: #35679b !important;
+}
+
+.inventory-comfort-theme .inventory-ledger-table thead th {
+    background-color: #35679b !important;
+    border-color: #2d5b8c !important;
+    color: #ffffff !important;
+}
+
+/* Main data rows use soft blue-gray rather than pure white. */
+.inventory-comfort-theme .inventory-ledger-table tbody > tr {
+    border-color: #d4dde7;
+}
+
+.inventory-comfort-theme
+    .inventory-ledger-table
+    tbody
+    > tr.bg-white {
+    background-color: #f7f9fc !important;
+}
+
+.inventory-comfort-theme
+    .inventory-ledger-table
+    tbody
+    > tr.bg-white:hover {
+    background-color: #e8f1fb !important;
+}
+
+/* Softer expanded rows without the old vertical blue stripe. */
+.inventory-comfort-theme
+    .inventory-ledger-table
+    tbody
+    > tr.bg-blue-50\/80,
+.inventory-comfort-theme
+    .inventory-ledger-table
+    tbody
+    > tr.bg-blue-100\/70,
+.inventory-comfort-theme
+    .inventory-ledger-table
+    tbody
+    > tr.bg-blue-50\/45 {
+    background-color: #e8f1fb !important;
+}
+
+/* Property-detail blocks stay distinct without a thick blue left line. */
+.inventory-comfort-theme .inventory-ledger-table .border-2.border-blue-200 {
+    border-color: #adc4dc !important;
+    background-color: #f3f7fb !important;
+    box-shadow:
+        0 8px 20px rgba(51, 65, 85, 0.08);
+}
+
+/* Soften blue pills while retaining readable contrast. */
+.inventory-comfort-theme .bg-blue-50 {
+    background-color: #e7f0fa !important;
+}
+
+.inventory-comfort-theme .border-blue-100 {
+    border-color: #c5d9ec !important;
+}
+
+.inventory-comfort-theme .border-blue-200 {
+    border-color: #a9c7e4 !important;
+}
+
+/* Accessibility UI remains visually independent and crisp. */
+.inventory-comfort-theme .inventory-accessibility-ui.bg-white {
+    background-color: #ffffff !important;
+}
+
+
+
+/* Keep non-interactive rows/cards visually neutral. Only controls look clickable. */
+.inventory-comfort-theme .cursor-default {
+    cursor: default !important;
+}
+
+.inventory-comfort-theme button:not(:disabled) {
+    cursor: pointer;
+}
+
 </style>

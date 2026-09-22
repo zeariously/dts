@@ -37,6 +37,20 @@ class InventoryController extends Controller
                 ")
                 ->orderBy('item')
                 ->get(),
+
+            /*
+             * Read-only reconciliation data per inventory category.
+             * Each category keeps its own reference spreadsheet.
+             */
+            'reconciliations' =>
+                $this->buildInventoryReconciliations(),
+
+            /*
+             * Category-scoped Purchase Request validations.
+             * Read-only: they never change inventory values.
+             */
+            'purchaseRequestValidations' =>
+                $this->buildPurchaseRequestValidations(),
         ]);
     }
 
@@ -903,27 +917,101 @@ class InventoryController extends Controller
                         )
                     );
 
-                $item->ict_assets =
-                    $this->normalizedIctAssets(
-                        $validated['ict_assets'] ?? [],
-                        (
-                            array_key_exists(
-                                'currently_available',
-                                $validated
-                            )
-                                ? (int) $validated['currently_available']
-                                : (int) ($item->currently_available ?? 0)
-                        ),
-                        true,
-                        (
-                            $assetCategory === 'ict'
-                            || in_array(
-                                $assetCategory,
-                                ['furniture', 'fixtures'],
-                                true
-                            )
+                $assetUnit = strtoupper(
+                    trim(
+                        (string) (
+                            $validated['unit']
+                            ?? $item->unit
+                            ?? ''
                         )
+                    )
+                );
+
+                $assetExpectedCount =
+                    array_key_exists(
+                        'currently_available',
+                        $validated
+                    )
+                        ? (int) $validated['currently_available']
+                        : (int) ($item->currently_available ?? 0);
+
+                $submittedAssets =
+                    $validated['ict_assets'] ?? [];
+
+                $storedAssets =
+                    $item->ict_assets ?? [];
+
+                $isIctSubscription =
+                    $assetCategory === 'ict'
+                    && in_array(
+                        $assetUnit,
+                        ['MONTH', 'YEAR'],
+                        true
                     );
+
+                $isPropertyTrackedOther =
+                    in_array(
+                        $assetCategory,
+                        ['furniture', 'fixtures'],
+                        true
+                    );
+
+                if ($isIctSubscription) {
+                    /*
+                     * Subscription ICT uses duration only. It must never be
+                     * forced to provide Property Details.
+                     */
+                    $item->ict_assets = null;
+                } elseif ($assetCategory === 'ict') {
+                    /*
+                     * Normal ICT remains strict: Count must match complete
+                     * Property Detail rows.
+                     */
+                    $item->ict_assets =
+                        $this->normalizedIctAssets(
+                            $submittedAssets,
+                            $assetExpectedCount,
+                            true,
+                            true
+                        );
+                } elseif ($isPropertyTrackedOther) {
+                    /*
+                     * Furniture/Fixtures may contain legacy records created
+                     * before Property Details were introduced. Allow those
+                     * records to edit Item / Count / Location / Remarks while
+                     * ict_assets is still empty.
+                     *
+                     * Once a Furniture/Fixtures record has real Property
+                     * Details (or the user submits them), strict validation is
+                     * preserved.
+                     */
+                    $hasStoredAssets =
+                        $this->hasMeaningfulIctAssets(
+                            $storedAssets
+                        );
+
+                    $hasSubmittedAssets =
+                        $this->hasMeaningfulIctAssets(
+                            $submittedAssets
+                        );
+
+                    if (
+                        $hasStoredAssets
+                        || $hasSubmittedAssets
+                    ) {
+                        $item->ict_assets =
+                            $this->normalizedIctAssets(
+                                $submittedAssets,
+                                $assetExpectedCount,
+                                true,
+                                true
+                            );
+                    } else {
+                        $item->ict_assets = [];
+                    }
+                } else {
+                    $item->ict_assets = null;
+                }
             }
 
             if (array_key_exists('fixed_value', $validated)) {
@@ -1095,19 +1183,36 @@ class InventoryController extends Controller
                 $item->quarter_stock = null;
                 $item->fixed_value = null;
 
-                $item->ict_assets =
+                if (
                     in_array(
                         $finalCategory,
                         ['furniture', 'fixtures'],
                         true
                     )
-                        ? $this->normalizedIctAssets(
-                            $item->ict_assets ?? [],
-                            (int) $item->currently_available,
-                            true,
-                            true
+                ) {
+                    /*
+                     * Do not force legacy Furniture/Fixtures rows that have
+                     * never had Property Details to suddenly provide them just
+                     * because another field was edited.
+                     */
+                    if (
+                        $this->hasMeaningfulIctAssets(
+                            $item->ict_assets ?? []
                         )
-                        : null;
+                    ) {
+                        $item->ict_assets =
+                            $this->normalizedIctAssets(
+                                $item->ict_assets ?? [],
+                                (int) $item->currently_available,
+                                true,
+                                true
+                            );
+                    } else {
+                        $item->ict_assets = [];
+                    }
+                } else {
+                    $item->ict_assets = null;
+                }
 
                 $item->tracked_released =
                     (int) ($item->tracked_released ?? 0);
@@ -2284,6 +2389,55 @@ class InventoryController extends Controller
     }
 
     /**
+     * Check whether an ICT/property-detail payload contains at least one
+     * real value. Blank rows generated by the Vue editor do not count.
+     */
+    private function hasMeaningfulIctAssets(
+        mixed $assets
+    ): bool {
+        if (!is_array($assets)) {
+            return false;
+        }
+
+        foreach ($assets as $asset) {
+            if (!is_array($asset)) {
+                continue;
+            }
+
+            $description = trim(
+                (string) (
+                    $asset['description']
+                    ?? ''
+                )
+            );
+
+            $propertyNumber = trim(
+                (string) (
+                    $asset['property_number']
+                    ?? ''
+                )
+            );
+
+            $currentUser = trim(
+                (string) (
+                    $asset['current_user']
+                    ?? ''
+                )
+            );
+
+            if (
+                $description !== ''
+                || $propertyNumber !== ''
+                || $currentUser !== ''
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Normalize optional ICT property details.
      *
      * Current User is optional. If a Current User is supplied,
@@ -2962,12 +3116,3917 @@ class InventoryController extends Controller
         );
     }
 
+
+
     /**
-     * Role 3 is the only role that can manage Inventory.
+     * Upload the latest Purchase Request reference for one Inventory category.
      *
-     * DTS primarily stores the role in "rights". Fallbacks are included for
-     * accounts exposing role/role_number.
+     * READ-ONLY: validation never updates Inventory data.
      */
+    public function uploadPurchaseRequestValidation(
+        Request $request
+    ) {
+        $this->authorizeInventoryManagement(
+            $request
+        );
+
+        $validated = $request->validate([
+            'validation_category' =>
+                'required|in:supplies,ict,furniture_fixtures,emergency_kits,token_giveaways',
+
+            'inventory_year' =>
+                'nullable|integer|min:2026|max:2100',
+
+            'pr_file' =>
+                'required|file|mimes:xlsx,csv,txt|max:10240',
+        ]);
+
+        $category =
+            $this->normalizePurchaseRequestCategory(
+                $validated['validation_category']
+            );
+
+        $needsYear =
+            in_array(
+                $category,
+                ['supplies', 'ict'],
+                true
+            );
+
+        $inventoryYear =
+            $needsYear
+                ? (int) (
+                    $validated['inventory_year']
+                    ?? 0
+                )
+                : null;
+
+        if (
+            $needsYear
+            && $inventoryYear < 2026
+        ) {
+            throw ValidationException::withMessages([
+                'inventory_year' =>
+                    'Select a valid Inventory Year.',
+            ]);
+        }
+
+        $file =
+            $validated['pr_file'];
+
+        $extension =
+            strtolower(
+                (string) $file
+                    ->getClientOriginalExtension()
+            );
+
+        if (!in_array(
+            $extension,
+            ['xlsx', 'csv', 'txt'],
+            true
+        )) {
+            throw ValidationException::withMessages([
+                'pr_file' =>
+                    'Please upload a valid XLSX or CSV Purchase Request file.',
+            ]);
+        }
+
+        try {
+            $rows =
+                $this->parsePurchaseRequestSpreadsheet(
+                    $file->getRealPath(),
+                    $extension,
+                    $category
+                );
+        } catch (\Throwable $exception) {
+            Log::warning(
+                'Purchase Request parse failed.',
+                [
+                    'category' =>
+                        $category,
+
+                    'message' =>
+                        $exception->getMessage(),
+                ]
+            );
+
+            $message =
+                trim(
+                    (string) $exception->getMessage()
+                );
+
+            throw ValidationException::withMessages([
+                'pr_file' =>
+                    $message !== ''
+                        ? 'Purchase Request file error: '
+                            . $message
+                        : 'The selected Purchase Request file could not be read.',
+            ]);
+        }
+
+        if (empty($rows)) {
+            throw ValidationException::withMessages([
+                'pr_file' =>
+                    'The Purchase Request file does not contain readable item rows.',
+            ]);
+        }
+
+        $directory =
+            storage_path(
+                'app/inventory/purchase-request/'
+                . $category
+            );
+
+        if (!is_dir($directory)) {
+            mkdir(
+                $directory,
+                0775,
+                true
+            );
+        }
+
+        foreach (
+            glob(
+                $directory
+                . DIRECTORY_SEPARATOR
+                . 'current.*'
+            ) ?: []
+            as $existing
+        ) {
+            if (
+                basename($existing)
+                !== 'current.json'
+                && is_file($existing)
+            ) {
+                @unlink($existing);
+            }
+        }
+
+        $storedExtension =
+            $extension === 'txt'
+                ? 'csv'
+                : $extension;
+
+        $storedFilename =
+            'current.'
+            . $storedExtension;
+
+        $originalName =
+            $file->getClientOriginalName();
+
+        $file->move(
+            $directory,
+            $storedFilename
+        );
+
+        $metadata = [
+            'validation_category' =>
+                $category,
+
+            'original_name' =>
+                $originalName,
+
+            'stored_name' =>
+                $storedFilename,
+
+            'inventory_year' =>
+                $inventoryYear,
+
+            'uploaded_at' =>
+                now()->toIso8601String(),
+
+            'uploaded_by' =>
+                $request->user()?->name
+                ?? $request->user()?->loginname
+                ?? $request->user()?->username
+                ?? 'Inventory Administrator',
+
+            'row_count' =>
+                count($rows),
+        ];
+
+        file_put_contents(
+            $directory
+                . DIRECTORY_SEPARATOR
+                . 'current.json',
+            json_encode(
+                $metadata,
+                JSON_PRETTY_PRINT
+                | JSON_UNESCAPED_UNICODE
+            )
+        );
+
+        $label =
+            $this->purchaseRequestCategoryLabel(
+                $category
+            );
+
+        return back()->with(
+            'success',
+            'Purchase Request validated against the '
+            . ($inventoryYear !== null
+                ? $inventoryYear . ' '
+                : '')
+            . $label
+            . ' inventory.'
+        );
+    }
+
+    /**
+     * Return all category-specific PR validation results to the page.
+     */
+    private function buildPurchaseRequestValidations(): array
+    {
+        $results = [];
+
+        foreach (
+            [
+                'supplies',
+                'ict',
+                'furniture_fixtures',
+                'emergency_kits',
+                'token_giveaways',
+            ]
+            as $category
+        ) {
+            $results[$category] =
+                $this->buildPurchaseRequestValidation(
+                    $category
+                );
+        }
+
+        return $results;
+    }
+
+    private function emptyPurchaseRequestValidation(
+        string $category
+    ): array {
+        return [
+            'has_file' => false,
+
+            'file' => null,
+
+            'context' => [
+                'validation_category' =>
+                    $category,
+
+                'category_label' =>
+                    $this->purchaseRequestCategoryLabel(
+                        $category
+                    ),
+
+                'inventory_year' => null,
+            ],
+
+            'summary' => [
+                'total' => 0,
+                'match' => 0,
+                'not_match' => 0,
+                'not_found' => 0,
+            ],
+
+            'rows' => [],
+
+            'error' => null,
+        ];
+    }
+
+    /**
+     * Build one category's latest Purchase Request validation.
+     */
+    private function buildPurchaseRequestValidation(
+        string $category
+    ): array {
+        $category =
+            $this->normalizePurchaseRequestCategory(
+                $category
+            );
+
+        $empty =
+            $this->emptyPurchaseRequestValidation(
+                $category
+            );
+
+        $directory =
+            storage_path(
+                'app/inventory/purchase-request/'
+                . $category
+            );
+
+        if (!is_dir($directory)) {
+            return $empty;
+        }
+
+        $metadataPath =
+            $directory
+            . DIRECTORY_SEPARATOR
+            . 'current.json';
+
+        if (!is_file($metadataPath)) {
+            return $empty;
+        }
+
+        $metadata =
+            json_decode(
+                (string) file_get_contents(
+                    $metadataPath
+                ),
+                true
+            );
+
+        if (!is_array($metadata)) {
+            return [
+                ...$empty,
+                'error' =>
+                    'The saved Purchase Request metadata could not be read.',
+            ];
+        }
+
+        $needsYear =
+            in_array(
+                $category,
+                ['supplies', 'ict'],
+                true
+            );
+
+        $year =
+            $needsYear
+                ? (int) (
+                    $metadata['inventory_year']
+                    ?? 0
+                )
+                : null;
+
+        if (
+            $needsYear
+            && $year < 2026
+        ) {
+            return [
+                ...$empty,
+                'error' =>
+                    'The saved Purchase Request Inventory Year is invalid.',
+            ];
+        }
+
+        $referencePath = null;
+        $extension = null;
+
+        foreach (
+            ['xlsx', 'csv']
+            as $candidateExtension
+        ) {
+            $candidate =
+                $directory
+                . DIRECTORY_SEPARATOR
+                . 'current.'
+                . $candidateExtension;
+
+            if (is_file($candidate)) {
+                $referencePath =
+                    $candidate;
+
+                $extension =
+                    $candidateExtension;
+
+                break;
+            }
+        }
+
+        if (!$referencePath) {
+            return [
+                ...$empty,
+                'error' =>
+                    'The saved Purchase Request file could not be found.',
+            ];
+        }
+
+        try {
+            $prRows =
+                $this->parsePurchaseRequestSpreadsheet(
+                    $referencePath,
+                    (string) $extension,
+                    $category
+                );
+
+            $inventoryItems =
+                $this->purchaseRequestInventoryItems(
+                    $category,
+                    $year
+                );
+
+            $validation =
+                match ($category) {
+                    'supplies' =>
+                        $this->validateSuppliesPurchaseRequestRows(
+                            $prRows,
+                            $inventoryItems,
+                            (int) $year
+                        ),
+
+                    'ict' =>
+                        $this->validateIctPurchaseRequestRows(
+                            $prRows,
+                            $inventoryItems,
+                            (int) $year
+                        ),
+
+                    default =>
+                        $this->validateOtherPurchaseRequestRows(
+                            $prRows,
+                            $inventoryItems,
+                            $category
+                        ),
+                };
+
+            return [
+                'has_file' => true,
+
+                'file' => [
+                    'original_name' =>
+                        $metadata['original_name']
+                        ?? basename(
+                            $referencePath
+                        ),
+
+                    'uploaded_at' =>
+                        $metadata['uploaded_at']
+                        ?? date(
+                            DATE_ATOM,
+                            filemtime(
+                                $referencePath
+                            )
+                        ),
+
+                    'uploaded_by' =>
+                        $metadata['uploaded_by']
+                        ?? 'Unknown',
+
+                    'row_count' =>
+                        $metadata['row_count']
+                        ?? count(
+                            $prRows
+                        ),
+                ],
+
+                'context' => [
+                    'validation_category' =>
+                        $category,
+
+                    'category_label' =>
+                        $this->purchaseRequestCategoryLabel(
+                            $category
+                        ),
+
+                    'inventory_year' =>
+                        $year,
+                ],
+
+                'summary' =>
+                    $validation['summary'],
+
+                'rows' =>
+                    $validation['rows'],
+
+                'error' => null,
+            ];
+        } catch (\Throwable $exception) {
+            Log::error(
+                'Purchase Request validation failed.',
+                [
+                    'category' =>
+                        $category,
+
+                    'message' =>
+                        $exception->getMessage(),
+                ]
+            );
+
+            return [
+                ...$empty,
+
+                'has_file' => true,
+
+                'file' => [
+                    'original_name' =>
+                        $metadata['original_name']
+                        ?? basename(
+                            $referencePath
+                        ),
+
+                    'uploaded_at' =>
+                        $metadata['uploaded_at']
+                        ?? null,
+
+                    'uploaded_by' =>
+                        $metadata['uploaded_by']
+                        ?? 'Unknown',
+
+                    'row_count' =>
+                        $metadata['row_count']
+                        ?? null,
+                ],
+
+                'context' => [
+                    'validation_category' =>
+                        $category,
+
+                    'category_label' =>
+                        $this->purchaseRequestCategoryLabel(
+                            $category
+                        ),
+
+                    'inventory_year' =>
+                        $year,
+                ],
+
+                'error' =>
+                    'The saved Purchase Request could not be validated: '
+                    . $exception->getMessage(),
+            ];
+        }
+    }
+
+    private function purchaseRequestInventoryItems(
+        string $category,
+        ?int $year
+    ) {
+        $query =
+            InventoryItem::query();
+
+        if ($category === 'supplies') {
+            $query
+                ->whereRaw(
+                    "LOWER(TRIM(category)) = 'supplies'"
+                )
+                ->where(
+                    'inventory_year',
+                    $year
+                );
+        } elseif ($category === 'ict') {
+            $query
+                ->whereRaw(
+                    "LOWER(TRIM(category)) = 'ict'"
+                )
+                ->where(
+                    'inventory_year',
+                    $year
+                );
+        } elseif ($category === 'furniture_fixtures') {
+            $query->where(
+                function ($builder) {
+                    $builder
+                        ->whereRaw(
+                            "LOWER(TRIM(category)) = 'furniture'"
+                        )
+                        ->orWhereRaw(
+                            "LOWER(TRIM(category)) = 'fixtures'"
+                        );
+                }
+            );
+        } else {
+            $query->whereRaw(
+                'LOWER(TRIM(category)) = ?',
+                [$category]
+            );
+        }
+
+        return $query
+            ->orderBy('item')
+            ->get();
+    }
+
+    /**
+     * Supplies: Item + Unit + exact PR Quarter + Quantity.
+     * Quantity uses only quarter_stock[PR quarter].added.
+     */
+    private function validateSuppliesPurchaseRequestRows(
+        array $prRows,
+        $inventoryItems,
+        int $year
+    ): array {
+        $rows = [];
+
+        $summary = [
+            'total' => 0,
+            'match' => 0,
+            'not_match' => 0,
+            'not_found' => 0,
+        ];
+
+        foreach ($prRows as $index => $prRow) {
+            if (!is_array($prRow)) {
+                continue;
+            }
+
+            $itemName = trim(
+                (string) ($prRow['item'] ?? '')
+            );
+
+            $unit = strtoupper(
+                trim(
+                    (string) ($prRow['unit'] ?? '')
+                )
+            );
+
+            $prQuarterRaw = trim(
+                (string) ($prRow['quarter'] ?? '')
+            );
+
+            $quarter =
+                $this->normalizePurchaseRequestQuarter(
+                    $prQuarterRaw
+                );
+
+            $quantityRaw = trim(
+                (string) ($prRow['quantity'] ?? '')
+            );
+
+            $quantity = is_numeric($quantityRaw)
+                ? (float) $quantityRaw
+                : null;
+
+            $baseRow = [
+                'id' => 'pr:' . ($index + 1),
+                'item' => $itemName,
+                'unit' => $unit,
+                'quarter' =>
+                    $quarter
+                    ?? strtoupper($prQuarterRaw),
+                'quantity' => $quantity,
+                'inventory_year' => $year,
+                'status' => 'not_found',
+                'notes' => '',
+            ];
+
+            $itemMatches =
+                $inventoryItems
+                    ->filter(
+                        fn ($inventoryItem) =>
+                            $this->normalizePurchaseRequestItemText(
+                                $inventoryItem->item
+                            )
+                            ===
+                            $this->normalizePurchaseRequestItemText(
+                                $itemName
+                            )
+                    )
+                    ->values();
+
+            if ($itemMatches->isEmpty()) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_found',
+                    'notes' =>
+                        'Item was not found in the '
+                        . $year
+                        . ' Supplies inventory.',
+                ];
+
+                $summary['not_found']++;
+                $summary['total']++;
+                continue;
+            }
+
+            $sameUnit =
+                $itemMatches
+                    ->filter(
+                        fn ($inventoryItem) =>
+                            strtoupper(
+                                trim(
+                                    (string) $inventoryItem->unit
+                                )
+                            )
+                            === $unit
+                    )
+                    ->values();
+
+            $inventoryItem =
+                $sameUnit->first()
+                ?? $itemMatches->first();
+
+            $systemUnit = strtoupper(
+                trim(
+                    (string) $inventoryItem->unit
+                )
+            );
+
+            $quarterList =
+                $this->normalizedQuarterList(
+                    $inventoryItem->quarters
+                    ?? []
+                );
+
+            $quarterStock =
+                $this->normalizedStoredQuarterStock(
+                    $inventoryItem->quarter_stock
+                );
+
+            $notes = [];
+
+            if ($systemUnit !== $unit) {
+                $notes[] =
+                    'Unit does not match. PR: '
+                    . ($unit !== '' ? $unit : 'Blank')
+                    . ', System: '
+                    . ($systemUnit !== '' ? $systemUnit : 'Blank')
+                    . '.';
+            }
+
+            $quarterMatches = false;
+            $quarterEntry = null;
+
+            if ($quarter === null) {
+                $notes[] =
+                    'Quarter is invalid. PR: '
+                    . (
+                        $prQuarterRaw !== ''
+                            ? $prQuarterRaw
+                            : 'Blank'
+                    )
+                    . '. Use Q1, Q2, Q3, or Q4.';
+            } else {
+                $quarterEntry =
+                    $quarterStock[$quarter]
+                    ?? null;
+
+                $quarterMatches =
+                    in_array(
+                        $quarter,
+                        $quarterList,
+                        true
+                    )
+                    && is_array($quarterEntry)
+                    && $this->quarterStockEntryHasActivity(
+                        $quarterEntry
+                    );
+
+                if (!$quarterMatches) {
+                    $notes[] =
+                        'No '
+                        . strtoupper($quarter)
+                        . ' record found in the Inventory for this item.';
+                }
+            }
+
+            if ($quantity === null) {
+                $notes[] =
+                    'Quantity is missing or invalid in the Purchase Request.';
+            } elseif ($quarterMatches) {
+                $systemQuantity = max(
+                    0,
+                    (float) (
+                        $quarterEntry['added']
+                        ?? 0
+                    )
+                );
+
+                if (
+                    abs(
+                        $quantity
+                        - $systemQuantity
+                    )
+                    >= 0.000001
+                ) {
+                    $notes[] =
+                        'Quantity does not match. PR: '
+                        . $this->formatPurchaseRequestNumber(
+                            $quantity
+                        )
+                        . ', System: '
+                        . $this->formatPurchaseRequestNumber(
+                            $systemQuantity
+                        )
+                        . '.';
+                }
+            }
+
+            if (empty($notes)) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'match',
+                    'notes' =>
+                        'All Purchase Request details match the Inventory record.',
+                ];
+
+                $summary['match']++;
+            } else {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_match',
+                    'notes' => implode(' ', $notes),
+                ];
+
+                $summary['not_match']++;
+            }
+
+            $summary['total']++;
+        }
+
+        return [
+            'summary' => $summary,
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * ICT: Item + Unit + Quantity.
+     * No Quarter is used for ICT.
+     */
+    private function validateIctPurchaseRequestRows(
+        array $prRows,
+        $inventoryItems,
+        int $year
+    ): array {
+        $rows = [];
+
+        $summary = [
+            'total' => 0,
+            'match' => 0,
+            'not_match' => 0,
+            'not_found' => 0,
+        ];
+
+        foreach ($prRows as $index => $prRow) {
+            if (!is_array($prRow)) {
+                continue;
+            }
+
+            $itemName = trim(
+                (string) ($prRow['item'] ?? '')
+            );
+
+            $unit = strtoupper(
+                trim(
+                    (string) ($prRow['unit'] ?? '')
+                )
+            );
+
+            $quantityRaw = trim(
+                (string) ($prRow['quantity'] ?? '')
+            );
+
+            $quantity = is_numeric($quantityRaw)
+                ? (float) $quantityRaw
+                : null;
+
+            $baseRow = [
+                'id' => 'pr:' . ($index + 1),
+                'item' => $itemName,
+                'unit' => $unit,
+                'quarter' => null,
+                'quantity' => $quantity,
+                'inventory_year' => $year,
+                'status' => 'not_found',
+                'notes' => '',
+            ];
+
+            $itemMatches =
+                $inventoryItems
+                    ->filter(
+                        fn ($inventoryItem) =>
+                            $this->normalizePurchaseRequestItemText(
+                                $inventoryItem->item
+                            )
+                            ===
+                            $this->normalizePurchaseRequestItemText(
+                                $itemName
+                            )
+                    )
+                    ->values();
+
+            if ($itemMatches->isEmpty()) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_found',
+                    'notes' =>
+                        'Item was not found in the '
+                        . $year
+                        . ' ICT inventory.',
+                ];
+
+                $summary['not_found']++;
+                $summary['total']++;
+                continue;
+            }
+
+            $sameUnit =
+                $itemMatches
+                    ->filter(
+                        fn ($inventoryItem) =>
+                            strtoupper(
+                                trim(
+                                    (string) $inventoryItem->unit
+                                )
+                            )
+                            === $unit
+                    )
+                    ->values();
+
+            $inventoryItem =
+                $sameUnit->first()
+                ?? $itemMatches->first();
+
+            $systemUnit = strtoupper(
+                trim(
+                    (string) $inventoryItem->unit
+                )
+            );
+
+            $notes = [];
+
+            if ($systemUnit !== $unit) {
+                $notes[] =
+                    'Unit does not match. PR: '
+                    . ($unit !== '' ? $unit : 'Blank')
+                    . ', System: '
+                    . ($systemUnit !== '' ? $systemUnit : 'Blank')
+                    . '.';
+            }
+
+            if ($quantity === null) {
+                $notes[] =
+                    'Quantity is missing or invalid in the Purchase Request.';
+            } else {
+                $systemQuantity =
+                    $this->purchaseRequestSystemQuantity(
+                        $inventoryItem,
+                        'ict'
+                    );
+
+                if (
+                    abs(
+                        $quantity
+                        - $systemQuantity
+                    )
+                    >= 0.000001
+                ) {
+                    $notes[] =
+                        'Quantity does not match. PR: '
+                        . $this->formatPurchaseRequestNumber(
+                            $quantity
+                        )
+                        . ', System: '
+                        . $this->formatPurchaseRequestNumber(
+                            $systemQuantity
+                        )
+                        . '.';
+                }
+            }
+
+            if (empty($notes)) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'match',
+                    'notes' =>
+                        'All Purchase Request details match the Inventory record.',
+                ];
+
+                $summary['match']++;
+            } else {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_match',
+                    'notes' => implode(' ', $notes),
+                ];
+
+                $summary['not_match']++;
+            }
+
+            $summary['total']++;
+        }
+
+        return [
+            'summary' => $summary,
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * Other Items: Item + Quantity.
+     * Category is already determined by the active Other Items tab.
+     */
+    private function validateOtherPurchaseRequestRows(
+        array $prRows,
+        $inventoryItems,
+        string $category
+    ): array {
+        $rows = [];
+
+        $summary = [
+            'total' => 0,
+            'match' => 0,
+            'not_match' => 0,
+            'not_found' => 0,
+        ];
+
+        $label =
+            $this->purchaseRequestCategoryLabel(
+                $category
+            );
+
+        foreach ($prRows as $index => $prRow) {
+            if (!is_array($prRow)) {
+                continue;
+            }
+
+            $itemName = trim(
+                (string) ($prRow['item'] ?? '')
+            );
+
+            $quantityRaw = trim(
+                (string) ($prRow['quantity'] ?? '')
+            );
+
+            $quantity = is_numeric($quantityRaw)
+                ? (float) $quantityRaw
+                : null;
+
+            $baseRow = [
+                'id' => 'pr:' . ($index + 1),
+                'item' => $itemName,
+                'unit' => null,
+                'quarter' => null,
+                'quantity' => $quantity,
+                'inventory_year' => null,
+                'status' => 'not_found',
+                'notes' => '',
+            ];
+
+            $itemMatches =
+                $inventoryItems
+                    ->filter(
+                        fn ($inventoryItem) =>
+                            $this->normalizePurchaseRequestItemText(
+                                $inventoryItem->item
+                            )
+                            ===
+                            $this->normalizePurchaseRequestItemText(
+                                $itemName
+                            )
+                    )
+                    ->values();
+
+            if ($itemMatches->isEmpty()) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_found',
+                    'notes' =>
+                        'Item was not found in the '
+                        . $label
+                        . ' inventory.',
+                ];
+
+                $summary['not_found']++;
+                $summary['total']++;
+                continue;
+            }
+
+            $inventoryItem =
+                $itemMatches->first();
+
+            $notes = [];
+
+            if ($quantity === null) {
+                $notes[] =
+                    'Quantity is missing or invalid in the Purchase Request.';
+            } else {
+                $systemQuantity =
+                    $this->purchaseRequestSystemQuantity(
+                        $inventoryItem,
+                        $category
+                    );
+
+                if (
+                    abs(
+                        $quantity
+                        - $systemQuantity
+                    )
+                    >= 0.000001
+                ) {
+                    $notes[] =
+                        'Quantity does not match. PR: '
+                        . $this->formatPurchaseRequestNumber(
+                            $quantity
+                        )
+                        . ', System: '
+                        . $this->formatPurchaseRequestNumber(
+                            $systemQuantity
+                        )
+                        . '.';
+                }
+            }
+
+            if (empty($notes)) {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'match',
+                    'notes' =>
+                        'All Purchase Request details match the Inventory record.',
+                ];
+
+                $summary['match']++;
+            } else {
+                $rows[] = [
+                    ...$baseRow,
+                    'status' => 'not_match',
+                    'notes' => implode(' ', $notes),
+                ];
+
+                $summary['not_match']++;
+            }
+
+            $summary['total']++;
+        }
+
+        return [
+            'summary' => $summary,
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * Stable Purchase Request quantity to compare against.
+     *
+     * Physical ICT / Furniture:
+     * - Count remains the total asset count even after assignment.
+     *
+     * ICT MONTH/YEAR / Emergency Kits / Token and Giveaways:
+     * - Releases reduce currently_available, so add tracked_released back
+     *   to reconstruct the current system-entered total quantity.
+     */
+    private function purchaseRequestSystemQuantity(
+        InventoryItem $item,
+        string $category
+    ): float {
+        $category =
+            $this->normalizePurchaseRequestCategory(
+                $category
+            );
+
+        $unit =
+            strtoupper(
+                trim(
+                    (string) $item->unit
+                )
+            );
+
+        $assets =
+            is_array($item->ict_assets)
+                ? array_values(
+                    array_filter(
+                        $item->ict_assets,
+                        'is_array'
+                    )
+                )
+                : [];
+
+        if ($category === 'ict') {
+            if (
+                !in_array(
+                    $unit,
+                    ['MONTH', 'YEAR'],
+                    true
+                )
+            ) {
+                return (float) (
+                    !empty($assets)
+                        ? count($assets)
+                        : max(
+                            0,
+                            (int) (
+                                $item->currently_available
+                                ?? 0
+                            )
+                        )
+                );
+            }
+
+            return (float) (
+                max(
+                    0,
+                    (int) (
+                        $item->currently_available
+                        ?? 0
+                    )
+                )
+                + max(
+                    0,
+                    (int) (
+                        $item->tracked_released
+                        ?? 0
+                    )
+                )
+            );
+        }
+
+        if ($category === 'furniture_fixtures') {
+            return (float) (
+                !empty($assets)
+                    ? count($assets)
+                    : max(
+                        0,
+                        (int) (
+                            $item->currently_available
+                            ?? 0
+                        )
+                    )
+            );
+        }
+
+        return (float) (
+            max(
+                0,
+                (int) (
+                    $item->currently_available
+                    ?? 0
+                )
+            )
+            + max(
+                0,
+                (int) (
+                    $item->tracked_released
+                    ?? 0
+                )
+            )
+        );
+    }
+
+    private function normalizePurchaseRequestQuarter(
+        mixed $value
+    ): ?string {
+        $value = strtoupper(
+            trim((string) $value)
+        );
+
+        $value = preg_replace(
+            '/[^A-Z0-9]+/',
+            '',
+            $value
+        );
+
+        return match ($value) {
+            'Q1',
+            'QUARTER1',
+            '1STQUARTER',
+            'FIRSTQUARTER',
+            '1' => 'q1',
+
+            'Q2',
+            'QUARTER2',
+            '2NDQUARTER',
+            'SECONDQUARTER',
+            '2' => 'q2',
+
+            'Q3',
+            'QUARTER3',
+            '3RDQUARTER',
+            'THIRDQUARTER',
+            '3' => 'q3',
+
+            'Q4',
+            'QUARTER4',
+            '4THQUARTER',
+            'FOURTHQUARTER',
+            '4' => 'q4',
+
+            default => null,
+        };
+    }
+
+    private function formatPurchaseRequestNumber(
+        float|int $value
+    ): string {
+        $number = (float) $value;
+
+        if (
+            abs(
+                $number
+                - round($number)
+            )
+            < 0.000001
+        ) {
+            return number_format(
+                $number,
+                0,
+                '.',
+                ','
+            );
+        }
+
+        return rtrim(
+            rtrim(
+                number_format(
+                    $number,
+                    4,
+                    '.',
+                    ','
+                ),
+                '0'
+            ),
+            '.'
+        );
+    }
+
+    private function normalizePurchaseRequestCategory(
+        mixed $value
+    ): string {
+        $value =
+            strtolower(
+                trim(
+                    (string) $value
+                )
+            );
+
+        return match ($value) {
+            'supplies' => 'supplies',
+            'ict' => 'ict',
+            'furniture',
+            'fixtures',
+            'furniture/fixtures',
+            'furniture_fixtures' =>
+                'furniture_fixtures',
+            'emergency_kits' =>
+                'emergency_kits',
+            'token_giveaways' =>
+                'token_giveaways',
+            default => 'supplies',
+        };
+    }
+
+    private function purchaseRequestCategoryLabel(
+        string $category
+    ): string {
+        return match (
+            $this->normalizePurchaseRequestCategory(
+                $category
+            )
+        ) {
+            'ict' => 'ICT',
+            'furniture_fixtures' =>
+                'Furniture/Fixtures',
+            'emergency_kits' =>
+                'Emergency Kits',
+            'token_giveaways' =>
+                'Token and Giveaways',
+            default => 'Supplies',
+        };
+    }
+
+    /**
+     * Normalize item text for Purchase Request matching.
+     */
+    private function normalizePurchaseRequestItemText(
+        mixed $value
+    ): string {
+        $value =
+            mb_strtolower(
+                trim(
+                    (string) $value
+                )
+            );
+
+        $value =
+            preg_replace(
+                '/[^\pL\pN]+/u',
+                ' ',
+                $value
+            );
+
+        return trim(
+            preg_replace(
+                '/\s+/u',
+                ' ',
+                (string) $value
+            )
+        );
+    }
+
+    /**
+     * Parse a category-specific Purchase Request spreadsheet.
+     *
+     * Supplies: Item | Unit | Quarter | Quantity
+     * ICT: Item | Unit | Quantity
+     * Other Items: Item | Quantity
+     */
+    private function parsePurchaseRequestSpreadsheet(
+        string $path,
+        string $extension,
+        string $category
+    ): array {
+        $category =
+            $this->normalizePurchaseRequestCategory(
+                $category
+            );
+
+        $extension =
+            strtolower(
+                $extension
+            );
+
+        $rawRows =
+            $extension === 'xlsx'
+                ? $this->readInventoryXlsx(
+                    $path
+                )
+                : $this->readInventoryCsv(
+                    $path
+                );
+
+        if (empty($rawRows)) {
+            return [];
+        }
+
+        $requiredFields =
+            match ($category) {
+                'supplies' =>
+                    [
+                        'item',
+                        'unit',
+                        'quarter',
+                        'quantity',
+                    ],
+
+                'ict' =>
+                    [
+                        'item',
+                        'unit',
+                        'quantity',
+                    ],
+
+                default =>
+                    [
+                        'item',
+                        'quantity',
+                    ],
+            };
+
+        $headerIndex = null;
+        $headers = [];
+
+        foreach (
+            array_slice(
+                $rawRows,
+                0,
+                30,
+                true
+            )
+            as $index => $row
+        ) {
+            $candidateHeaders = [];
+
+            foreach (
+                $row
+                as $columnIndex => $header
+            ) {
+                $normalized =
+                    $this->normalizePurchaseRequestHeader(
+                        $header
+                    );
+
+                if ($normalized !== null) {
+                    $candidateHeaders[
+                        $columnIndex
+                    ] = $normalized;
+                }
+            }
+
+            $fields =
+                array_values(
+                    $candidateHeaders
+                );
+
+            $hasAllRequired = true;
+
+            foreach (
+                $requiredFields
+                as $requiredField
+            ) {
+                if (!in_array(
+                    $requiredField,
+                    $fields,
+                    true
+                )) {
+                    $hasAllRequired = false;
+                    break;
+                }
+            }
+
+            if ($hasAllRequired) {
+                $headerIndex = $index;
+                $headers = $candidateHeaders;
+                break;
+            }
+        }
+
+        if ($headerIndex === null) {
+            $displayFields =
+                array_map(
+                    fn ($field) =>
+                        match ($field) {
+                            'item' => 'Item',
+                            'unit' => 'Unit',
+                            'quarter' => 'Quarter',
+                            'quantity' => 'Quantity',
+                            default => ucfirst($field),
+                        },
+                    $requiredFields
+                );
+
+            throw new \RuntimeException(
+                'No valid Purchase Request header row was found. Required columns: '
+                . implode(
+                    ', ',
+                    $displayFields
+                )
+                . '.'
+            );
+        }
+
+        $rows = [];
+
+        foreach (
+            array_slice(
+                $rawRows,
+                $headerIndex + 1
+            )
+            as $rawRow
+        ) {
+            $row = [];
+
+            foreach (
+                $headers
+                as $columnIndex => $field
+            ) {
+                $row[$field] =
+                    trim(
+                        (string) (
+                            $rawRow[
+                                $columnIndex
+                            ]
+                            ?? ''
+                        )
+                    );
+            }
+
+            $hasValue = false;
+
+            foreach (
+                $requiredFields
+                as $field
+            ) {
+                if (
+                    trim(
+                        (string) (
+                            $row[$field]
+                            ?? ''
+                        )
+                    ) !== ''
+                ) {
+                    $hasValue = true;
+                    break;
+                }
+            }
+
+            if (!$hasValue) {
+                continue;
+            }
+
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    private function normalizePurchaseRequestHeader(
+        mixed $header
+    ): ?string {
+        $header =
+            mb_strtolower(
+                trim(
+                    (string) $header
+                )
+            );
+
+        $header =
+            str_replace(
+                [
+                    '_',
+                    '-',
+                    '/',
+                    '\\',
+                    '(',
+                    ')',
+                    '.',
+                    '#',
+                ],
+                ' ',
+                $header
+            );
+
+        $header =
+            preg_replace(
+                '/\s+/u',
+                ' ',
+                trim($header)
+            );
+
+        $aliases = [
+            'item' => [
+                'item',
+                'item name',
+                'item description',
+                'description',
+                'particulars',
+                'article',
+                'item particulars',
+            ],
+
+            'unit' => [
+                'unit',
+                'uom',
+                'unit of measure',
+                'unit measure',
+            ],
+
+            'quarter' => [
+                'quarter',
+                'qtr',
+                'pr quarter',
+                'purchase request quarter',
+            ],
+
+            'quantity' => [
+                'quantity',
+                'qty',
+                'count',
+                'duration',
+                'requested quantity',
+                'quantity requested',
+                'request quantity',
+                'requested qty',
+                'qty requested',
+                'requested count',
+                'count requested',
+                'pr quantity',
+                'purchase request quantity',
+            ],
+        ];
+
+        foreach (
+            $aliases
+            as $field => $values
+        ) {
+            if (
+                in_array(
+                    $header,
+                    $values,
+                    true
+                )
+            ) {
+                return $field;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Upload or replace the one active reconciliation reference file.
+     *
+     * This file never updates inventory quantities/assets. It is only
+     * read when the Inventory Reconciliation tab is rendered.
+     */
+    public function uploadReconciliationReference(
+        Request $request
+    ) {
+        $this->authorizeInventoryManagement(
+            $request
+        );
+
+        $validated = $request->validate([
+            'reference_category' =>
+                'required|in:supplies,ict,furniture_fixtures,emergency_kits,token_giveaways',
+
+            'reference_file' =>
+                'required|file|mimes:xlsx,csv,txt|max:10240',
+        ]);
+
+        $file =
+            $validated['reference_file'];
+
+        $extension =
+            strtolower(
+                (string) $file
+                    ->getClientOriginalExtension()
+            );
+
+        if (!in_array(
+            $extension,
+            ['xlsx', 'csv', 'txt'],
+            true
+        )) {
+            throw ValidationException::withMessages([
+                'reference_file' =>
+                    'Please upload an XLSX or CSV file.',
+            ]);
+        }
+
+        /*
+         * Validate that the spreadsheet can be read BEFORE replacing
+         * the current reference file.
+         */
+        try {
+            $previewRows =
+                $this->parseReconciliationSpreadsheet(
+                    $file->getRealPath(),
+                    $extension
+                );
+        } catch (\Throwable $exception) {
+            Log::warning(
+                'Inventory reconciliation reference parse failed.',
+                [
+                    'message' =>
+                        $exception->getMessage(),
+                ]
+            );
+
+            $parserMessage =
+                trim(
+                    (string) $exception->getMessage()
+                );
+
+            throw ValidationException::withMessages([
+                'reference_file' =>
+                    $parserMessage !== ''
+                        ? 'Reference file error: ' . $parserMessage
+                        : 'The selected reference file could not be read. Please use a valid XLSX or CSV file.',
+            ]);
+        }
+
+        if (empty($previewRows)) {
+            throw ValidationException::withMessages([
+                'reference_file' =>
+                    'The selected reference file does not contain readable inventory rows.',
+            ]);
+        }
+
+        $referenceCategory =
+            $this->normalizeComparisonCategory(
+                $validated['reference_category']
+            );
+
+        $directory =
+            storage_path(
+                'app/inventory/reconciliation/'
+                . $referenceCategory
+            );
+
+        if (!is_dir($directory)) {
+            mkdir(
+                $directory,
+                0775,
+                true
+            );
+        }
+
+        foreach (
+            glob(
+                $directory
+                . DIRECTORY_SEPARATOR
+                . 'reference.*'
+            ) ?: []
+            as $existingReference
+        ) {
+            if (
+                basename($existingReference)
+                !== 'reference.json'
+                && is_file($existingReference)
+            ) {
+                @unlink($existingReference);
+            }
+        }
+
+        $storedExtension =
+            $extension === 'txt'
+                ? 'csv'
+                : $extension;
+
+        $storedFilename =
+            'reference.'
+            . $storedExtension;
+
+        $file->move(
+            $directory,
+            $storedFilename
+        );
+
+        $metadata = [
+            'reference_category' =>
+                $validated['reference_category'],
+
+            'original_name' =>
+                $file->getClientOriginalName(),
+
+            'stored_name' =>
+                $storedFilename,
+
+            'uploaded_at' =>
+                now()->toIso8601String(),
+
+            'uploaded_by' =>
+                $request->user()?->name
+                ?? $request->user()?->username
+                ?? 'Inventory Administrator',
+
+            'row_count' =>
+                count($previewRows),
+        ];
+
+        file_put_contents(
+            $directory
+                . DIRECTORY_SEPARATOR
+                . 'reference.json',
+            json_encode(
+                $metadata,
+                JSON_PRETTY_PRINT
+                | JSON_UNESCAPED_UNICODE
+            )
+        );
+
+        return back()->with(
+            'success',
+            $this->inventoryComparisonCategoryLabel(
+                $referenceCategory
+            )
+            . ' reference file saved. Reconciliation results have been refreshed.'
+        );
+    }
+
+    /**
+     * Build all category-scoped Reconciliation results.
+     *
+     * Each category has its own stored reference file, so uploading
+     * an ICT reference never replaces the Supplies reference.
+     */
+    private function buildInventoryReconciliations(): array
+    {
+        $results = [];
+
+        foreach (
+            [
+                'supplies',
+                'ict',
+                'furniture_fixtures',
+                'emergency_kits',
+                'token_giveaways',
+            ]
+            as $category
+        ) {
+            $results[$category] =
+                $this->buildInventoryReconciliation(
+                    $category
+                );
+        }
+
+        return $results;
+    }
+
+    /**
+     * Build one read-only comparison for one inventory category.
+     */
+    private function buildInventoryReconciliation(
+        string $referenceCategory
+    ): array {
+        $referenceCategory =
+            $this->normalizeComparisonCategory(
+                $referenceCategory
+            );
+
+        $empty = [
+            'has_reference' => false,
+
+            'reference' => [
+                'reference_category' =>
+                    $referenceCategory,
+
+                'reference_category_label' =>
+                    $this->inventoryComparisonCategoryLabel(
+                        $referenceCategory
+                    ),
+
+                'original_name' => null,
+                'uploaded_at' => null,
+                'uploaded_by' => null,
+                'row_count' => 0,
+            ],
+
+            'summary' => [
+                'total' => 0,
+                'equal' => 0,
+                'not_equal' => 0,
+                'missing' => 0,
+            ],
+
+            'rows' => [],
+            'error' => null,
+        ];
+
+        $directory =
+            storage_path(
+                'app/inventory/reconciliation/'
+                . $referenceCategory
+            );
+
+        if (!is_dir($directory)) {
+            return $empty;
+        }
+
+        $metadataPath =
+            $directory
+            . DIRECTORY_SEPARATOR
+            . 'reference.json';
+
+        $metadata = [];
+
+        if (is_file($metadataPath)) {
+            $decoded =
+                json_decode(
+                    (string) file_get_contents(
+                        $metadataPath
+                    ),
+                    true
+                );
+
+            if (is_array($decoded)) {
+                $metadata = $decoded;
+            }
+        }
+
+        $referencePath = null;
+        $extension = null;
+
+        foreach (
+            ['xlsx', 'csv']
+            as $candidateExtension
+        ) {
+            $candidate =
+                $directory
+                . DIRECTORY_SEPARATOR
+                . 'reference.'
+                . $candidateExtension;
+
+            if (is_file($candidate)) {
+                $referencePath =
+                    $candidate;
+
+                $extension =
+                    $candidateExtension;
+
+                break;
+            }
+        }
+
+        if (!$referencePath) {
+            return $empty;
+        }
+
+        try {
+            $excelRows =
+                $this->parseReconciliationSpreadsheet(
+                    $referencePath,
+                    (string) $extension
+                );
+
+            /*
+             * The button that opened Reconciliation already determines
+             * the category. Force every spreadsheet row into that scope.
+             */
+            $excelRows =
+                array_values(
+                    array_map(
+                        function (array $row) use (
+                            $referenceCategory
+                        ): array {
+                            $row['category'] =
+                                $referenceCategory;
+
+                            $present =
+                                $row['_present']
+                                ?? [];
+
+                            if (
+                                !in_array(
+                                    'category',
+                                    $present,
+                                    true
+                                )
+                            ) {
+                                $present[] =
+                                    'category';
+                            }
+
+                            $row['_present'] =
+                                $present;
+
+                            return $row;
+                        },
+                        $excelRows
+                    )
+                );
+
+            $websiteRows =
+                array_values(
+                    array_filter(
+                        $this->inventoryComparisonRecords(),
+                        fn (array $row) =>
+                            (
+                                $row['category']
+                                ?? ''
+                            )
+                            === $referenceCategory
+                    )
+                );
+
+            $comparison =
+                $this->compareInventoryReference(
+                    $excelRows,
+                    $websiteRows
+                );
+
+            return [
+                'has_reference' => true,
+
+                'reference' => [
+                    'reference_category' =>
+                        $referenceCategory,
+
+                    'reference_category_label' =>
+                        $this->inventoryComparisonCategoryLabel(
+                            $referenceCategory
+                        ),
+
+                    'original_name' =>
+                        $metadata['original_name']
+                        ?? basename(
+                            $referencePath
+                        ),
+
+                    'uploaded_at' =>
+                        $metadata['uploaded_at']
+                        ?? date(
+                            DATE_ATOM,
+                            filemtime(
+                                $referencePath
+                            )
+                        ),
+
+                    'uploaded_by' =>
+                        $metadata['uploaded_by']
+                        ?? 'Unknown',
+
+                    'row_count' =>
+                        $metadata['row_count']
+                        ?? count(
+                            $excelRows
+                        ),
+                ],
+
+                'summary' =>
+                    $comparison['summary'],
+
+                'rows' =>
+                    $comparison['rows'],
+
+                'error' => null,
+            ];
+        } catch (\Throwable $exception) {
+            Log::error(
+                'Inventory reconciliation failed.',
+                [
+                    'category' =>
+                        $referenceCategory,
+
+                    'message' =>
+                        $exception->getMessage(),
+                ]
+            );
+
+            return [
+                ...$empty,
+
+                'has_reference' => true,
+
+                'reference' => [
+                    'reference_category' =>
+                        $referenceCategory,
+
+                    'reference_category_label' =>
+                        $this->inventoryComparisonCategoryLabel(
+                            $referenceCategory
+                        ),
+
+                    'original_name' =>
+                        $metadata['original_name']
+                        ?? basename(
+                            $referencePath
+                        ),
+
+                    'uploaded_at' =>
+                        $metadata['uploaded_at']
+                        ?? null,
+
+                    'uploaded_by' =>
+                        $metadata['uploaded_by']
+                        ?? 'Unknown',
+
+                    'row_count' =>
+                        $metadata['row_count']
+                        ?? null,
+                ],
+
+                'error' =>
+                    'The saved reference file could not be compared. Replace it with a valid XLSX or CSV file.',
+            ];
+        }
+    }
+
+    /**
+     * Convert current website inventory into comparison-friendly records.
+     *
+     * Physical ICT + Furniture/Fixtures are compared per Property Number.
+     * Supplies/subscriptions/count-based Other Items are compared per item.
+     */
+    private function inventoryComparisonRecords(): array
+    {
+        $records = [];
+
+        $items =
+            InventoryItem::query()
+                ->orderBy('id')
+                ->get();
+
+        foreach ($items as $item) {
+            $category =
+                strtolower(
+                    trim(
+                        (string) $item->category
+                    )
+                );
+
+            $normalizedCategory =
+                in_array(
+                    $category,
+                    ['furniture', 'fixtures'],
+                    true
+                )
+                    ? 'furniture_fixtures'
+                    : $category;
+
+            $isPhysicalAsset =
+                (
+                    $category === 'ict'
+                    && !in_array(
+                        strtoupper(
+                            trim(
+                                (string) $item->unit
+                            )
+                        ),
+                        ['MONTH', 'YEAR'],
+                        true
+                    )
+                )
+                || in_array(
+                    $category,
+                    ['furniture', 'fixtures'],
+                    true
+                );
+
+            $assets =
+                is_array($item->ict_assets)
+                    ? $item->ict_assets
+                    : [];
+
+            if (
+                $isPhysicalAsset
+                && !empty($assets)
+            ) {
+                foreach (
+                    $assets
+                    as $assetIndex => $asset
+                ) {
+                    if (!is_array($asset)) {
+                        continue;
+                    }
+
+                    $propertyNumber =
+                        trim(
+                            (string) (
+                                $asset[
+                                    'property_number'
+                                ]
+                                ?? ''
+                            )
+                        );
+
+                    /*
+                     * A physical row without a Property Number cannot be
+                     * reliably reconciled against an external sheet.
+                     */
+                    if ($propertyNumber === '') {
+                        continue;
+                    }
+
+                    $records[] = [
+                        'uid' =>
+                            'asset:'
+                            . $item->id
+                            . ':'
+                            . $assetIndex,
+
+                        'kind' => 'asset',
+
+                        'category' =>
+                            $normalizedCategory,
+
+                        'category_label' =>
+                            $this->inventoryComparisonCategoryLabel(
+                                $normalizedCategory
+                            ),
+
+                        'item' =>
+                            trim(
+                                (string) $item->item
+                            ),
+
+                        'unit' =>
+                            trim(
+                                (string) $item->unit
+                            ),
+
+                        'inventory_year' =>
+                            $item->inventory_year !== null
+                                ? (string) $item->inventory_year
+                                : '',
+
+                        'available' => '',
+
+                        'description' =>
+                            trim(
+                                (string) (
+                                    $asset['description']
+                                    ?? ''
+                                )
+                            ),
+
+                        'property_number' =>
+                            $propertyNumber,
+
+                        'current_user' =>
+                            trim(
+                                (string) (
+                                    $asset['current_user']
+                                    ?? ''
+                                )
+                            ),
+
+                        'location' =>
+                            trim(
+                                (string) (
+                                    $item->location
+                                    ?? ''
+                                )
+                            ),
+
+                        'remarks' =>
+                            trim(
+                                (string) (
+                                    $item->remarks
+                                    ?? ''
+                                )
+                            ),
+                    ];
+                }
+
+                continue;
+            }
+
+            $records[] = [
+                'uid' =>
+                    'item:'
+                    . $item->id,
+
+                'kind' => 'summary',
+
+                'category' =>
+                    $normalizedCategory,
+
+                'category_label' =>
+                    $this->inventoryComparisonCategoryLabel(
+                        $normalizedCategory
+                    ),
+
+                'item' =>
+                    trim(
+                        (string) $item->item
+                    ),
+
+                'unit' =>
+                    trim(
+                        (string) $item->unit
+                    ),
+
+                'inventory_year' =>
+                    $item->inventory_year !== null
+                        ? (string) $item->inventory_year
+                        : '',
+
+                'available' =>
+                    $item->currently_available !== null
+                        ? (string) $item->currently_available
+                        : '',
+
+                'description' => '',
+
+                'property_number' => '',
+
+                'current_user' => '',
+
+                'location' =>
+                    trim(
+                        (string) (
+                            $item->location
+                            ?? ''
+                        )
+                    ),
+
+                'remarks' =>
+                    trim(
+                        (string) (
+                            $item->remarks
+                            ?? ''
+                        )
+                    ),
+            ];
+        }
+
+        return $records;
+    }
+
+    private function inventoryComparisonCategoryLabel(
+        string $category
+    ): string {
+        return match ($category) {
+            'supplies' =>
+                'Supplies',
+
+            'ict' =>
+                'ICT',
+
+            'furniture_fixtures' =>
+                'Furniture/Fixtures',
+
+            'emergency_kits' =>
+                'Emergency Kits',
+
+            'token_giveaways' =>
+                'Token and Giveaways',
+
+            default =>
+                ucwords(
+                    str_replace(
+                        '_',
+                        ' ',
+                        $category
+                    )
+                ),
+        };
+    }
+
+    /**
+     * Compare spreadsheet rows to website records without changing either.
+     */
+    private function compareInventoryReference(
+        array $excelRows,
+        array $websiteRows
+    ): array {
+        $resultRows = [];
+        $matchedWebsiteUids = [];
+
+        foreach (
+            $excelRows
+            as $index => $excel
+        ) {
+            if (!is_array($excel)) {
+                continue;
+            }
+
+            $match =
+                $this->findInventoryComparisonMatch(
+                    $excel,
+                    $websiteRows,
+                    $matchedWebsiteUids
+                );
+
+            if (
+                ($match['state'] ?? null)
+                === 'ambiguous'
+            ) {
+                $resultRows[] = [
+                    'id' =>
+                        'excel:'
+                        . ($index + 1),
+
+                    'status' =>
+                        'missing_in_website',
+
+                    'category' =>
+                        $excel['category']
+                        ?? '',
+
+                    'category_label' =>
+                        $this->inventoryComparisonCategoryLabel(
+                            $excel['category']
+                            ?? ''
+                        ),
+
+                    'item' =>
+                        $excel['item']
+                        ?? '',
+
+                    'property_number' =>
+                        $excel['property_number']
+                        ?? '',
+
+                    'website' => null,
+
+                    'excel' =>
+                        $this->comparisonPublicValues(
+                            $excel
+                        ),
+
+                    'differences' => [
+                        [
+                            'field' => 'match',
+                            'label' => 'Match',
+                            'website' =>
+                                'Multiple possible website records',
+                            'excel' =>
+                                'Needs a more specific key such as Property Number, Unit, Year, or Location',
+                        ],
+                    ],
+                ];
+
+                continue;
+            }
+
+            $website =
+                $match['record']
+                ?? null;
+
+            if (!$website) {
+                $resultRows[] = [
+                    'id' =>
+                        'excel:'
+                        . ($index + 1),
+
+                    'status' =>
+                        'missing_in_website',
+
+                    'category' =>
+                        $excel['category']
+                        ?? '',
+
+                    'category_label' =>
+                        $this->inventoryComparisonCategoryLabel(
+                            $excel['category']
+                            ?? ''
+                        ),
+
+                    'item' =>
+                        $excel['item']
+                        ?? '',
+
+                    'property_number' =>
+                        $excel['property_number']
+                        ?? '',
+
+                    'website' => null,
+
+                    'excel' =>
+                        $this->comparisonPublicValues(
+                            $excel
+                        ),
+
+                    'differences' => [],
+                ];
+
+                continue;
+            }
+
+            $matchedWebsiteUids[
+                $website['uid']
+            ] = true;
+
+            $differences =
+                $this->inventoryComparisonDifferences(
+                    $website,
+                    $excel
+                );
+
+            $resultRows[] = [
+                'id' =>
+                    'match:'
+                    . $website['uid'],
+
+                'status' =>
+                    empty($differences)
+                        ? 'equal'
+                        : 'not_equal',
+
+                'category' =>
+                    $website['category'],
+
+                'category_label' =>
+                    $website['category_label'],
+
+                'item' =>
+                    $website['item'],
+
+                'property_number' =>
+                    $website['property_number'],
+
+                'website' =>
+                    $this->comparisonPublicValues(
+                        $website
+                    ),
+
+                'excel' =>
+                    $this->comparisonPublicValues(
+                        $excel
+                    ),
+
+                'differences' =>
+                    $differences,
+            ];
+        }
+
+        /*
+         * Website records not represented by the reference sheet.
+         */
+        foreach (
+            $websiteRows
+            as $website
+        ) {
+            if (
+                isset(
+                    $matchedWebsiteUids[
+                        $website['uid']
+                    ]
+                )
+            ) {
+                continue;
+            }
+
+            $resultRows[] = [
+                'id' =>
+                    'website:'
+                    . $website['uid'],
+
+                'status' =>
+                    'missing_in_excel',
+
+                'category' =>
+                    $website['category'],
+
+                'category_label' =>
+                    $website['category_label'],
+
+                'item' =>
+                    $website['item'],
+
+                'property_number' =>
+                    $website['property_number'],
+
+                'website' =>
+                    $this->comparisonPublicValues(
+                        $website
+                    ),
+
+                'excel' => null,
+
+                'differences' => [],
+            ];
+        }
+
+        usort(
+            $resultRows,
+            function (
+                array $left,
+                array $right
+            ): int {
+                $categoryCompare =
+                    strcasecmp(
+                        (string) (
+                            $left['category_label']
+                            ?? ''
+                        ),
+                        (string) (
+                            $right['category_label']
+                            ?? ''
+                        )
+                    );
+
+                if ($categoryCompare !== 0) {
+                    return $categoryCompare;
+                }
+
+                $itemCompare =
+                    strcasecmp(
+                        (string) (
+                            $left['item']
+                            ?? ''
+                        ),
+                        (string) (
+                            $right['item']
+                            ?? ''
+                        )
+                    );
+
+                if ($itemCompare !== 0) {
+                    return $itemCompare;
+                }
+
+                return strcasecmp(
+                    (string) (
+                        $left['property_number']
+                        ?? ''
+                    ),
+                    (string) (
+                        $right['property_number']
+                        ?? ''
+                    )
+                );
+            }
+        );
+
+        $summary = [
+            'total' =>
+                count($resultRows),
+
+            'equal' => 0,
+
+            'not_equal' => 0,
+
+            'missing' => 0,
+        ];
+
+        foreach ($resultRows as $row) {
+            $status =
+                $row['status']
+                ?? '';
+
+            if ($status === 'equal') {
+                $summary['equal']++;
+            } elseif (
+                $status === 'not_equal'
+            ) {
+                $summary['not_equal']++;
+            } else {
+                $summary['missing']++;
+            }
+        }
+
+        return [
+            'summary' =>
+                $summary,
+
+            'rows' =>
+                $resultRows,
+        ];
+    }
+
+    /**
+     * Find the most reliable website row for one spreadsheet row.
+     */
+    private function findInventoryComparisonMatch(
+        array $excel,
+        array $websiteRows,
+        array $alreadyMatched
+    ): array {
+        $candidates =
+            array_values(
+                array_filter(
+                    $websiteRows,
+                    fn (array $row) =>
+                        !isset(
+                            $alreadyMatched[
+                                $row['uid']
+                            ]
+                        )
+                )
+            );
+
+        $propertyNumber =
+            $this->normalizeComparisonText(
+                $excel['property_number']
+                ?? ''
+            );
+
+        if ($propertyNumber !== '') {
+            $propertyMatches =
+                array_values(
+                    array_filter(
+                        $candidates,
+                        fn (array $row) =>
+                            $this->normalizeComparisonText(
+                                $row[
+                                    'property_number'
+                                ]
+                                ?? ''
+                            )
+                            === $propertyNumber
+                    )
+                );
+
+            if (count($propertyMatches) === 1) {
+                return [
+                    'state' => 'matched',
+                    'record' =>
+                        $propertyMatches[0],
+                ];
+            }
+
+            if (count($propertyMatches) > 1) {
+                return [
+                    'state' => 'ambiguous',
+                    'record' => null,
+                ];
+            }
+
+            return [
+                'state' => 'missing',
+                'record' => null,
+            ];
+        }
+
+        $item =
+            $this->normalizeComparisonText(
+                $excel['item']
+                ?? ''
+            );
+
+        if ($item === '') {
+            return [
+                'state' => 'missing',
+                'record' => null,
+            ];
+        }
+
+        $candidates =
+            array_values(
+                array_filter(
+                    $candidates,
+                    fn (array $row) =>
+                        $this->normalizeComparisonText(
+                            $row['item']
+                            ?? ''
+                        )
+                        === $item
+                )
+            );
+
+        $category =
+            $this->normalizeComparisonCategory(
+                $excel['category']
+                ?? ''
+            );
+
+        if ($category !== '') {
+            $candidates =
+                array_values(
+                    array_filter(
+                        $candidates,
+                        fn (array $row) =>
+                            (
+                                $row['category']
+                                ?? ''
+                            )
+                            === $category
+                    )
+                );
+        }
+
+        foreach (
+            [
+                'unit',
+                'inventory_year',
+                'location',
+            ]
+            as $field
+        ) {
+            if (
+                !in_array(
+                    $field,
+                    $excel['_present']
+                    ?? [],
+                    true
+                )
+            ) {
+                continue;
+            }
+
+            $value =
+                $this->normalizeComparisonText(
+                    $excel[$field]
+                    ?? ''
+                );
+
+            if ($value === '') {
+                continue;
+            }
+
+            $candidates =
+                array_values(
+                    array_filter(
+                        $candidates,
+                        fn (array $row) =>
+                            $this->normalizeComparisonText(
+                                $row[$field]
+                                ?? ''
+                            )
+                            === $value
+                    )
+                );
+        }
+
+        if (count($candidates) === 1) {
+            return [
+                'state' => 'matched',
+                'record' =>
+                    $candidates[0],
+            ];
+        }
+
+        if (count($candidates) > 1) {
+            return [
+                'state' => 'ambiguous',
+                'record' => null,
+            ];
+        }
+
+        return [
+            'state' => 'missing',
+            'record' => null,
+        ];
+    }
+
+    /**
+     * Compare only columns that actually exist in the uploaded spreadsheet.
+     */
+    private function inventoryComparisonDifferences(
+        array $website,
+        array $excel
+    ): array {
+        $differences = [];
+
+        $labels = [
+            'category' =>
+                'Category',
+
+            'item' =>
+                'Item Name',
+
+            'unit' =>
+                'Unit of Measure',
+
+            'inventory_year' =>
+                'Inventory Year',
+
+            'available' =>
+                'Available / Count / Duration',
+
+            'description' =>
+                'Description',
+
+            'property_number' =>
+                'Property Number',
+
+            'current_user' =>
+                'Current User',
+
+            'location' =>
+                'Location',
+
+            'remarks' =>
+                'Remarks',
+        ];
+
+        $present =
+            $excel['_present']
+            ?? [];
+
+        foreach (
+            $labels
+            as $field => $label
+        ) {
+            if (
+                !in_array(
+                    $field,
+                    $present,
+                    true
+                )
+            ) {
+                continue;
+            }
+
+            $websiteValue =
+                $field === 'category'
+                    ? $this->normalizeComparisonCategory(
+                        $website[$field]
+                        ?? ''
+                    )
+                    : $this->normalizeComparisonValue(
+                        $website[$field]
+                        ?? '',
+                        $field
+                    );
+
+            $excelValue =
+                $field === 'category'
+                    ? $this->normalizeComparisonCategory(
+                        $excel[$field]
+                        ?? ''
+                    )
+                    : $this->normalizeComparisonValue(
+                        $excel[$field]
+                        ?? '',
+                        $field
+                    );
+
+            if (
+                $websiteValue
+                === $excelValue
+            ) {
+                continue;
+            }
+
+            $differences[] = [
+                'field' =>
+                    $field,
+
+                'label' =>
+                    $label,
+
+                'website' =>
+                    $this->comparisonDisplayValue(
+                        $website[$field]
+                        ?? '',
+                        $field
+                    ),
+
+                'excel' =>
+                    $this->comparisonDisplayValue(
+                        $excel[$field]
+                        ?? '',
+                        $field
+                    ),
+            ];
+        }
+
+        return $differences;
+    }
+
+    private function comparisonPublicValues(
+        array $row
+    ): array {
+        return [
+            'category' =>
+                $row['category']
+                ?? '',
+
+            'category_label' =>
+                $row['category_label']
+                ?? $this->inventoryComparisonCategoryLabel(
+                    $this->normalizeComparisonCategory(
+                        $row['category']
+                        ?? ''
+                    )
+                ),
+
+            'item' =>
+                $row['item']
+                ?? '',
+
+            'unit' =>
+                $row['unit']
+                ?? '',
+
+            'inventory_year' =>
+                $row['inventory_year']
+                ?? '',
+
+            'available' =>
+                $row['available']
+                ?? '',
+
+            'description' =>
+                $row['description']
+                ?? '',
+
+            'property_number' =>
+                $row['property_number']
+                ?? '',
+
+            'current_user' =>
+                $row['current_user']
+                ?? '',
+
+            'location' =>
+                $row['location']
+                ?? '',
+
+            'remarks' =>
+                $row['remarks']
+                ?? '',
+        ];
+    }
+
+    private function comparisonDisplayValue(
+        mixed $value,
+        string $field = ''
+    ): string {
+        $value =
+            trim(
+                (string) $value
+            );
+
+        if (
+            $field === 'current_user'
+            && $value === ''
+        ) {
+            return 'Unassigned';
+        }
+
+        return $value === ''
+            ? '—'
+            : $value;
+    }
+
+    private function normalizeComparisonValue(
+        mixed $value,
+        string $field = ''
+    ): string {
+        $value =
+            trim(
+                (string) $value
+            );
+
+        if (
+            in_array(
+                $field,
+                [
+                    'available',
+                    'inventory_year',
+                ],
+                true
+            )
+            && $value !== ''
+            && is_numeric($value)
+        ) {
+            return (string) (
+                $value + 0
+            );
+        }
+
+        return $this->normalizeComparisonText(
+            $value
+        );
+    }
+
+    private function normalizeComparisonText(
+        mixed $value
+    ): string {
+        $value =
+            preg_replace(
+                '/\s+/u',
+                ' ',
+                trim(
+                    (string) $value
+                )
+            );
+
+        return mb_strtolower(
+            (string) $value
+        );
+    }
+
+    private function normalizeComparisonCategory(
+        mixed $value
+    ): string {
+        $value =
+            $this->normalizeComparisonText(
+                $value
+            );
+
+        if ($value === '') {
+            return '';
+        }
+
+        if (
+            str_contains(
+                $value,
+                'supply'
+            )
+        ) {
+            return 'supplies';
+        }
+
+        if (
+            $value === 'ict'
+            || str_contains(
+                $value,
+                'information and communication'
+            )
+        ) {
+            return 'ict';
+        }
+
+        if (
+            str_contains(
+                $value,
+                'furniture'
+            )
+            || str_contains(
+                $value,
+                'fixture'
+            )
+        ) {
+            return 'furniture_fixtures';
+        }
+
+        if (
+            str_contains(
+                $value,
+                'emergency'
+            )
+        ) {
+            return 'emergency_kits';
+        }
+
+        if (
+            str_contains(
+                $value,
+                'token'
+            )
+            || str_contains(
+                $value,
+                'giveaway'
+            )
+        ) {
+            return 'token_giveaways';
+        }
+
+        return str_replace(
+            [' ', '-', '/'],
+            '_',
+            $value
+        );
+    }
+
+    /**
+     * XLSX/CSV reader kept inside Inventory so no new Composer package
+     * is required for the reconciliation prototype.
+     */
+    private function parseReconciliationSpreadsheet(
+        string $path,
+        string $extension
+    ): array {
+        $extension =
+            strtolower(
+                $extension
+            );
+
+        $rawRows =
+            $extension === 'xlsx'
+                ? $this->readInventoryXlsx(
+                    $path
+                )
+                : $this->readInventoryCsv(
+                    $path
+                );
+
+        if (empty($rawRows)) {
+            return [];
+        }
+
+        $headerIndex = null;
+        $headers = [];
+
+        /*
+         * Do not assume the first non-empty row is the header.
+         * Real inventory sheets often have a title/agency name above it.
+         * Scan the first 25 rows and choose the first row containing at
+         * least one supported identity column (Item Name or Property No.).
+         */
+        foreach (
+            array_slice(
+                $rawRows,
+                0,
+                25,
+                true
+            )
+            as $index => $row
+        ) {
+            $candidateHeaders = [];
+
+            foreach (
+                $row
+                as $columnIndex => $header
+            ) {
+                $normalized =
+                    $this->normalizeInventorySpreadsheetHeader(
+                        $header
+                    );
+
+                if ($normalized !== null) {
+                    $candidateHeaders[
+                        $columnIndex
+                    ] = $normalized;
+                }
+            }
+
+            $candidateValues =
+                array_values(
+                    $candidateHeaders
+                );
+
+            if (
+                in_array(
+                    'item',
+                    $candidateValues,
+                    true
+                )
+                || in_array(
+                    'property_number',
+                    $candidateValues,
+                    true
+                )
+            ) {
+                $headerIndex =
+                    $index;
+
+                $headers =
+                    $candidateHeaders;
+
+                break;
+            }
+        }
+
+        if (
+            $headerIndex === null
+            || empty($headers)
+        ) {
+            throw new \RuntimeException(
+                'No supported header row was found. Include at least Item Name or Property Number in the spreadsheet headers.'
+            );
+        }
+
+        $rows = [];
+
+        foreach (
+            array_slice(
+                $rawRows,
+                $headerIndex + 1
+            )
+            as $rawRow
+        ) {
+            $row = [
+                '_present' =>
+                    array_values(
+                        array_unique(
+                            array_values(
+                                $headers
+                            )
+                        )
+                    ),
+            ];
+
+            $hasData = false;
+
+            foreach (
+                $headers
+                as $columnIndex => $field
+            ) {
+                $value =
+                    trim(
+                        (string) (
+                            $rawRow[
+                                $columnIndex
+                            ]
+                            ?? ''
+                        )
+                    );
+
+                if ($value !== '') {
+                    $hasData = true;
+                }
+
+                $row[$field] =
+                    $field === 'category'
+                        ? $this->normalizeComparisonCategory(
+                            $value
+                        )
+                        : $value;
+            }
+
+            if (!$hasData) {
+                continue;
+            }
+
+           
+            if (
+                trim(
+                    (string) (
+                        $row['item']
+                        ?? ''
+                    )
+                ) === ''
+                && trim(
+                    (string) (
+                        $row[
+                            'property_number'
+                        ]
+                        ?? ''
+                    )
+                ) === ''
+            ) {
+                continue;
+            }
+
+            $rows[] =
+                $row;
+        }
+
+        return $rows;
+    }
+
+    private function normalizeInventorySpreadsheetHeader(
+        mixed $header
+    ): ?string {
+        $header =
+            $this->normalizeComparisonText(
+                $header
+            );
+
+        $header =
+            str_replace(
+                [
+                    '_',
+                    '-',
+                    '/',
+                    '\\',
+                    '(',
+                    ')',
+                    '.',
+                    '#',
+                ],
+                ' ',
+                $header
+            );
+
+        $header =
+            preg_replace(
+                '/\s+/u',
+                ' ',
+                trim($header)
+            );
+
+        $aliases = [
+            'category' => [
+                'category',
+                'type',
+                'inventory category',
+            ],
+
+            'item' => [
+                'item',
+                'item name',
+                'inventory item',
+                'article',
+                'particulars',
+            ],
+
+            'unit' => [
+                'unit',
+                'uom',
+                'unit of measure',
+                'unit measure',
+            ],
+
+            'inventory_year' => [
+                'inventory year',
+                'year',
+            ],
+
+            'available' => [
+                'available',
+                'currently available',
+                'currently available in spd',
+                'current',
+                'remaining',
+                'balance',
+                'count',
+                'quantity',
+                'qty',
+                'duration',
+                'count duration',
+            ],
+
+            'description' => [
+                'description',
+                'asset description',
+            ],
+
+            'property_number' => [
+                'property number',
+                'property no',
+                'property num',
+                'property',
+                'property tag',
+            ],
+
+            'current_user' => [
+                'current user',
+                'user',
+                'assigned to',
+                'assignee',
+                'released to',
+            ],
+
+            'location' => [
+                'location',
+                'current location',
+            ],
+
+            'remarks' => [
+                'remarks',
+                'remark',
+                'notes',
+                'note',
+            ],
+        ];
+
+        foreach (
+            $aliases
+            as $field => $values
+        ) {
+            if (
+                in_array(
+                    $header,
+                    $values,
+                    true
+                )
+            ) {
+                return $field;
+            }
+        }
+
+        return null;
+    }
+
+    private function readInventoryCsv(
+        string $path
+    ): array {
+        $handle =
+            fopen(
+                $path,
+                'rb'
+            );
+
+        if (!$handle) {
+            throw new \RuntimeException(
+                'Unable to open CSV file.'
+            );
+        }
+
+        $firstLine =
+            fgets($handle);
+
+        rewind($handle);
+
+        $delimiter = ',';
+
+        if ($firstLine !== false) {
+            $scores = [
+                ',' =>
+                    substr_count(
+                        $firstLine,
+                        ','
+                    ),
+
+                ';' =>
+                    substr_count(
+                        $firstLine,
+                        ';'
+                    ),
+
+                "\t" =>
+                    substr_count(
+                        $firstLine,
+                        "\t"
+                    ),
+            ];
+
+            arsort($scores);
+
+            $delimiter =
+                (string) array_key_first(
+                    $scores
+                );
+        }
+
+        $rows = [];
+
+        while (
+            (
+                $row = fgetcsv(
+                    $handle,
+                    0,
+                    $delimiter
+                )
+            ) !== false
+        ) {
+            $rows[] =
+                array_map(
+                    fn ($value) =>
+                        $this->stripSpreadsheetBom(
+                            $value
+                        ),
+                    $row
+                );
+        }
+
+        fclose($handle);
+
+        return $rows;
+    }
+
+    private function stripSpreadsheetBom(
+        mixed $value
+    ): string {
+        return preg_replace(
+            '/^\xEF\xBB\xBF/',
+            '',
+            (string) $value
+        );
+    }
+
+    private function readInventoryXlsx(
+        string $path
+    ): array {
+        if (
+            !class_exists(
+                \ZipArchive::class
+            )
+        ) {
+            throw new \RuntimeException(
+                'PHP ZIP extension is not enabled. Enable/install php-zip before uploading XLSX files.'
+            );
+        }
+
+        if (
+            !function_exists(
+                'simplexml_load_string'
+            )
+        ) {
+            throw new \RuntimeException(
+                'PHP SimpleXML extension is not enabled. Enable/install php-xml before uploading XLSX files.'
+            );
+        }
+
+        $zip =
+            new \ZipArchive();
+
+        $openResult =
+            $zip->open($path);
+
+        if ($openResult !== true) {
+            throw new \RuntimeException(
+                'The XLSX file could not be opened as an Excel workbook.'
+            );
+        }
+
+        try {
+            
+            $sharedStrings = [];
+
+            $sharedXml =
+                $zip->getFromName(
+                    'xl/sharedStrings.xml'
+                );
+
+            if ($sharedXml !== false) {
+                libxml_use_internal_errors(true);
+
+                $xml =
+                    simplexml_load_string(
+                        $sharedXml
+                    );
+
+                if ($xml === false) {
+                    throw new \RuntimeException(
+                        'The XLSX shared strings XML is invalid.'
+                    );
+                }
+
+                $stringItems =
+                    $xml->xpath(
+                        '//*[local-name()="si"]'
+                    ) ?: [];
+
+                foreach (
+                    $stringItems
+                    as $stringItem
+                ) {
+                    $textParts =
+                        $stringItem->xpath(
+                            './/*[local-name()="t"]'
+                        ) ?: [];
+
+                    $text = '';
+
+                    foreach (
+                        $textParts
+                        as $textPart
+                    ) {
+                        $text .=
+                            (string) $textPart;
+                    }
+
+                    $sharedStrings[] =
+                        $text;
+                }
+
+                libxml_clear_errors();
+            }
+
+            
+            $sheetPath =
+                'xl/worksheets/sheet1.xml';
+
+            $sheetXml =
+                $zip->getFromName(
+                    $sheetPath
+                );
+
+            if ($sheetXml === false) {
+                $sheetCandidates = [];
+
+                for (
+                    $index = 0;
+                    $index < $zip->numFiles;
+                    $index++
+                ) {
+                    $stat =
+                        $zip->statIndex(
+                            $index
+                        );
+
+                    $name =
+                        (string) (
+                            $stat['name']
+                            ?? ''
+                        );
+
+                    if (
+                        preg_match(
+                            '#^xl/worksheets/sheet\d+\.xml$#',
+                            $name
+                        )
+                    ) {
+                        $sheetCandidates[] =
+                            $name;
+                    }
+                }
+
+                sort(
+                    $sheetCandidates,
+                    SORT_NATURAL
+                );
+
+                $sheetPath =
+                    $sheetCandidates[0]
+                    ?? null;
+
+                if (!$sheetPath) {
+                    throw new \RuntimeException(
+                        'The XLSX file does not contain a readable worksheet.'
+                    );
+                }
+
+                $sheetXml =
+                    $zip->getFromName(
+                        $sheetPath
+                    );
+            }
+
+            if ($sheetXml === false) {
+                throw new \RuntimeException(
+                    'The XLSX worksheet could not be read.'
+                );
+            }
+
+            libxml_use_internal_errors(true);
+
+            $sheet =
+                simplexml_load_string(
+                    $sheetXml
+                );
+
+            if ($sheet === false) {
+                throw new \RuntimeException(
+                    'The XLSX worksheet XML is invalid.'
+                );
+            }
+
+            $rowNodes =
+                $sheet->xpath(
+                    '//*[local-name()="sheetData"]/*[local-name()="row"]'
+                ) ?: [];
+
+            if (empty($rowNodes)) {
+                throw new \RuntimeException(
+                    'The first worksheet does not contain readable rows.'
+                );
+            }
+
+            $rows = [];
+
+            foreach (
+                $rowNodes
+                as $row
+            ) {
+                $values = [];
+
+                $cells =
+                    $row->xpath(
+                        './*[local-name()="c"]'
+                    ) ?: [];
+
+                foreach (
+                    $cells
+                    as $cell
+                ) {
+                    $attributes =
+                        $cell->attributes();
+
+                    $reference =
+                        trim(
+                            (string) (
+                                $attributes['r']
+                                ?? ''
+                            )
+                        );
+
+                    preg_match(
+                        '/^([A-Z]+)/i',
+                        $reference,
+                        $matches
+                    );
+
+                    $column =
+                        $this->xlsxColumnIndex(
+                            strtoupper(
+                                $matches[1]
+                                ?? 'A'
+                            )
+                        );
+
+                    $type =
+                        trim(
+                            (string) (
+                                $attributes['t']
+                                ?? ''
+                            )
+                        );
+
+                    $value = '';
+
+                    if ($type === 'inlineStr') {
+                        $textParts =
+                            $cell->xpath(
+                                './/*[local-name()="is"]//*[local-name()="t"]'
+                            ) ?: [];
+
+                        foreach (
+                            $textParts
+                            as $textPart
+                        ) {
+                            $value .=
+                                (string) $textPart;
+                        }
+                    } else {
+                        $valueNodes =
+                            $cell->xpath(
+                                './*[local-name()="v"]'
+                            ) ?: [];
+
+                        $raw =
+                            isset(
+                                $valueNodes[0]
+                            )
+                                ? (string) $valueNodes[0]
+                                : '';
+
+                        if (
+                            $type === 's'
+                            && $raw !== ''
+                        ) {
+                            $value =
+                                $sharedStrings[
+                                    (int) $raw
+                                ]
+                                ?? '';
+                        } else {
+                            $value =
+                                $raw;
+                        }
+                    }
+
+                    $values[$column] =
+                        $this->stripSpreadsheetBom(
+                            $value
+                        );
+                }
+
+                if (empty($values)) {
+                    $rows[] = [];
+                    continue;
+                }
+
+                $max =
+                    max(
+                        array_keys(
+                            $values
+                        )
+                    );
+
+                $dense =
+                    array_fill(
+                        0,
+                        $max + 1,
+                        ''
+                    );
+
+                foreach (
+                    $values
+                    as $column => $value
+                ) {
+                    $dense[$column] =
+                        $value;
+                }
+
+                $rows[] =
+                    $dense;
+            }
+
+            libxml_clear_errors();
+
+            return $rows;
+        } finally {
+            $zip->close();
+        }
+    }
+
+    private function xlsxColumnIndex(
+        string $letters
+    ): int {
+        $letters =
+            strtoupper(
+                $letters
+            );
+
+        $index = 0;
+
+        foreach (
+            str_split($letters)
+            as $letter
+        ) {
+            $index =
+                ($index * 26)
+                + (
+                    ord($letter)
+                    - 64
+                );
+        }
+
+        return max(
+            0,
+            $index - 1
+        );
+    }
+
+   
     private function canManageInventory(
         $user
     ): bool {
@@ -2986,10 +7045,7 @@ class InventoryController extends Controller
         ) === '3';
     }
 
-    /**
-     * The backend is the actual security boundary.
-     * Non-role-3 users receive HTTP 403 on Inventory writes.
-     */
+   
     private function authorizeInventoryManagement(
         Request $request
     ): void {
@@ -3010,10 +7066,7 @@ class InventoryController extends Controller
             $request
         );
 
-        /*
-         * Delete related inventory history first so the item can be removed
-         * safely even when the foreign key is not configured with CASCADE.
-         */
+        
         $inventoryItem->histories()->delete();
         $inventoryItem->delete();
 

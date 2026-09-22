@@ -156,6 +156,11 @@ Route::middleware(['auth', 'verified'])
         Route::delete('/inventory/{inventoryItem}', [InventoryController::class, 'destroy'])
          ->name('inventory.destroy');
 
+        Route::post(
+            '/inventory/purchase-request/validate',
+            [InventoryController::class, 'uploadPurchaseRequestValidation']
+        )->name('inventory.purchase-request.validate');
+
         /*
         |--------------------------------------------------------------------------
         | Library - Personnel
@@ -219,8 +224,6 @@ Route::middleware(['auth', 'verified'])
             ->whereNumber('file')
             ->name('attachments.destroy');
 
-        
-
         Route::post('/{id}/receive', [DtsController::class, 'receive'])
             ->name('receive');
 
@@ -252,14 +255,14 @@ Route::middleware(['auth', 'verified'])
 
 
 
-Route::middleware('auth')->group(function () {
-    Route::get('/profile', [ProfileController::class, 'edit'])
+        Route::middleware('auth')->group(function () {
+        Route::get('/profile', [ProfileController::class, 'edit'])
         ->name('profile.edit');
 
-    Route::patch('/profile', [ProfileController::class, 'update'])
+        Route::patch('/profile', [ProfileController::class, 'update'])
         ->name('profile.update');
 
-    Route::delete('/profile', [ProfileController::class, 'destroy'])
+        Route::delete('/profile', [ProfileController::class, 'destroy'])
         ->name('profile.destroy');
 });
 
