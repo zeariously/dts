@@ -46,11 +46,12 @@ class InventoryController extends Controller
                 $this->buildInventoryReconciliations(),
 
             /*
-             * Category-scoped Purchase Request validations.
-             * Read-only: they never change inventory values.
+             * MR dropdown personnel.
+             * Prefer SPD personnel and, when the personnel table has an
+             * employment/appointment status column, restrict to Permanent.
              */
-            'purchaseRequestValidations' =>
-                $this->buildPurchaseRequestValidations(),
+            'mrPersonnel' =>
+                $this->inventoryMrPersonnel(),
         ]);
     }
 
@@ -97,8 +98,14 @@ class InventoryController extends Controller
             'ict_assets' => 'nullable|array',
             'ict_assets.*' => 'array',
             'ict_assets.*.description' => 'nullable|string|max:255',
+            'ict_assets.*.accessories' => 'nullable|string|max:500',
             'ict_assets.*.property_number' => 'nullable|string|max:100',
             'ict_assets.*.current_user' => 'nullable|string|max:255',
+            'ict_assets.*.date_acquired' => 'nullable|date_format:Y-m-d',
+            'ict_assets.*.life_span_ended' => 'nullable|date_format:Y-m-d',
+            'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
+            'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
+            'ict_assets.*.mr' => 'nullable|string|max:255',
             'quarters' =>
                 'required_if:category,supplies|nullable|array|min:1',
             'quarters.*' => 'in:q1,q2,q3,q4',
@@ -108,6 +115,8 @@ class InventoryController extends Controller
                 'array',
             'quarter_stock.*.current' =>
                 'required|integer|min:0',
+            'quarter_stock.*.remarks' =>
+                'nullable|string|max:1000',
             'remarks' => 'nullable|string',
         ]);
 
@@ -268,6 +277,9 @@ class InventoryController extends Controller
             'release_property_number' =>
                 'sometimes|nullable|string|max:100',
 
+            'release_mr_personnel_id' =>
+                'sometimes|nullable|integer|exists:lu_personnel,ID',
+
             'release_quarter' =>
                 'sometimes|nullable|in:q1,q2,q3,q4',
 
@@ -295,11 +307,100 @@ class InventoryController extends Controller
             'currently_available' =>
                 'sometimes|nullable|integer|min:0',
 
+            'add_other_count' =>
+                'sometimes|nullable|integer|min:1',
+
+            'new_other_asset' =>
+                'sometimes|nullable|array',
+
+            'new_other_asset.description' =>
+                'nullable|string|max:255',
+
+            'new_other_asset.property_number' =>
+                'nullable|string|max:100',
+
+            'new_other_asset.current_user' =>
+                'nullable|string|max:255',
+
+            /*
+             * Simple ICT item editing:
+             * - add_ict_count adds new blank Property Detail rows.
+             * - asset_index + asset edits one accordion row only.
+             */
+            'new_ict_asset' =>
+                'sometimes|nullable|array',
+
+            'new_ict_asset.description' =>
+                'nullable|string|max:255',
+
+            'new_ict_asset.accessories' =>
+                'nullable|string|max:500',
+
+            'new_ict_asset.property_number' =>
+                'nullable|string|max:100',
+
+            'new_ict_asset.current_user' =>
+                'nullable|string|max:255',
+
+            'new_ict_asset.date_acquired' =>
+                'nullable|date_format:Y-m-d',
+
+            'new_ict_asset.life_span_ended' =>
+                'nullable|date_format:Y-m-d',
+
+            'new_ict_asset.status' =>
+                'nullable|in:working,returned,for_return',
+
+            'new_ict_asset.mr_personnel_id' =>
+                'nullable|integer|exists:lu_personnel,ID',
+
+            'new_ict_asset.mr' =>
+                'nullable|string|max:255',
+
+            'asset_index' =>
+                'sometimes|nullable|integer|min:0',
+
+            'asset' =>
+                'sometimes|nullable|array',
+
+            'asset.description' =>
+                'nullable|string|max:255',
+
+            'asset.accessories' =>
+                'nullable|string|max:500',
+
+            'asset.property_number' =>
+                'nullable|string|max:100',
+
+            'asset.current_user' =>
+                'nullable|string|max:255',
+
+            'asset.date_acquired' =>
+                'nullable|date_format:Y-m-d',
+
+            'asset.life_span_ended' =>
+                'nullable|date_format:Y-m-d',
+
+            'asset.status' =>
+                'nullable|in:working,returned,for_return',
+
+            'asset.mr_personnel_id' =>
+                'nullable|integer|exists:lu_personnel,ID',
+
+            'asset.mr' =>
+                'nullable|string|max:255',
+
             'ict_assets' => 'sometimes|nullable|array',
             'ict_assets.*' => 'array',
             'ict_assets.*.description' => 'nullable|string|max:255',
+            'ict_assets.*.accessories' => 'nullable|string|max:500',
             'ict_assets.*.property_number' => 'nullable|string|max:100',
             'ict_assets.*.current_user' => 'nullable|string|max:255',
+            'ict_assets.*.date_acquired' => 'nullable|date_format:Y-m-d',
+            'ict_assets.*.life_span_ended' => 'nullable|date_format:Y-m-d',
+            'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
+            'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
+            'ict_assets.*.mr' => 'nullable|string|max:255',
 
             'quarters' =>
                 'sometimes|nullable|array',
@@ -315,6 +416,9 @@ class InventoryController extends Controller
 
             'quarter_stock.*.current' =>
                 'required|integer|min:0',
+
+            'quarter_stock.*.remarks' =>
+                'nullable|string|max:1000',
 
             'remarks' =>
                 'sometimes|nullable|string',
@@ -387,6 +491,46 @@ class InventoryController extends Controller
                     $validated
                 );
 
+            $isIctAssetEdit =
+                !$isRelease
+                && array_key_exists(
+                    'asset_index',
+                    $validated
+                );
+
+            $hasNewIctAsset =
+                !$isRelease
+                && array_key_exists(
+                    'new_ict_asset',
+                    $validated
+                )
+                && is_array(
+                    $validated['new_ict_asset']
+                    ?? null
+                );
+
+            $hasAddOtherCount =
+                !$isRelease
+                && array_key_exists(
+                    'add_other_count',
+                    $validated
+                )
+                && (int) (
+                    $validated['add_other_count']
+                    ?? 0
+                ) > 0;
+
+            $hasNewOtherAsset =
+                !$isRelease
+                && array_key_exists(
+                    'new_other_asset',
+                    $validated
+                )
+                && is_array(
+                    $validated['new_other_asset']
+                    ?? null
+                );
+
             /*
              * A remark entered in the Release modal belongs to
              * that release transaction. It must not become the
@@ -421,6 +565,14 @@ class InventoryController extends Controller
                         )
                     )
                     : '';
+
+            $releaseMrPersonnelId =
+                $isRelease
+                    ? (int) (
+                        $validated['release_mr_personnel_id']
+                        ?? 0
+                    )
+                    : 0;
 
             if (!$isRelease) {
                 $targetCategory = strtolower(
@@ -782,9 +934,14 @@ class InventoryController extends Controller
                             ]);
                         }
 
-                        $assets = $this->normalizedIctAssets(
-                            $item->ict_assets ?? []
-                        );
+                        $assets =
+                            $this->normalizedIctAssetRowsForStorage(
+                                $item->ict_assets ?? [],
+                                (int) (
+                                    $item->currently_available
+                                    ?? 0
+                                )
+                            );
 
                         $matchedIndex = null;
 
@@ -814,8 +971,47 @@ class InventoryController extends Controller
                             ]);
                         }
 
+                        if (
+                            $category === 'ict'
+                            && $releaseMrPersonnelId <= 0
+                        ) {
+                            throw ValidationException::withMessages([
+                                'release_mr_personnel_id' =>
+                                    'Select the MR Holder.',
+                            ]);
+                        }
+
                         $assets[$matchedIndex]['current_user'] =
                             $releaseDestination;
+
+                        if (
+                            $category === 'ict'
+                            && $releaseMrPersonnelId > 0
+                        ) {
+                            $mrName =
+                                DB::table('lu_personnel')
+                                    ->where(
+                                        'ID',
+                                        $releaseMrPersonnelId
+                                    )
+                                    ->value('name');
+
+                            if (
+                                !is_string($mrName)
+                                || trim($mrName) === ''
+                            ) {
+                                throw ValidationException::withMessages([
+                                    'release_mr_personnel_id' =>
+                                        'The selected MR Holder is invalid.',
+                                ]);
+                            }
+
+                            $assets[$matchedIndex]['mr_personnel_id'] =
+                                $releaseMrPersonnelId;
+
+                            $assets[$matchedIndex]['mr'] =
+                                trim($mrName);
+                        }
 
                         $item->ict_assets = $assets;
 
@@ -847,6 +1043,327 @@ class InventoryController extends Controller
                             $oldTrackedReleased + $releaseQuantity;
                     }
                 }
+            }
+
+            /**
+             * ========================================================
+             * INDIVIDUAL PROPERTY ROW EDIT
+             * ========================================================
+             *
+             * Physical ICT and Furniture/Fixtures property rows are edited
+             * one at a time from their accordion. Item-level Edit never
+             * bulk-rewrites existing Furniture/Fixtures property rows.
+             */
+            if ($isIctAssetEdit) {
+                $assetCategory =
+                    strtolower(
+                        trim(
+                            (string) $item->category
+                        )
+                    );
+
+                $assetUnit =
+                    strtoupper(
+                        trim(
+                            (string) $item->unit
+                        )
+                    );
+
+                $isPhysicalIct =
+                    $assetCategory === 'ict'
+                    && !in_array(
+                        $assetUnit,
+                        ['MONTH', 'YEAR'],
+                        true
+                    );
+
+                $isOtherPropertyItem =
+                    in_array(
+                        $assetCategory,
+                        ['furniture', 'fixtures'],
+                        true
+                    );
+
+                if (
+                    !$isPhysicalIct
+                    && !$isOtherPropertyItem
+                ) {
+                    throw ValidationException::withMessages([
+                        'asset_index' =>
+                            'Property-row editing is available only for physical ICT or Furniture/Fixtures items.',
+                    ]);
+                }
+
+                $assetCount =
+                    max(
+                        0,
+                        (int) (
+                            $item->currently_available
+                            ?? 0
+                        )
+                    );
+
+                $assetIndex =
+                    (int) $validated['asset_index'];
+
+                if (
+                    $assetIndex < 0
+                    || $assetIndex >= $assetCount
+                ) {
+                    throw ValidationException::withMessages([
+                        'asset_index' =>
+                            'The selected Property Detail row is invalid.',
+                    ]);
+                }
+
+                $submittedAsset =
+                    is_array(
+                        $validated['asset']
+                        ?? null
+                    )
+                        ? $validated['asset']
+                        : [];
+
+                $submittedNormalizedAsset =
+                    $this->normalizedIctAssets(
+                        [$submittedAsset],
+                        1,
+                        true,
+                        true
+                    )[0];
+
+                $assets =
+                    $this->normalizedIctAssetRowsForStorage(
+                        $item->ict_assets ?? [],
+                        $assetCount
+                    );
+
+                /*
+                 * ICT replaces the complete property record because all ICT
+                 * property fields are editable in the individual modal.
+                 *
+                 * Furniture/Fixtures only own Description, Property Number,
+                 * and Current User here. Preserve any legacy/unrelated keys.
+                 */
+                if ($isPhysicalIct) {
+                    $normalizedAsset =
+                        $submittedNormalizedAsset;
+
+                    if (
+                        trim(
+                            (string) (
+                                $normalizedAsset['status']
+                                ?? ''
+                            )
+                        ) === ''
+                    ) {
+                        throw ValidationException::withMessages([
+                            'asset.status' =>
+                                'Select Working or Returned.',
+                        ]);
+                    }
+                } else {
+                    $existingAsset =
+                        is_array(
+                            $assets[$assetIndex]
+                            ?? null
+                        )
+                            ? $assets[$assetIndex]
+                            : [];
+
+                    $normalizedAsset =
+                        array_merge(
+                            $existingAsset,
+                            [
+                                'description' =>
+                                    $submittedNormalizedAsset[
+                                        'description'
+                                    ],
+
+                                'property_number' =>
+                                    $submittedNormalizedAsset[
+                                        'property_number'
+                                    ],
+
+                                'current_user' =>
+                                    $submittedNormalizedAsset[
+                                        'current_user'
+                                    ],
+                            ]
+                        );
+                }
+
+                $newPropertyNumber =
+                    mb_strtolower(
+                        trim(
+                            (string) (
+                                $normalizedAsset[
+                                    'property_number'
+                                ]
+                                ?? ''
+                            )
+                        )
+                    );
+
+                foreach (
+                    $assets
+                    as $index => $asset
+                ) {
+                    if ($index === $assetIndex) {
+                        continue;
+                    }
+
+                    $existingPropertyNumber =
+                        mb_strtolower(
+                            trim(
+                                (string) (
+                                    $asset[
+                                        'property_number'
+                                    ]
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    if (
+                        $newPropertyNumber !== ''
+                        && $existingPropertyNumber
+                            === $newPropertyNumber
+                    ) {
+                        throw ValidationException::withMessages([
+                            'asset.property_number' =>
+                                'Property Number must be unique for this item.',
+                        ]);
+                    }
+                }
+
+                $assets[$assetIndex] =
+                    $normalizedAsset;
+
+                $item->ict_assets =
+                    $assets;
+            }
+
+            if ($hasNewIctAsset) {
+                $targetCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $validated['category']
+                                ?? $item->category
+                            )
+                        )
+                    );
+
+                $targetUnit =
+                    strtoupper(
+                        trim(
+                            (string) (
+                                $validated['unit']
+                                ?? $item->unit
+                            )
+                        )
+                    );
+
+                if (
+                    $targetCategory !== 'ict'
+                    || in_array(
+                        $targetUnit,
+                        ['MONTH', 'YEAR'],
+                        true
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'new_ict_asset' =>
+                            'New Property Details can be added only to physical ICT items.',
+                    ]);
+                }
+
+                $submittedAsset =
+                    $validated['new_ict_asset'];
+
+                $normalizedAsset =
+                    $this->normalizedIctAssets(
+                        [$submittedAsset],
+                        1,
+                        true,
+                        true
+                    )[0];
+
+                if (
+                    trim(
+                        (string) (
+                            $normalizedAsset['status']
+                            ?? ''
+                        )
+                    ) === ''
+                ) {
+                    throw ValidationException::withMessages([
+                        'new_ict_asset.status' =>
+                            'Select Working or Returned.',
+                    ]);
+                }
+
+                $oldCount =
+                    max(
+                        0,
+                        (int) (
+                            $item->currently_available
+                            ?? 0
+                        )
+                    );
+
+                $assets =
+                    $this->normalizedIctAssetRowsForStorage(
+                        $item->ict_assets ?? [],
+                        $oldCount
+                    );
+
+                $newPropertyNumber =
+                    mb_strtolower(
+                        trim(
+                            (string) (
+                                $normalizedAsset[
+                                    'property_number'
+                                ]
+                                ?? ''
+                            )
+                        )
+                    );
+
+                foreach ($assets as $asset) {
+                    $existingPropertyNumber =
+                        mb_strtolower(
+                            trim(
+                                (string) (
+                                    $asset[
+                                        'property_number'
+                                    ]
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    if (
+                        $newPropertyNumber !== ''
+                        && $existingPropertyNumber
+                            === $newPropertyNumber
+                    ) {
+                        throw ValidationException::withMessages([
+                            'new_ict_asset.property_number' =>
+                                'Property Number must be unique for this ICT item.',
+                        ]);
+                    }
+                }
+
+                $assets[] =
+                    $normalizedAsset;
+
+                $item->currently_available =
+                    $oldCount + 1;
+
+                $item->ict_assets =
+                    $assets;
             }
 
             /**
@@ -1020,6 +1537,202 @@ class InventoryController extends Controller
             }
 
             /*
+             * Add one Furniture / Fixtures unit.
+             *
+             * The new unit must have its own Property Details. Count is
+             * incremented automatically only after a valid property row exists.
+             */
+            if ($hasNewOtherAsset) {
+                $targetCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $validated['category']
+                                ?? $item->category
+                                ?? ''
+                            )
+                        )
+                    );
+
+                if (
+                    !in_array(
+                        $targetCategory,
+                        ['furniture', 'fixtures'],
+                        true
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'new_other_asset' =>
+                            'Property Details can be added only to Furniture/Fixtures.',
+                    ]);
+                }
+
+                $submittedAsset =
+                    $validated['new_other_asset'];
+
+                $description =
+                    trim(
+                        (string) (
+                            $submittedAsset['description']
+                            ?? ''
+                        )
+                    );
+
+                $propertyNumber =
+                    trim(
+                        (string) (
+                            $submittedAsset['property_number']
+                            ?? ''
+                        )
+                    );
+
+                if ($description === '') {
+                    throw ValidationException::withMessages([
+                        'new_other_asset.description' =>
+                            'Description is required.',
+                    ]);
+                }
+
+                if ($propertyNumber === '') {
+                    throw ValidationException::withMessages([
+                        'new_other_asset.property_number' =>
+                            'Property Number is required.',
+                    ]);
+                }
+
+                $oldCount =
+                    max(
+                        0,
+                        (int) (
+                            $item->currently_available
+                            ?? 0
+                        )
+                    );
+
+                $assets =
+                    $this->normalizedIctAssetRowsForStorage(
+                        $item->ict_assets ?? [],
+                        $oldCount
+                    );
+
+                $newPropertyKey =
+                    mb_strtolower(
+                        $propertyNumber
+                    );
+
+                foreach ($assets as $asset) {
+                    $existingPropertyKey =
+                        mb_strtolower(
+                            trim(
+                                (string) (
+                                    $asset['property_number']
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    if (
+                        $existingPropertyKey !== ''
+                        && $existingPropertyKey
+                            === $newPropertyKey
+                    ) {
+                        throw ValidationException::withMessages([
+                            'new_other_asset.property_number' =>
+                                'Property Number already exists for this item.',
+                        ]);
+                    }
+                }
+
+                $assets[] = [
+                    'description' =>
+                        $description,
+
+                    'accessories' =>
+                        '',
+
+                    'property_number' =>
+                        $propertyNumber,
+
+                    'current_user' =>
+                        trim(
+                            (string) (
+                                $submittedAsset['current_user']
+                                ?? ''
+                            )
+                        ),
+
+                    'date_acquired' =>
+                        null,
+
+                    'life_span_ended' =>
+                        null,
+
+                    'status' =>
+                        '',
+
+                    'mr_personnel_id' =>
+                        null,
+
+                    'mr' =>
+                        '',
+                ];
+
+                $item->ict_assets =
+                    $assets;
+
+                $item->currently_available =
+                    $oldCount + 1;
+            }
+
+            /*
+             * Count-only Other Items:
+             * Emergency Kits / Token & Giveaways.
+             */
+            if ($hasAddOtherCount) {
+                $targetCategory =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $validated['category']
+                                ?? $item->category
+                                ?? ''
+                            )
+                        )
+                    );
+
+                $otherCountCategories = [
+                    'emergency_kits',
+                    'token_giveaways',
+                ];
+
+                if (
+                    !in_array(
+                        $targetCategory,
+                        $otherCountCategories,
+                        true
+                    )
+                ) {
+                    throw ValidationException::withMessages([
+                        'add_other_count' =>
+                            'Quantity to Add is available only for count-based Other Items.',
+                    ]);
+                }
+
+                $countToAdd =
+                    (int) $validated['add_other_count'];
+
+                $item->currently_available =
+                    max(
+                        0,
+                        (int) (
+                            $item->currently_available
+                            ?? 0
+                        )
+                    )
+                    + $countToAdd;
+            }
+
+            /*
              * Direct aggregate correction is legacy-only.
              * Quarter-aware Supplies use quarter_stock instead. ICT uses a global Count/Duration balance.
              */
@@ -1028,6 +1741,10 @@ class InventoryController extends Controller
                     'release_quantity',
                     $validated
                 )
+                &&
+                !$hasAddOtherCount
+                &&
+                !$hasNewOtherAsset
                 &&
                 array_key_exists(
                     'currently_available',
@@ -1242,11 +1959,9 @@ class InventoryController extends Controller
                         true
                     )
                         ? null
-                        : $this->normalizedIctAssets(
+                        : $this->normalizedIctAssetRowsForStorage(
                             $item->ict_assets ?? [],
-                            (int) $item->currently_available,
-                            true,
-                            true
+                            (int) $item->currently_available
                         );
                 $item->tracked_released =
                     (int) ($item->tracked_released ?? 0);
@@ -1768,6 +2483,10 @@ class InventoryController extends Controller
                             'old' => null,
                             'new' => 1,
                             'single' => true,
+                            'asset_property_number' =>
+                                $historyReleasePropertyNumber,
+                            'asset_property_numbers' =>
+                                [$historyReleasePropertyNumber],
                         ]
                     );
 
@@ -1777,6 +2496,10 @@ class InventoryController extends Controller
                         'old' => null,
                         'new' => $historyReleasePropertyNumber,
                         'single' => true,
+                        'asset_property_number' =>
+                            $historyReleasePropertyNumber,
+                        'asset_property_numbers' =>
+                            [$historyReleasePropertyNumber],
                     ];
                 }
 
@@ -1853,6 +2576,16 @@ class InventoryController extends Controller
 
                         'single' =>
                             true,
+
+                        'asset_property_number' =>
+                            $historyReleasePropertyNumber !== ''
+                                ? $historyReleasePropertyNumber
+                                : null,
+
+                        'asset_property_numbers' =>
+                            $historyReleasePropertyNumber !== ''
+                                ? [$historyReleasePropertyNumber]
+                                : [],
                     ];
                 }
 
@@ -1885,7 +2618,247 @@ class InventoryController extends Controller
 
                         'single' =>
                             true,
+
+                        'asset_property_number' =>
+                            $historyReleasePropertyNumber !== ''
+                                ? $historyReleasePropertyNumber
+                                : null,
+
+                        'asset_property_numbers' =>
+                            $historyReleasePropertyNumber !== ''
+                                ? [$historyReleasePropertyNumber]
+                                : [],
                     ];
+                }
+
+                $propertyNumbers = [];
+
+                foreach ($changes as $change) {
+                    $changePropertyNumbers =
+                        is_array(
+                            $change['asset_property_numbers']
+                            ?? null
+                        )
+                            ? $change['asset_property_numbers']
+                            : [];
+
+                    foreach (
+                        $changePropertyNumbers
+                        as $propertyNumber
+                    ) {
+                        $propertyNumber =
+                            trim(
+                                (string) $propertyNumber
+                            );
+
+                        if ($propertyNumber !== '') {
+                            $propertyNumbers[] =
+                                $propertyNumber;
+                        }
+                    }
+
+                    $singleProperty =
+                        trim(
+                            (string) (
+                                $change['asset_property_number']
+                                ?? ''
+                            )
+                        );
+
+                    if ($singleProperty !== '') {
+                        $propertyNumbers[] =
+                            $singleProperty;
+                    }
+                }
+
+                if ($historyReleasePropertyNumber !== '') {
+                    $propertyNumbers[] =
+                        $historyReleasePropertyNumber;
+                }
+
+                $propertyNumbers =
+                    array_values(
+                        array_unique(
+                            array_filter(
+                                $propertyNumbers,
+                                fn ($value) =>
+                                    trim((string) $value) !== ''
+                            )
+                        )
+                    );
+
+                $changeFields =
+                    array_values(
+                        array_map(
+                            fn ($change) =>
+                                (string) (
+                                    $change['field']
+                                    ?? ''
+                                ),
+                            $changes
+                        )
+                    );
+
+                $hasAddedProperty =
+                    in_array(
+                        'ict_asset_added',
+                        $changeFields,
+                        true
+                    );
+
+                $hasQuarterRemarksEdit =
+                    in_array(
+                        'quarter_remarks',
+                        $changeFields,
+                        true
+                    );
+
+                $hasPropertyEdit =
+                    count(
+                        array_filter(
+                            $changeFields,
+                            fn ($field) =>
+                                str_starts_with(
+                                    $field,
+                                    'ict_asset_'
+                                )
+                                && !in_array(
+                                    $field,
+                                    [
+                                        'ict_asset_added',
+                                        'ict_asset_removed',
+                                    ],
+                                    true
+                                )
+                        )
+                    ) > 0;
+
+                if ($action === 'release') {
+                    $eventTitle =
+                        $historyReleasePropertyNumber !== ''
+                            ? 'Released Property'
+                            : 'Released Stock';
+
+                    $destination =
+                        trim(
+                            (string) (
+                                $newData['release_destination']
+                                ?? ''
+                            )
+                        );
+
+                    $eventSummary =
+                        $historyReleasePropertyNumber !== ''
+                            ? (
+                                'Property '
+                                . $historyReleasePropertyNumber
+                                . (
+                                    $destination !== ''
+                                        ? ' released to ' . $destination
+                                        : ' was released'
+                                )
+                            )
+                            : 'Inventory quantity was released.';
+                } elseif ($hasAddedProperty) {
+                    $eventTitle =
+                        'Added ICT Unit';
+
+                    $eventSummary =
+                        !empty($propertyNumbers)
+                            ? 'Property '
+                                . $propertyNumbers[0]
+                                . ' was added.'
+                            : 'A new ICT unit was added.';
+                } elseif ($hasQuarterRemarksEdit) {
+                    $eventTitle =
+                        'Updated Quarter Remarks';
+
+                    $quarterLabels =
+                        array_values(
+                            array_unique(
+                                array_filter(
+                                    array_map(
+                                        fn ($change) =>
+                                            ($change['field'] ?? '') === 'quarter_remarks'
+                                                ? trim(
+                                                    (string) (
+                                                        $change['label']
+                                                        ?? ''
+                                                    )
+                                                )
+                                                : '',
+                                        $changes
+                                    )
+                                )
+                            )
+                        );
+
+                    $eventSummary =
+                        !empty($quarterLabels)
+                            ? implode(
+                                ', ',
+                                array_slice(
+                                    $quarterLabels,
+                                    0,
+                                    2
+                                )
+                            )
+                                . (
+                                    count($quarterLabels) > 2
+                                        ? ' and more'
+                                        : ''
+                                )
+                                . ' updated.'
+                            : 'Quarter remarks were updated.';
+                } elseif ($hasPropertyEdit) {
+                    $eventTitle =
+                        'Edited Property Details';
+
+                    $eventSummary =
+                        !empty($propertyNumbers)
+                            ? 'Property '
+                                . $propertyNumbers[0]
+                                . ' was updated.'
+                            : 'ICT Property Details were updated.';
+                } else {
+                    $eventTitle =
+                        'Edited Item Details';
+
+                    $changedLabels =
+                        array_values(
+                            array_unique(
+                                array_filter(
+                                    array_map(
+                                        fn ($change) =>
+                                            trim(
+                                                (string) (
+                                                    $change['label']
+                                                    ?? ''
+                                                )
+                                            ),
+                                        $changes
+                                    )
+                                )
+                            )
+                        );
+
+                    $eventSummary =
+                        !empty($changedLabels)
+                            ? implode(
+                                ', ',
+                                array_slice(
+                                    $changedLabels,
+                                    0,
+                                    3
+                                )
+                            )
+                                . (
+                                    count($changedLabels) > 3
+                                        ? ' and more'
+                                        : ''
+                                )
+                                . ' updated.'
+                            : 'Inventory record was updated.';
                 }
 
                 return [
@@ -1894,6 +2867,15 @@ class InventoryController extends Controller
 
                     'action' =>
                         $action,
+
+                    'event_title' =>
+                        $eventTitle,
+
+                    'event_summary' =>
+                        $eventSummary,
+
+                    'property_numbers' =>
+                        $propertyNumbers,
 
                     'changes' =>
                         $changes,
@@ -2117,6 +3099,322 @@ class InventoryController extends Controller
     }
 
     /**
+     * Build readable per-quarter remarks history for Supplies.
+     */
+    private function inventoryQuarterRemarksHistoryChanges(
+        mixed $oldQuarterStock,
+        mixed $newQuarterStock
+    ): array {
+        $oldStock =
+            is_array($oldQuarterStock)
+                ? $oldQuarterStock
+                : [];
+
+        $newStock =
+            is_array($newQuarterStock)
+                ? $newQuarterStock
+                : [];
+
+        $changes = [];
+
+        foreach (
+            ['q1', 'q2', 'q3', 'q4']
+            as $quarter
+        ) {
+            $oldRemarks =
+                trim(
+                    (string) (
+                        $oldStock[$quarter]['remarks']
+                        ?? ''
+                    )
+                );
+
+            $newRemarks =
+                trim(
+                    (string) (
+                        $newStock[$quarter]['remarks']
+                        ?? ''
+                    )
+                );
+
+            if ($oldRemarks === $newRemarks) {
+                continue;
+            }
+
+            $changes[] = [
+                'field' =>
+                    'quarter_remarks',
+
+                'label' =>
+                    strtoupper($quarter)
+                    . ' Remarks',
+
+                'old' =>
+                    $oldRemarks !== ''
+                        ? $oldRemarks
+                        : null,
+
+                'new' =>
+                    $newRemarks !== ''
+                        ? $newRemarks
+                        : null,
+
+                'single' =>
+                    false,
+
+                'quarter' =>
+                    $quarter,
+            ];
+        }
+
+        return $changes;
+    }
+
+
+    /**
+     * Build readable per-property history changes.
+     */
+    private function inventoryAssetHistoryChanges(
+        mixed $oldAssets,
+        mixed $newAssets
+    ): array {
+        $oldRows =
+            is_array($oldAssets)
+                ? array_values($oldAssets)
+                : [];
+
+        $newRows =
+            is_array($newAssets)
+                ? array_values($newAssets)
+                : [];
+
+        $maxRows =
+            max(
+                count($oldRows),
+                count($newRows)
+            );
+
+        $changes = [];
+
+        for ($index = 0; $index < $maxRows; $index++) {
+            $oldAsset =
+                is_array($oldRows[$index] ?? null)
+                    ? $oldRows[$index]
+                    : null;
+
+            $newAsset =
+                is_array($newRows[$index] ?? null)
+                    ? $newRows[$index]
+                    : null;
+
+            if ($oldAsset === null && $newAsset === null) {
+                continue;
+            }
+
+            $oldProperty =
+                trim(
+                    (string) (
+                        $oldAsset['property_number']
+                        ?? ''
+                    )
+                );
+
+            $newProperty =
+                trim(
+                    (string) (
+                        $newAsset['property_number']
+                        ?? ''
+                    )
+                );
+
+            $propertyNumbers =
+                array_values(
+                    array_unique(
+                        array_filter(
+                            [
+                                $oldProperty,
+                                $newProperty,
+                            ],
+                            fn ($value) =>
+                                trim((string) $value) !== ''
+                        )
+                    )
+                );
+
+            $displayProperty =
+                $newProperty !== ''
+                    ? $newProperty
+                    : (
+                        $oldProperty !== ''
+                            ? $oldProperty
+                            : 'Row ' . ($index + 1)
+                    );
+
+            if ($oldAsset === null && $newAsset !== null) {
+                $summaryParts = [];
+
+                if ($newProperty !== '') {
+                    $summaryParts[] =
+                        'Property ' . $newProperty;
+                }
+
+                $description =
+                    trim(
+                        (string) (
+                            $newAsset['description']
+                            ?? ''
+                        )
+                    );
+
+                if ($description !== '') {
+                    $summaryParts[] = $description;
+                }
+
+                $status =
+                    strtolower(
+                        trim(
+                            (string) (
+                                $newAsset['status']
+                                ?? ''
+                            )
+                        )
+                    );
+
+                if ($status === 'for_return') {
+                    $status = 'returned';
+                }
+
+                if ($status !== '') {
+                    $summaryParts[] =
+                        $status === 'returned'
+                            ? 'Returned'
+                            : 'Working';
+                }
+
+                $mr =
+                    trim(
+                        (string) (
+                            $newAsset['mr']
+                            ?? ''
+                        )
+                    );
+
+                if ($mr !== '') {
+                    $summaryParts[] =
+                        'MR: ' . $mr;
+                }
+
+                $changes[] = [
+                    'field' => 'ict_asset_added',
+                    'label' => 'ICT Unit Added',
+                    'old' => null,
+                    'new' =>
+                        !empty($summaryParts)
+                            ? implode(' · ', $summaryParts)
+                            : 'New ICT unit',
+                    'single' => true,
+                    'asset_index' => $index,
+                    'asset_property_number' =>
+                        $newProperty !== ''
+                            ? $newProperty
+                            : null,
+                    'asset_property_numbers' =>
+                        $propertyNumbers,
+                ];
+
+                continue;
+            }
+
+            if ($oldAsset !== null && $newAsset === null) {
+                $changes[] = [
+                    'field' => 'ict_asset_removed',
+                    'label' => 'ICT Unit Removed',
+                    'old' => null,
+                    'new' =>
+                        $oldProperty !== ''
+                            ? 'Property ' . $oldProperty
+                            : 'Property Row ' . ($index + 1),
+                    'single' => true,
+                    'asset_index' => $index,
+                    'asset_property_number' =>
+                        $oldProperty !== ''
+                            ? $oldProperty
+                            : null,
+                    'asset_property_numbers' =>
+                        $propertyNumbers,
+                ];
+
+                continue;
+            }
+
+            $assetFields = [
+                'description' => 'Description',
+                'accessories' => 'Accessories',
+                'property_number' => 'Property Number',
+                'current_user' => 'Current User',
+                'date_acquired' => 'Date Acquired',
+                'life_span_ended' => 'Life Span Ended',
+                'status' => 'Status',
+                'mr' => 'MR',
+            ];
+
+            foreach ($assetFields as $field => $label) {
+                $oldValue =
+                    trim(
+                        (string) (
+                            $oldAsset[$field]
+                            ?? ''
+                        )
+                    );
+
+                $newValue =
+                    trim(
+                        (string) (
+                            $newAsset[$field]
+                            ?? ''
+                        )
+                    );
+
+                if ($oldValue === $newValue) {
+                    continue;
+                }
+
+                $changes[] = [
+                    'field' =>
+                        'ict_asset_' . $field,
+                    'label' =>
+                        'Property '
+                        . $displayProperty
+                        . ' · '
+                        . $label,
+                    'old' =>
+                        $oldValue !== ''
+                            ? $oldValue
+                            : null,
+                    'new' =>
+                        $newValue !== ''
+                            ? $newValue
+                            : null,
+                    'single' => false,
+                    'asset_index' => $index,
+                    'asset_property_number' =>
+                        str_starts_with(
+                            $displayProperty,
+                            'Row '
+                        )
+                            ? null
+                            : $displayProperty,
+                    'asset_property_numbers' =>
+                        $propertyNumbers,
+                ];
+            }
+        }
+
+        return $changes;
+    }
+
+
+    /**
      * Convert old/new audit snapshots into a clean list of changed fields.
      */
     private function inventoryHistoryChanges(
@@ -2205,6 +3503,8 @@ class InventoryController extends Controller
 
         if ($historyCategory === 'supplies') {
             $fields['quarters'] = 'Quarter(s)';
+            $fields['quarter_stock'] =
+                'Quarter Details';
             $fields['fixed_value'] = 'Fixed Value';
         }
 
@@ -2219,7 +3519,7 @@ class InventoryController extends Controller
             )
         ) {
             $fields['ict_assets'] =
-                'Property Number / Current User';
+                'Property Details';
         }
 
         $fields['remarks'] = 'Remarks';
@@ -2236,6 +3536,32 @@ class InventoryController extends Controller
                 ?? null;
 
             if ($oldValue === $newValue) {
+                continue;
+            }
+
+            if ($field === 'quarter_stock') {
+                $changes =
+                    array_merge(
+                        $changes,
+                        $this->inventoryQuarterRemarksHistoryChanges(
+                            $oldValue,
+                            $newValue
+                        )
+                    );
+
+                continue;
+            }
+
+            if ($field === 'ict_assets') {
+                $changes =
+                    array_merge(
+                        $changes,
+                        $this->inventoryAssetHistoryChanges(
+                            $oldValue,
+                            $newValue
+                        )
+                    );
+
                 continue;
             }
 
@@ -2418,6 +3744,13 @@ class InventoryController extends Controller
                 )
             );
 
+            $accessories = trim(
+                (string) (
+                    $asset['accessories']
+                    ?? ''
+                )
+            );
+
             $currentUser = trim(
                 (string) (
                     $asset['current_user']
@@ -2425,10 +3758,34 @@ class InventoryController extends Controller
                 )
             );
 
+            $status = trim(
+                (string) (
+                    $asset['status']
+                    ?? ''
+                )
+            );
+
+            $mrPersonnelId =
+                (int) (
+                    $asset['mr_personnel_id']
+                    ?? 0
+                );
+
+            $mr = trim(
+                (string) (
+                    $asset['mr']
+                    ?? ''
+                )
+            );
+
             if (
                 $description !== ''
+                || $accessories !== ''
                 || $propertyNumber !== ''
                 || $currentUser !== ''
+                || $status !== ''
+                || $mrPersonnelId > 0
+                || $mr !== ''
             ) {
                 return true;
             }
@@ -2436,6 +3793,265 @@ class InventoryController extends Controller
 
         return false;
     }
+
+    /**
+     * Normalize ICT asset dates. Legacy four-digit years are converted
+     * to December 31 of that year for backward compatibility.
+     */
+    private function normalizedInventoryAssetDate(
+        mixed $value
+    ): ?string {
+        $raw =
+            trim((string) ($value ?? ''));
+
+        if ($raw === '') {
+            return null;
+        }
+
+        if (preg_match('/^\d{4}$/', $raw)) {
+            $year = (int) $raw;
+
+            return (
+                $year >= 1900
+                && $year <= 2200
+            )
+                ? sprintf('%04d-12-31', $year)
+                : null;
+        }
+
+        if (
+            !preg_match(
+                '/^(\d{4})-(\d{2})-(\d{2})$/',
+                $raw,
+                $matches
+            )
+        ) {
+            return null;
+        }
+
+        $year = (int) $matches[1];
+        $month = (int) $matches[2];
+        $day = (int) $matches[3];
+
+        if (
+            $year < 1900
+            || $year > 2200
+            || !checkdate($month, $day, $year)
+        ) {
+            return null;
+        }
+
+        return sprintf(
+            '%04d-%02d-%02d',
+            $year,
+            $month,
+            $day
+        );
+    }
+
+
+    /**
+     * Normalize ICT Property Detail rows for storage while preserving
+     * intentionally blank placeholder rows created by Add Count.
+     *
+     * This keeps row indexes stable so each accordion row can be edited
+     * independently.
+     */
+    private function normalizedIctAssetRowsForStorage(
+        mixed $assets,
+        int $expectedCount
+    ): array {
+        $expectedCount =
+            max(0, $expectedCount);
+
+        $rows =
+            is_array($assets)
+                ? array_values($assets)
+                : [];
+
+        if (count($rows) > $expectedCount) {
+            $rows =
+                array_slice(
+                    $rows,
+                    0,
+                    $expectedCount
+                );
+        }
+
+        while (
+            count($rows) < $expectedCount
+        ) {
+            $rows[] = [];
+        }
+
+        $normalized = [];
+        $seen = [];
+
+        for (
+            $index = 0;
+            $index < $expectedCount;
+            $index++
+        ) {
+            $asset =
+                is_array($rows[$index] ?? null)
+                    ? $rows[$index]
+                    : [];
+
+            $description =
+                trim(
+                    (string) (
+                        $asset['description']
+                        ?? ''
+                    )
+                );
+
+            $accessories =
+                trim(
+                    (string) (
+                        $asset['accessories']
+                        ?? ''
+                    )
+                );
+
+            $propertyNumber =
+                trim(
+                    (string) (
+                        $asset['property_number']
+                        ?? ''
+                    )
+                );
+
+            $currentUser =
+                trim(
+                    (string) (
+                        $asset['current_user']
+                        ?? ''
+                    )
+                );
+
+            $dateAcquired =
+                $this->normalizedInventoryAssetDate(
+                    $asset['date_acquired']
+                    ?? null
+                );
+
+            $lifeSpanEnded =
+                $this->normalizedInventoryAssetDate(
+                    $asset['life_span_ended']
+                    ?? null
+                );
+
+            $status =
+                strtolower(
+                    trim(
+                        (string) (
+                            $asset['status']
+                            ?? ''
+                        )
+                    )
+                );
+
+            if ($status === 'for_return') {
+                $status = 'returned';
+            }
+
+            if (
+                !in_array(
+                    $status,
+                    ['working', 'returned'],
+                    true
+                )
+            ) {
+                $status = 'working';
+            }
+
+            $mrPersonnelId =
+                (int) (
+                    $asset['mr_personnel_id']
+                    ?? 0
+                );
+
+            $mr =
+                trim(
+                    (string) (
+                        $asset['mr']
+                        ?? ''
+                    )
+                );
+
+            if ($mrPersonnelId > 0) {
+                $mrName =
+                    DB::table('lu_personnel')
+                        ->where(
+                            'ID',
+                            $mrPersonnelId
+                        )
+                        ->value('name');
+
+                if (
+                    is_string($mrName)
+                    && trim($mrName) !== ''
+                ) {
+                    $mr =
+                        trim($mrName);
+                } else {
+                    $mrPersonnelId = null;
+                }
+            } else {
+                $mrPersonnelId = null;
+            }
+
+            if (
+                $propertyNumber === ''
+                && $currentUser !== ''
+            ) {
+                throw ValidationException::withMessages([
+                    "ict_assets.{$index}.property_number" =>
+                        'Property Number is required when Current User is filled in.',
+                ]);
+            }
+
+            if ($propertyNumber !== '') {
+                $key =
+                    mb_strtolower(
+                        $propertyNumber
+                    );
+
+                if (isset($seen[$key])) {
+                    throw ValidationException::withMessages([
+                        "ict_assets.{$index}.property_number" =>
+                            'Property Number must be unique for this ICT item.',
+                    ]);
+                }
+
+                $seen[$key] = true;
+            }
+
+            $normalized[] = [
+                'description' =>
+                    $description,
+                'accessories' =>
+                    $accessories,
+                'property_number' =>
+                    $propertyNumber,
+                'current_user' =>
+                    $currentUser,
+                'date_acquired' =>
+                    $dateAcquired,
+                'life_span_ended' =>
+                    $lifeSpanEnded,
+                'status' =>
+                    $status,
+                'mr_personnel_id' =>
+                    $mrPersonnelId,
+                'mr' =>
+                    $mr,
+            ];
+        }
+
+        return $normalized;
+    }
+
 
     /**
      * Normalize optional ICT property details.
@@ -2500,12 +4116,86 @@ class InventoryController extends Controller
                 )
             );
 
+            $accessories = trim(
+                (string) (
+                    $asset['accessories']
+                    ?? ''
+                )
+            );
+
             $currentUser = trim(
                 (string) (
                     $asset['current_user']
                     ?? ''
                 )
             );
+
+            $dateAcquired =
+                $this->normalizedInventoryAssetDate(
+                    $asset['date_acquired']
+                    ?? null
+                );
+
+            $lifeSpanEnded =
+                $this->normalizedInventoryAssetDate(
+                    $asset['life_span_ended']
+                    ?? null
+                );
+
+            $status = strtolower(
+                trim(
+                    (string) (
+                        $asset['status']
+                        ?? ''
+                    )
+                )
+            );
+
+            if ($status === 'for_return') {
+                $status = 'returned';
+            }
+
+            $status =
+                in_array(
+                    $status,
+                    ['working', 'returned'],
+                    true
+                )
+                    ? $status
+                    : '';
+
+            $mrPersonnelId =
+                (int) (
+                    $asset['mr_personnel_id']
+                    ?? 0
+                );
+
+            $mr =
+                trim(
+                    (string) (
+                        $asset['mr']
+                        ?? ''
+                    )
+                );
+
+            if ($mrPersonnelId > 0) {
+                $mrName =
+                    DB::table('lu_personnel')
+                        ->where(
+                            'ID',
+                            $mrPersonnelId
+                        )
+                        ->value('name');
+
+                if (
+                    is_string($mrName)
+                    && trim($mrName) !== ''
+                ) {
+                    $mr = trim($mrName);
+                }
+            } else {
+                $mrPersonnelId = null;
+            }
 
             if (
                 $requireDescriptions
@@ -2530,8 +4220,14 @@ class InventoryController extends Controller
             if (
                 !$requirePropertyNumbers
                 && $description === ''
+                && $accessories === ''
                 && $propertyNumber === ''
                 && $currentUser === ''
+                && $dateAcquired === null
+                && $lifeSpanEnded === null
+                && $status === ''
+                && !$mrPersonnelId
+                && $mr === ''
             ) {
                 continue;
             }
@@ -2564,10 +4260,22 @@ class InventoryController extends Controller
             $normalized[] = [
                 'description' =>
                     $description,
+                'accessories' =>
+                    $accessories,
                 'property_number' =>
                     $propertyNumber,
                 'current_user' =>
                     $currentUser,
+                'date_acquired' =>
+                    $dateAcquired,
+                'life_span_ended' =>
+                    $lifeSpanEnded,
+                'status' =>
+                    $status,
+                'mr_personnel_id' =>
+                    $mrPersonnelId,
+                'mr' =>
+                    $mr,
             ];
         }
 
@@ -2671,6 +4379,14 @@ class InventoryController extends Controller
 
                 'released' =>
                     $released,
+
+                'remarks' =>
+                    trim(
+                        (string) (
+                            $entry['remarks']
+                            ?? ''
+                        )
+                    ),
             ];
         }
 
@@ -2705,6 +4421,13 @@ class InventoryController extends Controller
                     'added' => 0,
                     'current' => 0,
                     'released' => 0,
+                    'remarks' =>
+                        trim(
+                            (string) (
+                                $entry['remarks']
+                                ?? ''
+                            )
+                        ),
                 ];
 
                 continue;
@@ -2781,6 +4504,14 @@ class InventoryController extends Controller
 
                 'released' =>
                     $released,
+
+                'remarks' =>
+                    trim(
+                        (string) (
+                            $entry['remarks']
+                            ?? ''
+                        )
+                    ),
             ];
 
             $previousCurrent =
@@ -2871,6 +4602,14 @@ class InventoryController extends Controller
             $rawValue =
                 (int) $rawEntry['current'];
 
+            $rawRemarks =
+                trim(
+                    (string) (
+                        $rawEntry['remarks']
+                        ?? ''
+                    )
+                );
+
             if ($rawValue < 0) {
                 throw ValidationException::withMessages([
                     "quarter_stock.{$quarter}.current" =>
@@ -2948,6 +4687,9 @@ class InventoryController extends Controller
 
                     'released' =>
                         $released,
+
+                    'remarks' =>
+                        $rawRemarks,
                 ];
 
                 $previousCurrent =
@@ -2976,6 +4718,8 @@ class InventoryController extends Controller
                     'added' => 0,
                     'current' => 0,
                     'released' => 0,
+                    'remarks' =>
+                        $rawRemarks,
                 ];
 
                 /*
@@ -3013,6 +4757,9 @@ class InventoryController extends Controller
 
                     'released' =>
                         $legacyReleased,
+
+                    'remarks' =>
+                        $rawRemarks,
                 ];
 
                 $previousCurrent =
@@ -3061,6 +4808,9 @@ class InventoryController extends Controller
 
                 'released' =>
                     0,
+
+                'remarks' =>
+                    $rawRemarks,
             ];
 
             $previousCurrent =
@@ -3117,1678 +4867,6 @@ class InventoryController extends Controller
     }
 
 
-
-    /**
-     * Upload the latest Purchase Request reference for one Inventory category.
-     *
-     * READ-ONLY: validation never updates Inventory data.
-     */
-    public function uploadPurchaseRequestValidation(
-        Request $request
-    ) {
-        $this->authorizeInventoryManagement(
-            $request
-        );
-
-        $validated = $request->validate([
-            'validation_category' =>
-                'required|in:supplies,ict,furniture_fixtures,emergency_kits,token_giveaways',
-
-            'inventory_year' =>
-                'nullable|integer|min:2026|max:2100',
-
-            'pr_file' =>
-                'required|file|mimes:xlsx,csv,txt|max:10240',
-        ]);
-
-        $category =
-            $this->normalizePurchaseRequestCategory(
-                $validated['validation_category']
-            );
-
-        $needsYear =
-            in_array(
-                $category,
-                ['supplies', 'ict'],
-                true
-            );
-
-        $inventoryYear =
-            $needsYear
-                ? (int) (
-                    $validated['inventory_year']
-                    ?? 0
-                )
-                : null;
-
-        if (
-            $needsYear
-            && $inventoryYear < 2026
-        ) {
-            throw ValidationException::withMessages([
-                'inventory_year' =>
-                    'Select a valid Inventory Year.',
-            ]);
-        }
-
-        $file =
-            $validated['pr_file'];
-
-        $extension =
-            strtolower(
-                (string) $file
-                    ->getClientOriginalExtension()
-            );
-
-        if (!in_array(
-            $extension,
-            ['xlsx', 'csv', 'txt'],
-            true
-        )) {
-            throw ValidationException::withMessages([
-                'pr_file' =>
-                    'Please upload a valid XLSX or CSV Purchase Request file.',
-            ]);
-        }
-
-        try {
-            $rows =
-                $this->parsePurchaseRequestSpreadsheet(
-                    $file->getRealPath(),
-                    $extension,
-                    $category
-                );
-        } catch (\Throwable $exception) {
-            Log::warning(
-                'Purchase Request parse failed.',
-                [
-                    'category' =>
-                        $category,
-
-                    'message' =>
-                        $exception->getMessage(),
-                ]
-            );
-
-            $message =
-                trim(
-                    (string) $exception->getMessage()
-                );
-
-            throw ValidationException::withMessages([
-                'pr_file' =>
-                    $message !== ''
-                        ? 'Purchase Request file error: '
-                            . $message
-                        : 'The selected Purchase Request file could not be read.',
-            ]);
-        }
-
-        if (empty($rows)) {
-            throw ValidationException::withMessages([
-                'pr_file' =>
-                    'The Purchase Request file does not contain readable item rows.',
-            ]);
-        }
-
-        $directory =
-            storage_path(
-                'app/inventory/purchase-request/'
-                . $category
-            );
-
-        if (!is_dir($directory)) {
-            mkdir(
-                $directory,
-                0775,
-                true
-            );
-        }
-
-        foreach (
-            glob(
-                $directory
-                . DIRECTORY_SEPARATOR
-                . 'current.*'
-            ) ?: []
-            as $existing
-        ) {
-            if (
-                basename($existing)
-                !== 'current.json'
-                && is_file($existing)
-            ) {
-                @unlink($existing);
-            }
-        }
-
-        $storedExtension =
-            $extension === 'txt'
-                ? 'csv'
-                : $extension;
-
-        $storedFilename =
-            'current.'
-            . $storedExtension;
-
-        $originalName =
-            $file->getClientOriginalName();
-
-        $file->move(
-            $directory,
-            $storedFilename
-        );
-
-        $metadata = [
-            'validation_category' =>
-                $category,
-
-            'original_name' =>
-                $originalName,
-
-            'stored_name' =>
-                $storedFilename,
-
-            'inventory_year' =>
-                $inventoryYear,
-
-            'uploaded_at' =>
-                now()->toIso8601String(),
-
-            'uploaded_by' =>
-                $request->user()?->name
-                ?? $request->user()?->loginname
-                ?? $request->user()?->username
-                ?? 'Inventory Administrator',
-
-            'row_count' =>
-                count($rows),
-        ];
-
-        file_put_contents(
-            $directory
-                . DIRECTORY_SEPARATOR
-                . 'current.json',
-            json_encode(
-                $metadata,
-                JSON_PRETTY_PRINT
-                | JSON_UNESCAPED_UNICODE
-            )
-        );
-
-        $label =
-            $this->purchaseRequestCategoryLabel(
-                $category
-            );
-
-        return back()->with(
-            'success',
-            'Purchase Request validated against the '
-            . ($inventoryYear !== null
-                ? $inventoryYear . ' '
-                : '')
-            . $label
-            . ' inventory.'
-        );
-    }
-
-    /**
-     * Return all category-specific PR validation results to the page.
-     */
-    private function buildPurchaseRequestValidations(): array
-    {
-        $results = [];
-
-        foreach (
-            [
-                'supplies',
-                'ict',
-                'furniture_fixtures',
-                'emergency_kits',
-                'token_giveaways',
-            ]
-            as $category
-        ) {
-            $results[$category] =
-                $this->buildPurchaseRequestValidation(
-                    $category
-                );
-        }
-
-        return $results;
-    }
-
-    private function emptyPurchaseRequestValidation(
-        string $category
-    ): array {
-        return [
-            'has_file' => false,
-
-            'file' => null,
-
-            'context' => [
-                'validation_category' =>
-                    $category,
-
-                'category_label' =>
-                    $this->purchaseRequestCategoryLabel(
-                        $category
-                    ),
-
-                'inventory_year' => null,
-            ],
-
-            'summary' => [
-                'total' => 0,
-                'match' => 0,
-                'not_match' => 0,
-                'not_found' => 0,
-            ],
-
-            'rows' => [],
-
-            'error' => null,
-        ];
-    }
-
-    /**
-     * Build one category's latest Purchase Request validation.
-     */
-    private function buildPurchaseRequestValidation(
-        string $category
-    ): array {
-        $category =
-            $this->normalizePurchaseRequestCategory(
-                $category
-            );
-
-        $empty =
-            $this->emptyPurchaseRequestValidation(
-                $category
-            );
-
-        $directory =
-            storage_path(
-                'app/inventory/purchase-request/'
-                . $category
-            );
-
-        if (!is_dir($directory)) {
-            return $empty;
-        }
-
-        $metadataPath =
-            $directory
-            . DIRECTORY_SEPARATOR
-            . 'current.json';
-
-        if (!is_file($metadataPath)) {
-            return $empty;
-        }
-
-        $metadata =
-            json_decode(
-                (string) file_get_contents(
-                    $metadataPath
-                ),
-                true
-            );
-
-        if (!is_array($metadata)) {
-            return [
-                ...$empty,
-                'error' =>
-                    'The saved Purchase Request metadata could not be read.',
-            ];
-        }
-
-        $needsYear =
-            in_array(
-                $category,
-                ['supplies', 'ict'],
-                true
-            );
-
-        $year =
-            $needsYear
-                ? (int) (
-                    $metadata['inventory_year']
-                    ?? 0
-                )
-                : null;
-
-        if (
-            $needsYear
-            && $year < 2026
-        ) {
-            return [
-                ...$empty,
-                'error' =>
-                    'The saved Purchase Request Inventory Year is invalid.',
-            ];
-        }
-
-        $referencePath = null;
-        $extension = null;
-
-        foreach (
-            ['xlsx', 'csv']
-            as $candidateExtension
-        ) {
-            $candidate =
-                $directory
-                . DIRECTORY_SEPARATOR
-                . 'current.'
-                . $candidateExtension;
-
-            if (is_file($candidate)) {
-                $referencePath =
-                    $candidate;
-
-                $extension =
-                    $candidateExtension;
-
-                break;
-            }
-        }
-
-        if (!$referencePath) {
-            return [
-                ...$empty,
-                'error' =>
-                    'The saved Purchase Request file could not be found.',
-            ];
-        }
-
-        try {
-            $prRows =
-                $this->parsePurchaseRequestSpreadsheet(
-                    $referencePath,
-                    (string) $extension,
-                    $category
-                );
-
-            $inventoryItems =
-                $this->purchaseRequestInventoryItems(
-                    $category,
-                    $year
-                );
-
-            $validation =
-                match ($category) {
-                    'supplies' =>
-                        $this->validateSuppliesPurchaseRequestRows(
-                            $prRows,
-                            $inventoryItems,
-                            (int) $year
-                        ),
-
-                    'ict' =>
-                        $this->validateIctPurchaseRequestRows(
-                            $prRows,
-                            $inventoryItems,
-                            (int) $year
-                        ),
-
-                    default =>
-                        $this->validateOtherPurchaseRequestRows(
-                            $prRows,
-                            $inventoryItems,
-                            $category
-                        ),
-                };
-
-            return [
-                'has_file' => true,
-
-                'file' => [
-                    'original_name' =>
-                        $metadata['original_name']
-                        ?? basename(
-                            $referencePath
-                        ),
-
-                    'uploaded_at' =>
-                        $metadata['uploaded_at']
-                        ?? date(
-                            DATE_ATOM,
-                            filemtime(
-                                $referencePath
-                            )
-                        ),
-
-                    'uploaded_by' =>
-                        $metadata['uploaded_by']
-                        ?? 'Unknown',
-
-                    'row_count' =>
-                        $metadata['row_count']
-                        ?? count(
-                            $prRows
-                        ),
-                ],
-
-                'context' => [
-                    'validation_category' =>
-                        $category,
-
-                    'category_label' =>
-                        $this->purchaseRequestCategoryLabel(
-                            $category
-                        ),
-
-                    'inventory_year' =>
-                        $year,
-                ],
-
-                'summary' =>
-                    $validation['summary'],
-
-                'rows' =>
-                    $validation['rows'],
-
-                'error' => null,
-            ];
-        } catch (\Throwable $exception) {
-            Log::error(
-                'Purchase Request validation failed.',
-                [
-                    'category' =>
-                        $category,
-
-                    'message' =>
-                        $exception->getMessage(),
-                ]
-            );
-
-            return [
-                ...$empty,
-
-                'has_file' => true,
-
-                'file' => [
-                    'original_name' =>
-                        $metadata['original_name']
-                        ?? basename(
-                            $referencePath
-                        ),
-
-                    'uploaded_at' =>
-                        $metadata['uploaded_at']
-                        ?? null,
-
-                    'uploaded_by' =>
-                        $metadata['uploaded_by']
-                        ?? 'Unknown',
-
-                    'row_count' =>
-                        $metadata['row_count']
-                        ?? null,
-                ],
-
-                'context' => [
-                    'validation_category' =>
-                        $category,
-
-                    'category_label' =>
-                        $this->purchaseRequestCategoryLabel(
-                            $category
-                        ),
-
-                    'inventory_year' =>
-                        $year,
-                ],
-
-                'error' =>
-                    'The saved Purchase Request could not be validated: '
-                    . $exception->getMessage(),
-            ];
-        }
-    }
-
-    private function purchaseRequestInventoryItems(
-        string $category,
-        ?int $year
-    ) {
-        $query =
-            InventoryItem::query();
-
-        if ($category === 'supplies') {
-            $query
-                ->whereRaw(
-                    "LOWER(TRIM(category)) = 'supplies'"
-                )
-                ->where(
-                    'inventory_year',
-                    $year
-                );
-        } elseif ($category === 'ict') {
-            $query
-                ->whereRaw(
-                    "LOWER(TRIM(category)) = 'ict'"
-                )
-                ->where(
-                    'inventory_year',
-                    $year
-                );
-        } elseif ($category === 'furniture_fixtures') {
-            $query->where(
-                function ($builder) {
-                    $builder
-                        ->whereRaw(
-                            "LOWER(TRIM(category)) = 'furniture'"
-                        )
-                        ->orWhereRaw(
-                            "LOWER(TRIM(category)) = 'fixtures'"
-                        );
-                }
-            );
-        } else {
-            $query->whereRaw(
-                'LOWER(TRIM(category)) = ?',
-                [$category]
-            );
-        }
-
-        return $query
-            ->orderBy('item')
-            ->get();
-    }
-
-    /**
-     * Supplies: Item + Unit + exact PR Quarter + Quantity.
-     * Quantity uses only quarter_stock[PR quarter].added.
-     */
-    private function validateSuppliesPurchaseRequestRows(
-        array $prRows,
-        $inventoryItems,
-        int $year
-    ): array {
-        $rows = [];
-
-        $summary = [
-            'total' => 0,
-            'match' => 0,
-            'not_match' => 0,
-            'not_found' => 0,
-        ];
-
-        foreach ($prRows as $index => $prRow) {
-            if (!is_array($prRow)) {
-                continue;
-            }
-
-            $itemName = trim(
-                (string) ($prRow['item'] ?? '')
-            );
-
-            $unit = strtoupper(
-                trim(
-                    (string) ($prRow['unit'] ?? '')
-                )
-            );
-
-            $prQuarterRaw = trim(
-                (string) ($prRow['quarter'] ?? '')
-            );
-
-            $quarter =
-                $this->normalizePurchaseRequestQuarter(
-                    $prQuarterRaw
-                );
-
-            $quantityRaw = trim(
-                (string) ($prRow['quantity'] ?? '')
-            );
-
-            $quantity = is_numeric($quantityRaw)
-                ? (float) $quantityRaw
-                : null;
-
-            $baseRow = [
-                'id' => 'pr:' . ($index + 1),
-                'item' => $itemName,
-                'unit' => $unit,
-                'quarter' =>
-                    $quarter
-                    ?? strtoupper($prQuarterRaw),
-                'quantity' => $quantity,
-                'inventory_year' => $year,
-                'status' => 'not_found',
-                'notes' => '',
-            ];
-
-            $itemMatches =
-                $inventoryItems
-                    ->filter(
-                        fn ($inventoryItem) =>
-                            $this->normalizePurchaseRequestItemText(
-                                $inventoryItem->item
-                            )
-                            ===
-                            $this->normalizePurchaseRequestItemText(
-                                $itemName
-                            )
-                    )
-                    ->values();
-
-            if ($itemMatches->isEmpty()) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_found',
-                    'notes' =>
-                        'Item was not found in the '
-                        . $year
-                        . ' Supplies inventory.',
-                ];
-
-                $summary['not_found']++;
-                $summary['total']++;
-                continue;
-            }
-
-            $sameUnit =
-                $itemMatches
-                    ->filter(
-                        fn ($inventoryItem) =>
-                            strtoupper(
-                                trim(
-                                    (string) $inventoryItem->unit
-                                )
-                            )
-                            === $unit
-                    )
-                    ->values();
-
-            $inventoryItem =
-                $sameUnit->first()
-                ?? $itemMatches->first();
-
-            $systemUnit = strtoupper(
-                trim(
-                    (string) $inventoryItem->unit
-                )
-            );
-
-            $quarterList =
-                $this->normalizedQuarterList(
-                    $inventoryItem->quarters
-                    ?? []
-                );
-
-            $quarterStock =
-                $this->normalizedStoredQuarterStock(
-                    $inventoryItem->quarter_stock
-                );
-
-            $notes = [];
-
-            if ($systemUnit !== $unit) {
-                $notes[] =
-                    'Unit does not match. PR: '
-                    . ($unit !== '' ? $unit : 'Blank')
-                    . ', System: '
-                    . ($systemUnit !== '' ? $systemUnit : 'Blank')
-                    . '.';
-            }
-
-            $quarterMatches = false;
-            $quarterEntry = null;
-
-            if ($quarter === null) {
-                $notes[] =
-                    'Quarter is invalid. PR: '
-                    . (
-                        $prQuarterRaw !== ''
-                            ? $prQuarterRaw
-                            : 'Blank'
-                    )
-                    . '. Use Q1, Q2, Q3, or Q4.';
-            } else {
-                $quarterEntry =
-                    $quarterStock[$quarter]
-                    ?? null;
-
-                $quarterMatches =
-                    in_array(
-                        $quarter,
-                        $quarterList,
-                        true
-                    )
-                    && is_array($quarterEntry)
-                    && $this->quarterStockEntryHasActivity(
-                        $quarterEntry
-                    );
-
-                if (!$quarterMatches) {
-                    $notes[] =
-                        'No '
-                        . strtoupper($quarter)
-                        . ' record found in the Inventory for this item.';
-                }
-            }
-
-            if ($quantity === null) {
-                $notes[] =
-                    'Quantity is missing or invalid in the Purchase Request.';
-            } elseif ($quarterMatches) {
-                $systemQuantity = max(
-                    0,
-                    (float) (
-                        $quarterEntry['added']
-                        ?? 0
-                    )
-                );
-
-                if (
-                    abs(
-                        $quantity
-                        - $systemQuantity
-                    )
-                    >= 0.000001
-                ) {
-                    $notes[] =
-                        'Quantity does not match. PR: '
-                        . $this->formatPurchaseRequestNumber(
-                            $quantity
-                        )
-                        . ', System: '
-                        . $this->formatPurchaseRequestNumber(
-                            $systemQuantity
-                        )
-                        . '.';
-                }
-            }
-
-            if (empty($notes)) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'match',
-                    'notes' =>
-                        'All Purchase Request details match the Inventory record.',
-                ];
-
-                $summary['match']++;
-            } else {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_match',
-                    'notes' => implode(' ', $notes),
-                ];
-
-                $summary['not_match']++;
-            }
-
-            $summary['total']++;
-        }
-
-        return [
-            'summary' => $summary,
-            'rows' => $rows,
-        ];
-    }
-
-    /**
-     * ICT: Item + Unit + Quantity.
-     * No Quarter is used for ICT.
-     */
-    private function validateIctPurchaseRequestRows(
-        array $prRows,
-        $inventoryItems,
-        int $year
-    ): array {
-        $rows = [];
-
-        $summary = [
-            'total' => 0,
-            'match' => 0,
-            'not_match' => 0,
-            'not_found' => 0,
-        ];
-
-        foreach ($prRows as $index => $prRow) {
-            if (!is_array($prRow)) {
-                continue;
-            }
-
-            $itemName = trim(
-                (string) ($prRow['item'] ?? '')
-            );
-
-            $unit = strtoupper(
-                trim(
-                    (string) ($prRow['unit'] ?? '')
-                )
-            );
-
-            $quantityRaw = trim(
-                (string) ($prRow['quantity'] ?? '')
-            );
-
-            $quantity = is_numeric($quantityRaw)
-                ? (float) $quantityRaw
-                : null;
-
-            $baseRow = [
-                'id' => 'pr:' . ($index + 1),
-                'item' => $itemName,
-                'unit' => $unit,
-                'quarter' => null,
-                'quantity' => $quantity,
-                'inventory_year' => $year,
-                'status' => 'not_found',
-                'notes' => '',
-            ];
-
-            $itemMatches =
-                $inventoryItems
-                    ->filter(
-                        fn ($inventoryItem) =>
-                            $this->normalizePurchaseRequestItemText(
-                                $inventoryItem->item
-                            )
-                            ===
-                            $this->normalizePurchaseRequestItemText(
-                                $itemName
-                            )
-                    )
-                    ->values();
-
-            if ($itemMatches->isEmpty()) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_found',
-                    'notes' =>
-                        'Item was not found in the '
-                        . $year
-                        . ' ICT inventory.',
-                ];
-
-                $summary['not_found']++;
-                $summary['total']++;
-                continue;
-            }
-
-            $sameUnit =
-                $itemMatches
-                    ->filter(
-                        fn ($inventoryItem) =>
-                            strtoupper(
-                                trim(
-                                    (string) $inventoryItem->unit
-                                )
-                            )
-                            === $unit
-                    )
-                    ->values();
-
-            $inventoryItem =
-                $sameUnit->first()
-                ?? $itemMatches->first();
-
-            $systemUnit = strtoupper(
-                trim(
-                    (string) $inventoryItem->unit
-                )
-            );
-
-            $notes = [];
-
-            if ($systemUnit !== $unit) {
-                $notes[] =
-                    'Unit does not match. PR: '
-                    . ($unit !== '' ? $unit : 'Blank')
-                    . ', System: '
-                    . ($systemUnit !== '' ? $systemUnit : 'Blank')
-                    . '.';
-            }
-
-            if ($quantity === null) {
-                $notes[] =
-                    'Quantity is missing or invalid in the Purchase Request.';
-            } else {
-                $systemQuantity =
-                    $this->purchaseRequestSystemQuantity(
-                        $inventoryItem,
-                        'ict'
-                    );
-
-                if (
-                    abs(
-                        $quantity
-                        - $systemQuantity
-                    )
-                    >= 0.000001
-                ) {
-                    $notes[] =
-                        'Quantity does not match. PR: '
-                        . $this->formatPurchaseRequestNumber(
-                            $quantity
-                        )
-                        . ', System: '
-                        . $this->formatPurchaseRequestNumber(
-                            $systemQuantity
-                        )
-                        . '.';
-                }
-            }
-
-            if (empty($notes)) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'match',
-                    'notes' =>
-                        'All Purchase Request details match the Inventory record.',
-                ];
-
-                $summary['match']++;
-            } else {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_match',
-                    'notes' => implode(' ', $notes),
-                ];
-
-                $summary['not_match']++;
-            }
-
-            $summary['total']++;
-        }
-
-        return [
-            'summary' => $summary,
-            'rows' => $rows,
-        ];
-    }
-
-    /**
-     * Other Items: Item + Quantity.
-     * Category is already determined by the active Other Items tab.
-     */
-    private function validateOtherPurchaseRequestRows(
-        array $prRows,
-        $inventoryItems,
-        string $category
-    ): array {
-        $rows = [];
-
-        $summary = [
-            'total' => 0,
-            'match' => 0,
-            'not_match' => 0,
-            'not_found' => 0,
-        ];
-
-        $label =
-            $this->purchaseRequestCategoryLabel(
-                $category
-            );
-
-        foreach ($prRows as $index => $prRow) {
-            if (!is_array($prRow)) {
-                continue;
-            }
-
-            $itemName = trim(
-                (string) ($prRow['item'] ?? '')
-            );
-
-            $quantityRaw = trim(
-                (string) ($prRow['quantity'] ?? '')
-            );
-
-            $quantity = is_numeric($quantityRaw)
-                ? (float) $quantityRaw
-                : null;
-
-            $baseRow = [
-                'id' => 'pr:' . ($index + 1),
-                'item' => $itemName,
-                'unit' => null,
-                'quarter' => null,
-                'quantity' => $quantity,
-                'inventory_year' => null,
-                'status' => 'not_found',
-                'notes' => '',
-            ];
-
-            $itemMatches =
-                $inventoryItems
-                    ->filter(
-                        fn ($inventoryItem) =>
-                            $this->normalizePurchaseRequestItemText(
-                                $inventoryItem->item
-                            )
-                            ===
-                            $this->normalizePurchaseRequestItemText(
-                                $itemName
-                            )
-                    )
-                    ->values();
-
-            if ($itemMatches->isEmpty()) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_found',
-                    'notes' =>
-                        'Item was not found in the '
-                        . $label
-                        . ' inventory.',
-                ];
-
-                $summary['not_found']++;
-                $summary['total']++;
-                continue;
-            }
-
-            $inventoryItem =
-                $itemMatches->first();
-
-            $notes = [];
-
-            if ($quantity === null) {
-                $notes[] =
-                    'Quantity is missing or invalid in the Purchase Request.';
-            } else {
-                $systemQuantity =
-                    $this->purchaseRequestSystemQuantity(
-                        $inventoryItem,
-                        $category
-                    );
-
-                if (
-                    abs(
-                        $quantity
-                        - $systemQuantity
-                    )
-                    >= 0.000001
-                ) {
-                    $notes[] =
-                        'Quantity does not match. PR: '
-                        . $this->formatPurchaseRequestNumber(
-                            $quantity
-                        )
-                        . ', System: '
-                        . $this->formatPurchaseRequestNumber(
-                            $systemQuantity
-                        )
-                        . '.';
-                }
-            }
-
-            if (empty($notes)) {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'match',
-                    'notes' =>
-                        'All Purchase Request details match the Inventory record.',
-                ];
-
-                $summary['match']++;
-            } else {
-                $rows[] = [
-                    ...$baseRow,
-                    'status' => 'not_match',
-                    'notes' => implode(' ', $notes),
-                ];
-
-                $summary['not_match']++;
-            }
-
-            $summary['total']++;
-        }
-
-        return [
-            'summary' => $summary,
-            'rows' => $rows,
-        ];
-    }
-
-    /**
-     * Stable Purchase Request quantity to compare against.
-     *
-     * Physical ICT / Furniture:
-     * - Count remains the total asset count even after assignment.
-     *
-     * ICT MONTH/YEAR / Emergency Kits / Token and Giveaways:
-     * - Releases reduce currently_available, so add tracked_released back
-     *   to reconstruct the current system-entered total quantity.
-     */
-    private function purchaseRequestSystemQuantity(
-        InventoryItem $item,
-        string $category
-    ): float {
-        $category =
-            $this->normalizePurchaseRequestCategory(
-                $category
-            );
-
-        $unit =
-            strtoupper(
-                trim(
-                    (string) $item->unit
-                )
-            );
-
-        $assets =
-            is_array($item->ict_assets)
-                ? array_values(
-                    array_filter(
-                        $item->ict_assets,
-                        'is_array'
-                    )
-                )
-                : [];
-
-        if ($category === 'ict') {
-            if (
-                !in_array(
-                    $unit,
-                    ['MONTH', 'YEAR'],
-                    true
-                )
-            ) {
-                return (float) (
-                    !empty($assets)
-                        ? count($assets)
-                        : max(
-                            0,
-                            (int) (
-                                $item->currently_available
-                                ?? 0
-                            )
-                        )
-                );
-            }
-
-            return (float) (
-                max(
-                    0,
-                    (int) (
-                        $item->currently_available
-                        ?? 0
-                    )
-                )
-                + max(
-                    0,
-                    (int) (
-                        $item->tracked_released
-                        ?? 0
-                    )
-                )
-            );
-        }
-
-        if ($category === 'furniture_fixtures') {
-            return (float) (
-                !empty($assets)
-                    ? count($assets)
-                    : max(
-                        0,
-                        (int) (
-                            $item->currently_available
-                            ?? 0
-                        )
-                    )
-            );
-        }
-
-        return (float) (
-            max(
-                0,
-                (int) (
-                    $item->currently_available
-                    ?? 0
-                )
-            )
-            + max(
-                0,
-                (int) (
-                    $item->tracked_released
-                    ?? 0
-                )
-            )
-        );
-    }
-
-    private function normalizePurchaseRequestQuarter(
-        mixed $value
-    ): ?string {
-        $value = strtoupper(
-            trim((string) $value)
-        );
-
-        $value = preg_replace(
-            '/[^A-Z0-9]+/',
-            '',
-            $value
-        );
-
-        return match ($value) {
-            'Q1',
-            'QUARTER1',
-            '1STQUARTER',
-            'FIRSTQUARTER',
-            '1' => 'q1',
-
-            'Q2',
-            'QUARTER2',
-            '2NDQUARTER',
-            'SECONDQUARTER',
-            '2' => 'q2',
-
-            'Q3',
-            'QUARTER3',
-            '3RDQUARTER',
-            'THIRDQUARTER',
-            '3' => 'q3',
-
-            'Q4',
-            'QUARTER4',
-            '4THQUARTER',
-            'FOURTHQUARTER',
-            '4' => 'q4',
-
-            default => null,
-        };
-    }
-
-    private function formatPurchaseRequestNumber(
-        float|int $value
-    ): string {
-        $number = (float) $value;
-
-        if (
-            abs(
-                $number
-                - round($number)
-            )
-            < 0.000001
-        ) {
-            return number_format(
-                $number,
-                0,
-                '.',
-                ','
-            );
-        }
-
-        return rtrim(
-            rtrim(
-                number_format(
-                    $number,
-                    4,
-                    '.',
-                    ','
-                ),
-                '0'
-            ),
-            '.'
-        );
-    }
-
-    private function normalizePurchaseRequestCategory(
-        mixed $value
-    ): string {
-        $value =
-            strtolower(
-                trim(
-                    (string) $value
-                )
-            );
-
-        return match ($value) {
-            'supplies' => 'supplies',
-            'ict' => 'ict',
-            'furniture',
-            'fixtures',
-            'furniture/fixtures',
-            'furniture_fixtures' =>
-                'furniture_fixtures',
-            'emergency_kits' =>
-                'emergency_kits',
-            'token_giveaways' =>
-                'token_giveaways',
-            default => 'supplies',
-        };
-    }
-
-    private function purchaseRequestCategoryLabel(
-        string $category
-    ): string {
-        return match (
-            $this->normalizePurchaseRequestCategory(
-                $category
-            )
-        ) {
-            'ict' => 'ICT',
-            'furniture_fixtures' =>
-                'Furniture/Fixtures',
-            'emergency_kits' =>
-                'Emergency Kits',
-            'token_giveaways' =>
-                'Token and Giveaways',
-            default => 'Supplies',
-        };
-    }
-
-    /**
-     * Normalize item text for Purchase Request matching.
-     */
-    private function normalizePurchaseRequestItemText(
-        mixed $value
-    ): string {
-        $value =
-            mb_strtolower(
-                trim(
-                    (string) $value
-                )
-            );
-
-        $value =
-            preg_replace(
-                '/[^\pL\pN]+/u',
-                ' ',
-                $value
-            );
-
-        return trim(
-            preg_replace(
-                '/\s+/u',
-                ' ',
-                (string) $value
-            )
-        );
-    }
-
-    /**
-     * Parse a category-specific Purchase Request spreadsheet.
-     *
-     * Supplies: Item | Unit | Quarter | Quantity
-     * ICT: Item | Unit | Quantity
-     * Other Items: Item | Quantity
-     */
-    private function parsePurchaseRequestSpreadsheet(
-        string $path,
-        string $extension,
-        string $category
-    ): array {
-        $category =
-            $this->normalizePurchaseRequestCategory(
-                $category
-            );
-
-        $extension =
-            strtolower(
-                $extension
-            );
-
-        $rawRows =
-            $extension === 'xlsx'
-                ? $this->readInventoryXlsx(
-                    $path
-                )
-                : $this->readInventoryCsv(
-                    $path
-                );
-
-        if (empty($rawRows)) {
-            return [];
-        }
-
-        $requiredFields =
-            match ($category) {
-                'supplies' =>
-                    [
-                        'item',
-                        'unit',
-                        'quarter',
-                        'quantity',
-                    ],
-
-                'ict' =>
-                    [
-                        'item',
-                        'unit',
-                        'quantity',
-                    ],
-
-                default =>
-                    [
-                        'item',
-                        'quantity',
-                    ],
-            };
-
-        $headerIndex = null;
-        $headers = [];
-
-        foreach (
-            array_slice(
-                $rawRows,
-                0,
-                30,
-                true
-            )
-            as $index => $row
-        ) {
-            $candidateHeaders = [];
-
-            foreach (
-                $row
-                as $columnIndex => $header
-            ) {
-                $normalized =
-                    $this->normalizePurchaseRequestHeader(
-                        $header
-                    );
-
-                if ($normalized !== null) {
-                    $candidateHeaders[
-                        $columnIndex
-                    ] = $normalized;
-                }
-            }
-
-            $fields =
-                array_values(
-                    $candidateHeaders
-                );
-
-            $hasAllRequired = true;
-
-            foreach (
-                $requiredFields
-                as $requiredField
-            ) {
-                if (!in_array(
-                    $requiredField,
-                    $fields,
-                    true
-                )) {
-                    $hasAllRequired = false;
-                    break;
-                }
-            }
-
-            if ($hasAllRequired) {
-                $headerIndex = $index;
-                $headers = $candidateHeaders;
-                break;
-            }
-        }
-
-        if ($headerIndex === null) {
-            $displayFields =
-                array_map(
-                    fn ($field) =>
-                        match ($field) {
-                            'item' => 'Item',
-                            'unit' => 'Unit',
-                            'quarter' => 'Quarter',
-                            'quantity' => 'Quantity',
-                            default => ucfirst($field),
-                        },
-                    $requiredFields
-                );
-
-            throw new \RuntimeException(
-                'No valid Purchase Request header row was found. Required columns: '
-                . implode(
-                    ', ',
-                    $displayFields
-                )
-                . '.'
-            );
-        }
-
-        $rows = [];
-
-        foreach (
-            array_slice(
-                $rawRows,
-                $headerIndex + 1
-            )
-            as $rawRow
-        ) {
-            $row = [];
-
-            foreach (
-                $headers
-                as $columnIndex => $field
-            ) {
-                $row[$field] =
-                    trim(
-                        (string) (
-                            $rawRow[
-                                $columnIndex
-                            ]
-                            ?? ''
-                        )
-                    );
-            }
-
-            $hasValue = false;
-
-            foreach (
-                $requiredFields
-                as $field
-            ) {
-                if (
-                    trim(
-                        (string) (
-                            $row[$field]
-                            ?? ''
-                        )
-                    ) !== ''
-                ) {
-                    $hasValue = true;
-                    break;
-                }
-            }
-
-            if (!$hasValue) {
-                continue;
-            }
-
-            $rows[] = $row;
-        }
-
-        return $rows;
-    }
-
-    private function normalizePurchaseRequestHeader(
-        mixed $header
-    ): ?string {
-        $header =
-            mb_strtolower(
-                trim(
-                    (string) $header
-                )
-            );
-
-        $header =
-            str_replace(
-                [
-                    '_',
-                    '-',
-                    '/',
-                    '\\',
-                    '(',
-                    ')',
-                    '.',
-                    '#',
-                ],
-                ' ',
-                $header
-            );
-
-        $header =
-            preg_replace(
-                '/\s+/u',
-                ' ',
-                trim($header)
-            );
-
-        $aliases = [
-            'item' => [
-                'item',
-                'item name',
-                'item description',
-                'description',
-                'particulars',
-                'article',
-                'item particulars',
-            ],
-
-            'unit' => [
-                'unit',
-                'uom',
-                'unit of measure',
-                'unit measure',
-            ],
-
-            'quarter' => [
-                'quarter',
-                'qtr',
-                'pr quarter',
-                'purchase request quarter',
-            ],
-
-            'quantity' => [
-                'quantity',
-                'qty',
-                'count',
-                'duration',
-                'requested quantity',
-                'quantity requested',
-                'request quantity',
-                'requested qty',
-                'qty requested',
-                'requested count',
-                'count requested',
-                'pr quantity',
-                'purchase request quantity',
-            ],
-        ];
-
-        foreach (
-            $aliases
-            as $field => $values
-        ) {
-            if (
-                in_array(
-                    $header,
-                    $values,
-                    true
-                )
-            ) {
-                return $field;
-            }
-        }
-
-        return null;
-    }
 
     /**
      * Upload or replace the one active reconciliation reference file.
@@ -7027,6 +7105,140 @@ class InventoryController extends Controller
     }
 
    
+    /**
+     * Personnel available for Memorandum Receipt (MR) assignment.
+     *
+     * The DTS lu_personnel table in older installations does not have an
+     * employment-status field. We therefore:
+     * 1. scope to Special Projects Division when lu_office can identify it;
+     * 2. filter to Permanent automatically when a supported status column
+     *    exists in lu_personnel;
+     * 3. otherwise return the SPD personnel list so MR assignment still works.
+     */
+    private function inventoryMrPersonnel(): array
+    {
+        if (!Schema::hasTable('lu_personnel')) {
+            return [];
+        }
+
+        $query =
+            DB::table('lu_personnel as p')
+                ->whereNotNull('p.name')
+                ->whereRaw(
+                    "TRIM(p.name) != ''"
+                )
+                ->whereRaw(
+                    "TRIM(p.name) != '-'"
+                );
+
+        /*
+         * Prefer personnel assigned to the Special Projects Division.
+         */
+        if (Schema::hasTable('lu_office')) {
+            $spdOfficeIds =
+                DB::table('lu_office')
+                    ->where(function ($officeQuery) {
+                        if (
+                            Schema::hasColumn(
+                                'lu_office',
+                                'abbrev'
+                            )
+                        ) {
+                            $officeQuery
+                                ->whereRaw(
+                                    "LOWER(TRIM(COALESCE(abbrev, ''))) = ?",
+                                    ['spd']
+                                );
+                        } else {
+                            $officeQuery
+                                ->whereRaw('1 = 0');
+                        }
+
+                        if (
+                            Schema::hasColumn(
+                                'lu_office',
+                                'officename'
+                            )
+                        ) {
+                            $officeQuery
+                                ->orWhereRaw(
+                                    "LOWER(TRIM(COALESCE(officename, ''))) LIKE ?",
+                                    ['%special project%']
+                                );
+                        }
+                    })
+                    ->pluck('ID')
+                    ->map(
+                        fn ($id) => (int) $id
+                    )
+                    ->filter()
+                    ->values()
+                    ->all();
+
+            if (
+                !empty($spdOfficeIds)
+                && Schema::hasColumn(
+                    'lu_personnel',
+                    'IDoffice'
+                )
+            ) {
+                $query->whereIn(
+                    'p.IDoffice',
+                    $spdOfficeIds
+                );
+            }
+        }
+
+        /*
+         * Newer personnel tables may already identify Permanent employees.
+         * Use the first supported status column found.
+         */
+        foreach (
+            [
+                'employment_status',
+                'employment_type',
+                'appointment_status',
+                'appointment_type',
+            ]
+            as $statusColumn
+        ) {
+            if (
+                Schema::hasColumn(
+                    'lu_personnel',
+                    $statusColumn
+                )
+            ) {
+                $query->whereRaw(
+                    "LOWER(TRIM(COALESCE(p.{$statusColumn}, ''))) = ?",
+                    ['permanent']
+                );
+
+                break;
+            }
+        }
+
+        return $query
+            ->orderBy('p.name')
+            ->select([
+                'p.ID as id',
+                'p.name',
+            ])
+            ->get()
+            ->map(
+                fn ($person) => [
+                    'id' =>
+                        (int) $person->id,
+                    'name' =>
+                        trim(
+                            (string) $person->name
+                        ),
+                ]
+            )
+            ->values()
+            ->all();
+    }
+
+
     private function canManageInventory(
         $user
     ): bool {

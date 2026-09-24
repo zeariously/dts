@@ -23,9 +23,9 @@ const props = defineProps({
         default: () => ({}),
     },
 
-    purchaseRequestValidations: {
-        type: Object,
-        default: () => ({}),
+    mrPersonnel: {
+        type: Array,
+        default: () => [],
     },
 })
 
@@ -38,408 +38,94 @@ const search = ref('')
 const yearFilter = ref(2026)
 const unitFilter = ref('all')
 const quarterFilter = ref('all')
+const mrFilter = ref('all')
 const currentPage = ref(1)
 
-const perPage = 8
+const mrPersonnelOptions = computed(() => {
+    const seen = new Set()
 
-
-const prValidationCategory = ref('supplies')
-const prValidationReturnTab = ref('supplies')
-const prValidationReturnOtherCategory = ref('furniture_fixtures')
-const prValidationYear = ref(2026)
-const prValidationFileInput = ref(null)
-const prValidationUploading = ref(false)
-const prValidationUploadError = ref('')
-const prValidationSearch = ref('')
-const prValidationStatusFilter = ref('all')
-
-const purchaseRequestCategoryLabel = (category) => {
-    return {
-        supplies: 'Supplies',
-        ict: 'ICT',
-        furniture_fixtures: 'Furniture/Fixtures',
-        emergency_kits: 'Emergency Kits',
-        token_giveaways: 'Token and Giveaways',
-    }[category] || 'Inventory'
-}
-
-const prValidationRequiresYear = computed(() =>
-    ['supplies', 'ict'].includes(
-        prValidationCategory.value
+    return (Array.isArray(props.mrPersonnel)
+        ? props.mrPersonnel
+        : []
     )
-)
-
-const prValidationUsesUnit = computed(() =>
-    ['supplies', 'ict'].includes(
-        prValidationCategory.value
-    )
-)
-
-const prValidationUsesQuarter = computed(() =>
-    prValidationCategory.value === 'supplies'
-)
-
-const prValidationRequiredFields = computed(() => {
-    if (prValidationCategory.value === 'supplies') {
-        return 'Item | Unit | Quarter | Quantity'
-    }
-
-    if (prValidationCategory.value === 'ict') {
-        return 'Item | Unit | Quantity'
-    }
-
-    return 'Item | Quantity'
-})
-
-const emptyPurchaseRequestValidation = (category) => ({
-    has_file: false,
-    file: null,
-    context: {
-        validation_category: category,
-        category_label:
-            purchaseRequestCategoryLabel(
-                category
-            ),
-        inventory_year: null,
-    },
-    summary: {
-        total: 0,
-        match: 0,
-        not_match: 0,
-        not_found: 0,
-    },
-    rows: [],
-    error: null,
-})
-
-const prValidationData = computed(() => {
-    const category =
-        prValidationCategory.value
-
-    return (
-        props.purchaseRequestValidations?.[category]
-        || emptyPurchaseRequestValidation(
-            category
-        )
-    )
-})
-
-const prQuarterLabel = (quarter) =>
-    String(quarter || '')
-        .trim()
-        .toUpperCase()
-
-const prButtonLabel = computed(() =>
-    'Validate Purchase Request'
-)
-
-const prValidationRows = computed(() => {
-    const rows =
-        Array.isArray(
-            prValidationData.value.rows
-        )
-            ? [...prValidationData.value.rows]
-            : []
-
-    const term =
-        String(
-            prValidationSearch.value || ''
-        )
-            .trim()
-            .toLowerCase()
-
-    const filtered =
-        rows.filter((row) => {
+        .map((person) => ({
+            id: String(
+                person?.id
+                ?? person?.ID
+                ?? ''
+            ).trim(),
+            name: String(
+                person?.name
+                ?? ''
+            ).trim(),
+        }))
+        .filter((person) => {
             if (
-                prValidationStatusFilter.value !== 'all'
-                && row.status !== prValidationStatusFilter.value
+                !person.id
+                || !person.name
+                || seen.has(person.id)
             ) {
                 return false
             }
 
-            if (!term) {
-                return true
-            }
-
-            const haystack = [
-                row.item,
-                row.unit,
-                row.quarter,
-                row.quantity,
-                row.status,
-                row.notes,
-            ]
-                .map(
-                    (value) =>
-                        String(value ?? '')
-                            .toLowerCase()
-                )
-                .join(' ')
-
-            return haystack.includes(term)
+            seen.add(person.id)
+            return true
         })
-
-    const priority = {
-        not_match: 1,
-        not_found: 2,
-        match: 3,
-    }
-
-    return filtered.sort(
-        (a, b) =>
-            (priority[a.status] || 99)
-            - (priority[b.status] || 99)
-    )
+        .sort((a, b) =>
+            a.name.localeCompare(b.name)
+        )
 })
 
-const prStatusLabel = (status) => {
-    return {
-        match: 'Match',
-        not_match: 'Not Match',
-        not_found: 'Not Found',
-    }[status] || 'Not Match'
-}
+const mrPersonnelName = (personnelId) => {
+    const id =
+        String(personnelId ?? '').trim()
 
-const prStatusClass = (status) => {
-    if (status === 'match') {
-        return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-    }
-
-    if (status === 'not_found') {
-        return 'border-rose-200 bg-rose-50 text-rose-700'
-    }
-
-    return 'border-amber-200 bg-amber-50 text-amber-700'
-}
-
-const prDisplayNumber = (value) => {
-    if (
-        value === null
-        || value === undefined
-        || String(value).trim() === ''
-    ) {
-        return '—'
-    }
-
-    const number =
-        Number(value)
-
-    return Number.isFinite(number)
-        ? number.toLocaleString()
-        : String(value)
-}
-
-const prUploadedAt = computed(() => {
-    const raw =
-        prValidationData.value
-            ?.file
-            ?.uploaded_at
-
-    if (!raw) {
-        return '—'
-    }
-
-    const date =
-        new Date(raw)
-
-    if (
-        Number.isNaN(
-            date.getTime()
-        )
-    ) {
-        return String(raw)
-    }
-
-    return date.toLocaleString(
-        'en-PH',
-        {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-        }
+    return (
+        mrPersonnelOptions.value.find(
+            (person) => person.id === id
+        )?.name
+        || ''
     )
-})
-
-const currentPurchaseRequestCategory = () => {
-    if (activeTab.value === 'supplies') {
-        return 'supplies'
-    }
-
-    if (activeTab.value === 'ict') {
-        return 'ict'
-    }
-
-    if (activeTab.value === 'other') {
-        return otherCategoryFilter.value
-    }
-
-    return prValidationCategory.value
 }
 
-const openPurchaseRequestValidation = () => {
-    const category =
-        currentPurchaseRequestCategory()
+const mrPersonnelIdByName = (name) => {
+    const normalized =
+        String(name || '')
+            .trim()
+            .toLowerCase()
 
-    prValidationReturnTab.value =
-        activeTab.value
-
-    prValidationReturnOtherCategory.value =
-        otherCategoryFilter.value
-
-    prValidationCategory.value =
-        category
-
-    if (
-        ['supplies', 'ict'].includes(
-            category
-        )
-    ) {
-        prValidationYear.value =
-            Number(
-                yearFilter.value
-            ) || 2026
+    if (!normalized) {
+        return ''
     }
 
-    prValidationUploadError.value = ''
-    prValidationSearch.value = ''
-    prValidationStatusFilter.value = 'all'
-
-    activeTab.value =
-        'purchase_request'
+    return (
+        mrPersonnelOptions.value.find(
+            (person) =>
+                person.name.toLowerCase()
+                === normalized
+        )?.id
+        || ''
+    )
 }
 
-const backFromPurchaseRequestValidation = () => {
-    const destination =
-        prValidationReturnTab.value
-
-    if (
-        ['supplies', 'ict'].includes(
-            destination
-        )
-    ) {
-        yearFilter.value =
-            Number(
-                prValidationYear.value
-            ) || 2026
-    }
-
-    if (destination === 'other') {
-        otherCategoryFilter.value =
-            prValidationReturnOtherCategory.value
-    }
-
-    activeTab.value =
-        ['supplies', 'ict', 'other'].includes(
-            destination
-        )
-            ? destination
-            : 'supplies'
-
-    currentPage.value = 1
-}
-
-const choosePurchaseRequestFile = () => {
-    prValidationUploadError.value = ''
-
-    prValidationFileInput.value?.click()
-}
-
-const uploadPurchaseRequestFile = (event) => {
-    const file =
-        event?.target?.files?.[0]
-
-    if (!file) {
+const syncAssetMr = (asset) => {
+    if (!asset) {
         return
     }
 
-    const extension =
+    const id =
         String(
-            file.name
-                .split('.')
-                .pop()
-                || ''
-        ).toLowerCase()
+            asset.mr_personnel_id
+            ?? ''
+        ).trim()
 
-    if (
-        !['xlsx', 'csv'].includes(
-            extension
-        )
-    ) {
-        prValidationUploadError.value =
-            'Please select an XLSX or CSV Purchase Request file.'
-
-        event.target.value = ''
-        return
-    }
-
-    const formData =
-        new FormData()
-
-    formData.append(
-        'validation_category',
-        prValidationCategory.value
-    )
-
-    if (prValidationRequiresYear.value) {
-        formData.append(
-            'inventory_year',
-            String(
-                prValidationYear.value
-            )
-        )
-    }
-
-    formData.append(
-        'pr_file',
-        file
-    )
-
-    prValidationUploading.value = true
-    prValidationUploadError.value = ''
-
-    router.post(
-        '/dts/inventory/purchase-request/validate',
-        formData,
-        {
-            forceFormData: true,
-            preserveScroll: true,
-            preserveState: true,
-
-            onSuccess: () => {
-                activeTab.value =
-                    'purchase_request'
-
-                prValidationSearch.value =
-                    ''
-
-                prValidationStatusFilter.value =
-                    'all'
-            },
-
-            onError: (errors) => {
-                prValidationUploadError.value =
-                    errors?.pr_file
-                    || errors?.inventory_year
-                    || errors?.validation_category
-                    || 'Unable to validate the Purchase Request file.'
-            },
-
-            onFinish: () => {
-                prValidationUploading.value =
-                    false
-
-                if (
-                    prValidationFileInput.value
-                ) {
-                    prValidationFileInput.value.value =
-                        ''
-                }
-            },
-        }
-    )
+    asset.mr =
+        id
+            ? mrPersonnelName(id)
+            : ''
 }
+
+const perPage = 8
 
 
 const reconciliationSearch = ref('')
@@ -918,6 +604,8 @@ const historyItem = ref(null)
 const inventoryHistories = ref([])
 const historyLoading = ref(false)
 const historyError = ref('')
+const historyPropertyNumber = ref('')
+const historyPropertyDescription = ref('')
 
 /*
 |--------------------------------------------------------------------------
@@ -936,10 +624,31 @@ const releaseItemForm = ref({
     releaseQuantity: '',
     releasePropertyNumber: '',
     releaseDestination: '',
+    releaseMrPersonnelId: '',
     remarks: '',
 })
 
 const showFullEditModal = ref(false)
+
+const showAddOtherCountField = ref(false)
+const otherCountToAdd = ref('')
+
+const newOtherAssetForm = ref({
+    description: '',
+    property_number: '',
+    current_user: '',
+})
+
+const resetAddOtherCount = () => {
+    showAddOtherCountField.value = false
+    otherCountToAdd.value = ''
+
+    newOtherAssetForm.value = {
+        description: '',
+        property_number: '',
+        current_user: '',
+    }
+}
 const fullEditingItem = ref(null)
 const fullEditErrors = ref({})
 const fullEditForm = ref({
@@ -955,6 +664,55 @@ const fullEditForm = ref({
     quarter_stock: {},
     ict_assets: [],
     remarks: '',
+})
+
+const showAddIctUnitFields = ref(false)
+
+const newIctAssetForm = ref({
+    description: '',
+    accessories: '',
+    property_number: '',
+    current_user: '',
+    date_acquired: '',
+    life_span_ended: '',
+    status: 'working',
+    mr_personnel_id: '',
+    mr: '',
+})
+
+const resetNewIctAssetForm = () => {
+    newIctAssetForm.value = {
+        description: '',
+        accessories: '',
+        property_number: '',
+        current_user: '',
+        date_acquired: '',
+        life_span_ended: '',
+        status: 'working',
+        mr_personnel_id: '',
+        mr: '',
+    }
+
+    showAddIctUnitFields.value = false
+}
+
+const showIctAssetEditModal = ref(false)
+const ictAssetEditingItem = ref(null)
+const ictAssetEditingIndex = ref(null)
+const ictAssetEditingOriginalPropertyNumber = ref('')
+const ictAssetEditErrors = ref({})
+const ictAssetEditProcessing = ref(false)
+
+const ictAssetEditForm = ref({
+    description: '',
+    accessories: '',
+    property_number: '',
+    current_user: '',
+    date_acquired: '',
+    life_span_ended: '',
+    status: 'working',
+    mr_personnel_id: '',
+    mr: '',
 })
 
 const showAddItemModal = ref(false)
@@ -1156,6 +914,11 @@ const normalizeQuarterStock = (value) => {
                 Number.isFinite(released)
                     ? Math.max(0, released)
                     : 0,
+            remarks:
+                String(
+                    entry.remarks
+                    ?? ''
+                ).trim(),
         }
     })
 
@@ -1190,11 +953,18 @@ const normalizeQuarterStock = (value) => {
              * Future quarter. Keep it dormant at zero and DO NOT
              * advance previousCurrent.
              */
+            const remarks =
+                String(
+                    entry.remarks
+                    ?? ''
+                ).trim()
+
             entry.opening = 0
             entry.carryover = 0
             entry.added = 0
             entry.current = 0
             entry.released = 0
+            entry.remarks = remarks
             return
         }
 
@@ -1674,6 +1444,101 @@ const quarterStockFormCurrent = (
         ?? ''
 }
 
+const quarterStockFormRemarks = (
+    form,
+    quarter
+) => {
+    return String(
+        form?.quarter_stock?.[quarter]?.remarks
+        ?? ''
+    )
+}
+
+const setNewQuarterStockRemarks = (
+    quarter,
+    value
+) => {
+    newItemForm.value.quarter_stock = {
+        ...(newItemForm.value.quarter_stock || {}),
+        [quarter]: {
+            ...(
+                newItemForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+            ),
+            remarks:
+                String(value ?? ''),
+        },
+    }
+}
+
+const setEditQuarterStockRemarks = (
+    quarter,
+    value
+) => {
+    fullEditForm.value.quarter_stock = {
+        ...(fullEditForm.value.quarter_stock || {}),
+        [quarter]: {
+            ...(
+                fullEditForm.value
+                    .quarter_stock?.[quarter]
+                || {}
+            ),
+            remarks:
+                String(value ?? ''),
+        },
+    }
+}
+
+const quarterRemarksEntries = (
+    item,
+    selectedQuarter = quarterFilter.value
+) => {
+    const stock =
+        normalizeQuarterStock(
+            item?.quarter_stock
+        )
+
+    let quarters =
+        inferredItemQuarters(item)
+
+    if (
+        selectedQuarter !== 'all'
+        && quarterValues.includes(
+            selectedQuarter
+        )
+    ) {
+        quarters =
+            quarters.includes(selectedQuarter)
+                ? [selectedQuarter]
+                : []
+    }
+
+    return sortedQuarterKeys(quarters)
+        .map((quarter) => ({
+            quarter,
+            remarks:
+                String(
+                    stock?.[quarter]?.remarks
+                    ?? ''
+                ).trim(),
+        }))
+        .filter(
+            (entry) =>
+                entry.remarks !== ''
+        )
+}
+
+const hasQuarterRemarks = (
+    item,
+    selectedQuarter = quarterFilter.value
+) =>
+    quarterRemarksEntries(
+        item,
+        selectedQuarter
+    ).length > 0
+
+
 const setNewQuarterStockCurrent = (
     quarter,
     value
@@ -2006,7 +1871,10 @@ const currentItems = computed(() => {
         return suppliesItems.value
     }
 
-    if (activeTab.value === 'ict') {
+    if (
+        activeTab.value === 'ict'
+        || activeTab.value === 'returned'
+    ) {
         return ictItems.value
     }
 
@@ -2139,6 +2007,194 @@ const isIctMonthBased = (itemOrUnit) =>
 const isIctSubscription = (itemOrUnit) =>
     Boolean(ictDurationUnit(itemOrUnit))
 
+const ictAssetStatusOptions = [
+    {
+        value: 'working',
+        label: 'Working',
+    },
+    {
+        value: 'returned',
+        label: 'Returned',
+    },
+]
+
+const normalizeIctAssetStatus = (value) => {
+    const normalized =
+        String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[\s-]+/g, '_')
+
+    if (normalized === 'for_return') {
+        return 'returned'
+    }
+
+    return ['working', 'returned'].includes(
+        normalized
+    )
+        ? normalized
+        : ''
+}
+
+const ictAssetStatusLabel = (value) => {
+    return (
+        ictAssetStatusOptions.find(
+            (option) =>
+                option.value
+                === normalizeIctAssetStatus(value)
+        )?.label
+        || 'Working'
+    )
+}
+
+const ictAssetStatusClass = (value) => {
+    return normalizeIctAssetStatus(value)
+        === 'returned'
+        ? 'border-rose-200 bg-rose-50 text-rose-700'
+        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+}
+
+const ictDateToLocalMidnight = (value) => {
+    const normalized =
+        normalizeIctDateInput(value)
+
+    if (!normalized) {
+        return null
+    }
+
+    const [year, month, day] =
+        normalized.split('-').map(Number)
+
+    const date =
+        new Date(year, month - 1, day)
+
+    if (Number.isNaN(date.getTime())) {
+        return null
+    }
+
+    date.setHours(0, 0, 0, 0)
+    return date
+}
+
+const ictLifeSpanState = (asset) => {
+    if (
+        normalizeIctAssetStatus(
+            asset?.status
+        ) === 'returned'
+    ) {
+        return null
+    }
+
+    const endDate =
+        ictDateToLocalMidnight(
+            asset?.life_span_ended
+        )
+
+    if (!endDate) {
+        return null
+    }
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const dayMs =
+        24 * 60 * 60 * 1000
+
+    const daysRemaining =
+        Math.ceil(
+            (
+                endDate.getTime()
+                - today.getTime()
+            ) / dayMs
+        )
+
+    const displayDate =
+        normalizeIctDateInput(
+            asset?.life_span_ended
+        )
+
+    if (daysRemaining <= 0) {
+        return {
+            level: 'ended',
+            label: 'Life Span Ended',
+            title:
+                `Life span ended on ${displayDate}. Review this ICT unit for return.`,
+        }
+    }
+
+    if (daysRemaining <= 365) {
+        return {
+            level: 'near',
+            label: 'Near For Return',
+            title:
+                `${daysRemaining} day(s) remaining before life span ends on ${displayDate}.`,
+        }
+    }
+
+    return null
+}
+
+const ictAssetNeedsLifeSpanAttention = (asset) =>
+    Boolean(ictLifeSpanState(asset))
+
+const ictLifeSpanRowClass = (asset) => {
+    const warning =
+        ictLifeSpanState(asset)
+
+    if (!warning) {
+        return 'bg-white hover:bg-blue-50/40'
+    }
+
+    if (warning.level === 'ended') {
+        return 'bg-rose-100/90 hover:bg-rose-100 ring-1 ring-inset ring-rose-300'
+    }
+
+    return 'bg-rose-50/90 hover:bg-rose-100/70 ring-1 ring-inset ring-rose-200'
+}
+
+const ictLifeSpanBadgeClass = (asset) => {
+    return ictLifeSpanState(asset)?.level
+        === 'ended'
+        ? 'border-rose-300 bg-rose-100 text-rose-800'
+        : 'border-rose-200 bg-white text-rose-700'
+}
+
+const normalizeIctDateInput = (value) => {
+    const raw =
+        String(value ?? '').trim()
+
+    if (!raw) {
+        return ''
+    }
+
+    if (/^\d{4}$/.test(raw)) {
+        return `${raw}-12-31`
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return raw
+    }
+
+    return ''
+}
+
+const isValidIctDateRange = (
+    dateAcquired,
+    lifeSpanEnded
+) => {
+    const acquired =
+        normalizeIctDateInput(dateAcquired)
+
+    const ended =
+        normalizeIctDateInput(lifeSpanEnded)
+
+    if (!acquired || !ended) {
+        return true
+    }
+
+    return ended >= acquired
+}
+
 const ictEditorAssetRows = (assets) => {
     if (!Array.isArray(assets)) {
         return []
@@ -2148,11 +2204,37 @@ const ictEditorAssetRows = (assets) => {
         description: String(
             asset?.description ?? ''
         ).trim(),
+        accessories: String(
+            asset?.accessories ?? ''
+        ).trim(),
         property_number: String(
             asset?.property_number ?? ''
         ).trim(),
         current_user: String(
             asset?.current_user ?? ''
+        ).trim(),
+        date_acquired:
+            normalizeIctDateInput(
+                asset?.date_acquired
+            ),
+        life_span_ended:
+            normalizeIctDateInput(
+                asset?.life_span_ended
+            ),
+        status:
+            normalizeIctAssetStatus(
+                asset?.status
+            ),
+        mr_personnel_id:
+            String(
+                asset?.mr_personnel_id
+                ?? mrPersonnelIdByName(
+                    asset?.mr
+                )
+                ?? ''
+            ).trim(),
+        mr: String(
+            asset?.mr ?? ''
         ).trim(),
     }))
 }
@@ -2162,8 +2244,14 @@ const normalizeIctAssets = (assets) => {
         .filter(
             (asset) =>
                 asset.description
+                || asset.accessories
                 || asset.property_number
                 || asset.current_user
+                || asset.date_acquired
+                || asset.life_span_ended
+                || asset.status
+                || asset.mr_personnel_id
+                || asset.mr
         )
 }
 
@@ -2192,8 +2280,14 @@ const syncIctAssetRowsToCount = (
     while (rows.length < target) {
         rows.push({
             description: '',
+            accessories: '',
             property_number: '',
             current_user: '',
+            date_acquired: '',
+            life_span_ended: '',
+            status: '',
+            mr_personnel_id: '',
+            mr: '',
         })
     }
 
@@ -2222,11 +2316,217 @@ const ictAssetDetails = (item) => {
     return syncIctAssetRowsToCount(
         item?.ict_assets,
         item?.currently_available
-    )
+    ).map((asset, index) => ({
+        ...asset,
+        _index: index,
+    }))
 }
+
+const filteredIctAssetDetails = (item) => {
+    let rows = ictAssetDetails(item)
+
+    if (activeTab.value === 'ict') {
+        rows = rows.filter(
+            (asset) =>
+                normalizeIctAssetStatus(
+                    asset?.status
+                ) !== 'returned'
+        )
+    }
+
+    if (activeTab.value === 'returned') {
+        rows = rows.filter(
+            (asset) =>
+                normalizeIctAssetStatus(
+                    asset?.status
+                ) === 'returned'
+        )
+    }
+
+    if (
+        !['ict', 'returned'].includes(
+            activeTab.value
+        )
+        || mrFilter.value === 'all'
+    ) {
+        return rows
+    }
+
+    const selectedId =
+        String(mrFilter.value || '').trim()
+
+    const selectedName =
+        mrPersonnelName(selectedId)
+            .toLowerCase()
+
+    return rows.filter((asset) => {
+        const assetId =
+            String(
+                asset?.mr_personnel_id
+                ?? ''
+            ).trim()
+
+        const assetName =
+            String(asset?.mr || '')
+                .trim()
+                .toLowerCase()
+
+        return (
+            assetId === selectedId
+            || (
+                !assetId
+                && selectedName
+                && assetName === selectedName
+            )
+        )
+    })
+}
+
+const visibleIctAssetDetails = (item) =>
+    filteredIctAssetDetails(item)
+
+const hasVisibleIctAssetDetails = (item) =>
+    visibleIctAssetDetails(item).length > 0
 
 const hasIctAssetDetails = (item) =>
     ictAssetDetails(item).length > 0
+
+const selectedMrName = computed(() =>
+    mrFilter.value === 'all'
+        ? ''
+        : mrPersonnelName(
+            mrFilter.value
+        )
+)
+
+const returnedAssetRows = computed(() => {
+    const rows = []
+
+    for (const item of ictItems.value) {
+        for (const asset of ictAssetDetails(item)) {
+            if (
+                normalizeIctAssetStatus(
+                    asset?.status
+                ) !== 'returned'
+            ) {
+                continue
+            }
+
+            rows.push({
+                key:
+                    `${item.id}-${asset._index}-${asset.property_number || 'returned'}`,
+                item,
+                asset,
+            })
+        }
+    }
+
+    return rows
+})
+
+const returnedAssetCount = computed(
+    () => returnedAssetRows.value.length
+)
+
+const filteredReturnedAssetRows = computed(() => {
+    const term =
+        String(search.value || '')
+            .trim()
+            .toLowerCase()
+
+    const selectedMrId =
+        String(mrFilter.value || '').trim()
+
+    const selectedMrName =
+        mrPersonnelName(selectedMrId)
+            .trim()
+            .toLowerCase()
+
+    return returnedAssetRows.value.filter(
+        ({ item, asset }) => {
+            const matchesYear =
+                Number(item.inventory_year)
+                === Number(yearFilter.value)
+
+            const matchesUnit =
+                unitFilter.value === 'all'
+                || String(item.unit || '')
+                    === String(unitFilter.value)
+
+            const assetMrId =
+                String(
+                    asset?.mr_personnel_id
+                    ?? ''
+                ).trim()
+
+            const assetMrName =
+                String(asset?.mr || '')
+                    .trim()
+                    .toLowerCase()
+
+            const matchesMr =
+                mrFilter.value === 'all'
+                || assetMrId === selectedMrId
+                || (
+                    !assetMrId
+                    && selectedMrName
+                    && assetMrName
+                        === selectedMrName
+                )
+
+            const searchableValues = [
+                item.item,
+                item.unit,
+                item.inventory_year,
+                item.remarks,
+                asset.description,
+                asset.accessories,
+                asset.property_number,
+                asset.current_user,
+                asset.mr,
+                'Returned',
+            ]
+
+            const matchesSearch =
+                !term
+                || searchableValues.some(
+                    (value) =>
+                        String(value || '')
+                            .toLowerCase()
+                            .includes(term)
+                )
+
+            return (
+                matchesYear
+                && matchesUnit
+                && matchesMr
+                && matchesSearch
+            )
+        }
+    )
+})
+
+const filteredMrAssetCount = computed(() => {
+    if (
+        !['ict', 'returned'].includes(
+            activeTab.value
+        )
+        || mrFilter.value === 'all'
+    ) {
+        return 0
+    }
+
+    if (activeTab.value === 'returned') {
+        return filteredReturnedAssetRows.value.length
+    }
+
+    return filteredItems.value.reduce(
+        (total, item) =>
+            total
+            + filteredIctAssetDetails(item).length,
+        0
+    )
+})
 
 const isIctExpanded = (item) =>
     Boolean(
@@ -2278,8 +2578,12 @@ const validateIctAssetRows = (
             editorRows[index]
             || {
                 description: '',
+                accessories: '',
                 property_number: '',
                 current_user: '',
+                status: '',
+                mr_personnel_id: '',
+                mr: '',
             }
 
         const description =
@@ -2328,6 +2632,63 @@ const validateIctAssetRows = (
                 'Property Number must be unique for this item.'
         }
 
+        const dateAcquired =
+            normalizeIctDateInput(
+                asset.date_acquired
+            )
+
+        const lifeSpanEnded =
+            normalizeIctDateInput(
+                asset.life_span_ended
+            )
+
+        if (
+            category === 'ict'
+            && asset.date_acquired
+            && !dateAcquired
+        ) {
+            errorBag[
+                `ict_assets.${index}.date_acquired`
+            ] =
+                'Enter a valid Date Acquired.'
+        }
+
+        if (
+            category === 'ict'
+            && asset.life_span_ended
+            && !lifeSpanEnded
+        ) {
+            errorBag[
+                `ict_assets.${index}.life_span_ended`
+            ] =
+                'Enter a valid Life Span Ended date.'
+        }
+
+        if (
+            category === 'ict'
+            && !isValidIctDateRange(
+                dateAcquired,
+                lifeSpanEnded
+            )
+        ) {
+            errorBag[
+                `ict_assets.${index}.life_span_ended`
+            ] =
+                'Life Span Ended cannot be earlier than Date Acquired.'
+        }
+
+        if (
+            category === 'ict'
+            && !normalizeIctAssetStatus(
+                asset.status
+            )
+        ) {
+            errorBag[
+                `ict_assets.${index}.status`
+            ] =
+                'Select Working or Returned.'
+        }
+
         seen.add(key)
     }
 }
@@ -2366,11 +2727,25 @@ watch(
             return
         }
 
-        newItemForm.value.ict_assets =
+        const syncedRows =
             syncIctAssetRowsToCount(
                 newItemForm.value.ict_assets,
                 count
             )
+
+        newItemForm.value.ict_assets =
+            tab === 'ict'
+                ? syncedRows.map(
+                    (asset) => ({
+                        ...asset,
+                        status:
+                            normalizeIctAssetStatus(
+                                asset.status
+                            )
+                            || 'working',
+                    })
+                )
+                : syncedRows
     }
 )
 
@@ -2397,11 +2772,25 @@ watch(
             return
         }
 
-        fullEditForm.value.ict_assets =
+        const syncedRows =
             syncIctAssetRowsToCount(
                 fullEditForm.value.ict_assets,
                 count
             )
+
+        fullEditForm.value.ict_assets =
+            category === 'ict'
+                ? syncedRows.map(
+                    (asset) => ({
+                        ...asset,
+                        status:
+                            normalizeIctAssetStatus(
+                                asset.status
+                            )
+                            || 'working',
+                    })
+                )
+                : syncedRows
     }
 )
 
@@ -2446,14 +2835,11 @@ const currentTitle = computed(() => {
         return 'ICT'
     }
 
-    if (
-        activeTab.value
-        === 'purchase_request'
-    ) {
-        return 'Purchase Request Validation'
+    if (activeTab.value === 'returned') {
+        return 'Returned ICT'
     }
 
-    if (
+if (
         activeTab.value
         === 'reconciliation'
     ) {
@@ -3212,6 +3598,13 @@ const addNewItem = () => {
 
             quarterStockPayload[quarter] = {
                 current,
+                remarks:
+                    String(
+                        newItemForm.value
+                            .quarter_stock?.[quarter]
+                            ?.remarks
+                        ?? ''
+                    ).trim(),
             }
         })
     }
@@ -3417,6 +3810,19 @@ const filteredItems = computed(() => {
                 String(item.remarks || '')
                     .toLowerCase()
                     .includes(term)
+                ||
+                (
+                    item.category === 'supplies'
+                    && quarterRemarksEntries(
+                        item,
+                        'all'
+                    ).some(
+                        (entry) =>
+                            entry.remarks
+                                .toLowerCase()
+                                .includes(term)
+                    )
+                )
             )
         })
     }
@@ -3445,6 +3851,45 @@ const filteredItems = computed(() => {
                 String(item.remarks || '')
                     .toLowerCase()
                     .includes(term)
+                ||
+                (
+                    item.category === 'supplies'
+                    && quarterRemarksEntries(
+                        item,
+                        'all'
+                    ).some(
+                        (entry) =>
+                            entry.remarks
+                                .toLowerCase()
+                                .includes(term)
+                    )
+                )
+                ||
+                (
+                    ['ict', 'returned'].includes(
+                        activeTab.value
+                    )
+                    && filteredIctAssetDetails(item)
+                        .some((asset) =>
+                            [
+                                asset.description,
+                                asset.accessories,
+                                asset.property_number,
+                                asset.current_user,
+                                asset.mr,
+                                asset.date_acquired,
+                                asset.life_span_ended,
+                                ictAssetStatusLabel(
+                                    asset.status
+                                ),
+                            ]
+                                .some((value) =>
+                                    String(value || '')
+                                        .toLowerCase()
+                                        .includes(term)
+                                )
+                        )
+                )
 
             const matchesUnit =
                 unitFilter.value === 'all'
@@ -3459,11 +3904,32 @@ const filteredItems = computed(() => {
                         quarterFilter.value
                     )
 
+            const isIctLikeTab =
+                ['ict', 'returned'].includes(
+                    activeTab.value
+                )
+
+            const matchesMr =
+                !isIctLikeTab
+                || mrFilter.value === 'all'
+                || filteredIctAssetDetails(
+                    item
+                ).length > 0
+
+            const matchesIctWorkingRows =
+                activeTab.value !== 'ict'
+                || isIctSubscription(item)
+                || filteredIctAssetDetails(
+                    item
+                ).length > 0
+
             return (
                 matchesYear
                 && matchesSearch
                 && matchesUnit
                 && matchesQuarter
+                && matchesMr
+                && matchesIctWorkingRows
             )
         })
 
@@ -3749,11 +4215,17 @@ const unitSummaryCardClass = (summary) => {
 |--------------------------------------------------------------------------
 */
 
+const activeFilteredCount = computed(() =>
+    activeTab.value === 'returned'
+        ? filteredReturnedAssetRows.value.length
+        : filteredItems.value.length
+)
+
 const totalPages = computed(() => {
     return Math.max(
         1,
         Math.ceil(
-            filteredItems.value.length
+            activeFilteredCount.value
             / perPage
         )
     )
@@ -3770,8 +4242,19 @@ const paginatedItems = computed(() => {
     )
 })
 
+const paginatedReturnedAssets = computed(() => {
+    const start =
+        (currentPage.value - 1)
+        * perPage
+
+    return filteredReturnedAssetRows.value.slice(
+        start,
+        start + perPage
+    )
+})
+
 const showingFrom = computed(() => {
-    if (!filteredItems.value.length) {
+    if (!activeFilteredCount.value) {
         return 0
     }
 
@@ -3784,7 +4267,7 @@ const showingFrom = computed(() => {
 const showingTo = computed(() => {
     return Math.min(
         currentPage.value * perPage,
-        filteredItems.value.length
+        activeFilteredCount.value
     )
 })
 
@@ -3796,10 +4279,21 @@ const showingTo = computed(() => {
 
 const withRemarksCount = computed(() => {
     return currentItems.value.filter(
-        (item) =>
-            String(
-                item.remarks || ''
-            ).trim() !== ''
+        (item) => {
+            const hasGeneral =
+                String(
+                    item.remarks || ''
+                ).trim() !== ''
+
+            const hasQuarter =
+                item.category === 'supplies'
+                && quarterRemarksEntries(
+                    item,
+                    'all'
+                ).length > 0
+
+            return hasGeneral || hasQuarter
+        }
     ).length
 })
 
@@ -3848,6 +4342,7 @@ const switchTab = (tab) => {
     search.value = ''
     unitFilter.value = 'all'
     quarterFilter.value = 'all'
+    mrFilter.value = 'all'
     currentPage.value = 1
 }
 
@@ -3856,7 +4351,10 @@ const currentReconciliationCategory = computed(() => {
         return 'supplies'
     }
 
-    if (activeTab.value === 'ict') {
+    if (
+        activeTab.value === 'ict'
+        || activeTab.value === 'returned'
+    ) {
         return 'ict'
     }
 
@@ -3934,6 +4432,7 @@ watch(
         yearFilter,
         unitFilter,
         quarterFilter,
+        mrFilter,
     ],
     () => {
         currentPage.value = 1
@@ -3957,12 +4456,28 @@ watch(
 |--------------------------------------------------------------------------
 */
 
-const openHistoryModal = async (item) => {
+const openHistoryModal = async (
+    item,
+    asset = null
+) => {
     if (!item?.id) {
         return
     }
 
     historyItem.value = item
+
+    historyPropertyNumber.value =
+        String(
+            asset?.property_number
+            ?? ''
+        ).trim()
+
+    historyPropertyDescription.value =
+        String(
+            asset?.description
+            ?? ''
+        ).trim()
+
     inventoryHistories.value = []
     historyError.value = ''
     historyLoading.value = true
@@ -4013,6 +4528,8 @@ const closeHistoryModal = () => {
     inventoryHistories.value = []
     historyError.value = ''
     historyLoading.value = false
+    historyPropertyNumber.value = ''
+    historyPropertyDescription.value = ''
 }
 
 
@@ -4021,6 +4538,267 @@ const closeHistoryModal = () => {
 | HISTORY DISPLAY HELPERS
 |--------------------------------------------------------------------------
 */
+
+const historyIsPropertyScoped = computed(
+    () =>
+        String(
+            historyPropertyNumber.value
+            || ''
+        ).trim() !== ''
+)
+
+const normalizedHistoryPropertyNumber = (value) =>
+    String(value ?? '')
+        .trim()
+        .toLowerCase()
+
+const historyChangePropertyNumbers = (change) => {
+    const values = []
+
+    if (
+        Array.isArray(
+            change?.asset_property_numbers
+        )
+    ) {
+        values.push(
+            ...change.asset_property_numbers
+        )
+    }
+
+    if (
+        change?.asset_property_number
+        !== null
+        && change?.asset_property_number
+        !== undefined
+    ) {
+        values.push(
+            change.asset_property_number
+        )
+    }
+
+    /*
+     * Backward-compatible fallback for older release
+     * history rows that may not yet have explicit metadata.
+     */
+    if (
+        String(change?.field || '')
+            === 'release_property_number'
+    ) {
+        values.push(
+            change?.new,
+            change?.old
+        )
+    }
+
+    return [
+        ...new Set(
+            values
+                .map(
+                    (value) =>
+                        String(value ?? '')
+                            .trim()
+                )
+                .filter(Boolean)
+        ),
+    ]
+}
+
+const historyChangeMatchesProperty = (
+    change,
+    propertyNumber
+) => {
+    const target =
+        normalizedHistoryPropertyNumber(
+            propertyNumber
+        )
+
+    if (!target) {
+        return false
+    }
+
+    return historyChangePropertyNumbers(
+        change
+    ).some(
+        (value) =>
+            normalizedHistoryPropertyNumber(
+                value
+            ) === target
+    )
+}
+
+const propertyScopedHistoryMeta = (
+    history,
+    changes
+) => {
+    const fields =
+        changes.map(
+            (change) =>
+                String(
+                    change?.field || ''
+                )
+        )
+
+    const propertyNumber =
+        String(
+            historyPropertyNumber.value
+            || ''
+        ).trim()
+
+    const hasRelease =
+        history?.action === 'release'
+        || fields.some(
+            (field) =>
+                field.startsWith('release_')
+        )
+
+    const hasAdded =
+        fields.includes(
+            'ict_asset_added'
+        )
+
+    const hasRemoved =
+        fields.includes(
+            'ict_asset_removed'
+        )
+
+    if (hasRelease) {
+        return {
+            event_title:
+                'Released Property',
+            event_summary:
+                `Property ${propertyNumber} was released.`,
+        }
+    }
+
+    if (hasAdded) {
+        return {
+            event_title:
+                'Added ICT Unit',
+            event_summary:
+                `Property ${propertyNumber} was added.`,
+        }
+    }
+
+    if (hasRemoved) {
+        return {
+            event_title:
+                'Removed ICT Unit',
+            event_summary:
+                `Property ${propertyNumber} was removed.`,
+        }
+    }
+
+    return {
+        event_title:
+            'Edited Property Details',
+        event_summary:
+            `Property ${propertyNumber} was updated.`,
+    }
+}
+
+const visibleInventoryHistories = computed(() => {
+    if (!historyIsPropertyScoped.value) {
+        /*
+         * Item-level History intentionally shows every
+         * activity for every property under this item.
+         */
+        return inventoryHistories.value
+    }
+
+    const target =
+        String(
+            historyPropertyNumber.value
+            || ''
+        ).trim()
+
+    return inventoryHistories.value
+        .map((history) => {
+            const changes =
+                Array.isArray(
+                    history?.changes
+                )
+                    ? history.changes
+                        .filter(
+                            (change) =>
+                                historyChangeMatchesProperty(
+                                    change,
+                                    target
+                                )
+                        )
+                    : []
+
+            /*
+             * IMPORTANT:
+             * Do not show an item-level or another property's
+             * history merely because it happened in the same
+             * inventory update transaction.
+             */
+            if (!changes.length) {
+                return null
+            }
+
+            const scopedMeta =
+                propertyScopedHistoryMeta(
+                    history,
+                    changes
+                )
+
+            return {
+                ...history,
+
+                /*
+                 * The property modal is intentionally scoped
+                 * to one Property Number only.
+                 */
+                property_numbers: [
+                    target,
+                ],
+
+                changes,
+
+                event_title:
+                    scopedMeta.event_title,
+
+                event_summary:
+                    scopedMeta.event_summary,
+            }
+        })
+        .filter(Boolean)
+})
+
+
+const historyActionToneClass = (history) => {
+    const title =
+        String(
+            history?.event_title
+            || historyActionLabel(history)
+            || ''
+        ).toLowerCase()
+
+    if (title.includes('release')) {
+        return 'border-rose-200 bg-rose-50 text-rose-700'
+    }
+
+    if (
+        title.includes('added')
+        || title.includes('add ')
+    ) {
+        return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    }
+
+    if (title.includes('property')) {
+        return 'border-blue-200 bg-blue-50 text-blue-700'
+    }
+
+    return 'border-slate-200 bg-slate-50 text-slate-700'
+}
+
+const historyEventSummary = (history) => {
+    return String(
+        history?.event_summary
+        || ''
+    ).trim()
+}
 
 const numericAvailable = (value) => {
     const match =
@@ -4146,15 +4924,25 @@ const historyHasDetailedChanges = (history) => {
 }
 
 const historyActionLabel = (history) => {
+    const eventTitle =
+        String(
+            history?.event_title
+            || ''
+        ).trim()
+
+    if (eventTitle) {
+        return eventTitle
+    }
+
     if (history?.action === 'release') {
-        return 'Released stock'
+        return 'Released Stock'
     }
 
     if (history?.action === 'edit') {
-        return 'Edited item'
+        return 'Edited Item Details'
     }
 
-    return 'Updated inventory'
+    return 'Updated Inventory'
 }
 
 const historyChangeValue = (change, value) => {
@@ -4168,6 +4956,10 @@ const historyChangeValue = (change, value) => {
 
     const field =
         String(change?.field || '')
+
+    if (field === 'quarter_remarks') {
+        return String(value || '').trim() || '—'
+    }
 
     if (field === 'quarter_stock') {
         const stock =
@@ -4247,6 +5039,15 @@ const historyChangeValue = (change, value) => {
             (option) =>
                 option.value === category
         )?.label || String(value)
+    }
+
+    if (field === 'ict_asset_status') {
+        return (
+            normalizeIctAssetStatus(value)
+            === 'returned'
+                ? 'Returned'
+                : 'Working'
+        )
     }
 
     if (
@@ -4600,6 +5401,9 @@ const openFullEditModal = (item) => {
         return
     }
 
+    resetNewIctAssetForm()
+    resetAddOtherCount()
+
     if (!item?.id) {
         return
     }
@@ -4657,7 +5461,7 @@ const openFullEditModal = (item) => {
             || normalized.currently_available === undefined
                 ? ''
                 : normalized.currently_available,
-        quarters: [...normalizedQuarters],
+            quarters: [...normalizedQuarters],
         quarter_stock:
             editQuarterStock,
         ict_assets:
@@ -4701,7 +5505,387 @@ const closeFullEditModal = () => {
     showFullEditModal.value = false
     fullEditingItem.value = null
     fullEditErrors.value = {}
+    resetNewIctAssetForm()
+    resetAddOtherCount()
 }
+
+const openIctAssetEditModal = (
+    item,
+    asset
+) => {
+    if (
+        !canManageInventory.value
+        || !item?.id
+        || !asset
+    ) {
+        return
+    }
+
+    const rowIndex =
+        Number(asset?._index)
+
+    if (
+        !Number.isInteger(rowIndex)
+        || rowIndex < 0
+    ) {
+        return
+    }
+
+    const normalizedAsset =
+        ictEditorAssetRows([
+            asset,
+        ])[0]
+        || {
+            description: '',
+            accessories: '',
+            property_number: '',
+            current_user: '',
+            date_acquired: '',
+            life_span_ended: '',
+            status: 'working',
+            mr_personnel_id: '',
+            mr: '',
+        }
+
+    ictAssetEditingItem.value =
+        normalizeInventoryItem(item)
+
+    ictAssetEditingIndex.value =
+        rowIndex
+
+    ictAssetEditingOriginalPropertyNumber.value =
+        String(
+            normalizedAsset.property_number
+            || ''
+        ).trim()
+
+    ictAssetEditForm.value = {
+        description:
+            normalizedAsset.description,
+        accessories:
+            normalizedAsset.accessories,
+        property_number:
+            normalizedAsset.property_number,
+        current_user:
+            normalizedAsset.current_user,
+        date_acquired:
+            normalizedAsset.date_acquired,
+        life_span_ended:
+            normalizedAsset.life_span_ended,
+        status:
+            normalizeIctAssetStatus(
+                normalizedAsset.status
+            )
+            || 'working',
+        mr_personnel_id:
+            normalizedAsset.mr_personnel_id,
+        mr:
+            normalizedAsset.mr,
+    }
+
+    if (
+        ictAssetEditForm.value
+            .mr_personnel_id
+    ) {
+        syncAssetMr(
+            ictAssetEditForm.value
+        )
+    }
+
+    ictAssetEditErrors.value = {}
+    showIctAssetEditModal.value = true
+}
+
+const individualPropertyEditIsOther = computed(
+    () =>
+        isPropertyTrackedOtherCategory(
+            ictAssetEditingItem.value?.category
+        )
+)
+
+const individualPropertyEditIsIct = computed(
+    () =>
+        String(
+            ictAssetEditingItem.value?.category
+            || ''
+        )
+            .trim()
+            .toLowerCase()
+        === 'ict'
+)
+
+const closeIctAssetEditModal = () => {
+    if (ictAssetEditProcessing.value) {
+        return
+    }
+
+    showIctAssetEditModal.value = false
+    ictAssetEditingItem.value = null
+    ictAssetEditingIndex.value = null
+    ictAssetEditingOriginalPropertyNumber.value = ''
+    ictAssetEditErrors.value = {}
+}
+
+const saveIctAssetEdit = () => {
+    if (
+        !canManageInventory.value
+        || !ictAssetEditingItem.value?.id
+        || !Number.isInteger(
+            ictAssetEditingIndex.value
+        )
+    ) {
+        return
+    }
+
+    ictAssetEditErrors.value = {}
+
+    const category =
+        String(
+            ictAssetEditingItem.value
+                ?.category || ''
+        )
+            .trim()
+            .toLowerCase()
+
+    const isOtherProperty =
+        isPropertyTrackedOtherCategory(
+            category
+        )
+
+    const isIctProperty =
+        category === 'ict'
+
+    if (
+        !isIctProperty
+        && !isOtherProperty
+    ) {
+        return
+    }
+
+    const description =
+        String(
+            ictAssetEditForm.value
+                .description || ''
+        ).trim()
+
+    const accessories =
+        String(
+            ictAssetEditForm.value
+                .accessories || ''
+        ).trim()
+
+    const propertyNumber =
+        String(
+            ictAssetEditForm.value
+                .property_number || ''
+        ).trim()
+
+    const currentUser =
+        String(
+            ictAssetEditForm.value
+                .current_user || ''
+        ).trim()
+
+    const dateAcquired =
+        normalizeIctDateInput(
+            ictAssetEditForm.value
+                .date_acquired
+        )
+
+    const lifeSpanEnded =
+        normalizeIctDateInput(
+            ictAssetEditForm.value
+                .life_span_ended
+        )
+
+    const status =
+        normalizeIctAssetStatus(
+            ictAssetEditForm.value.status
+        )
+
+    const mrPersonnelId =
+        String(
+            ictAssetEditForm.value
+                .mr_personnel_id || ''
+        ).trim()
+
+    if (!description) {
+        ictAssetEditErrors.value.description =
+            'Description is required.'
+    }
+
+    if (!propertyNumber) {
+        ictAssetEditErrors.value.property_number =
+            'Property Number is required.'
+    }
+
+    /*
+     * ICT-only fields.
+     * Furniture/Fixtures only edit:
+     * Description, Property Number, Current User.
+     */
+    if (isIctProperty) {
+        if (!status) {
+            ictAssetEditErrors.value.status =
+                'Select Working or Returned.'
+        }
+
+        if (
+            ictAssetEditForm.value.date_acquired
+            && !dateAcquired
+        ) {
+            ictAssetEditErrors.value.date_acquired =
+                'Enter a valid Date Acquired.'
+        }
+
+        if (
+            ictAssetEditForm.value.life_span_ended
+            && !lifeSpanEnded
+        ) {
+            ictAssetEditErrors.value.life_span_ended =
+                'Enter a valid Life Span Ended date.'
+        }
+
+        if (
+            !isValidIctDateRange(
+                dateAcquired,
+                lifeSpanEnded
+            )
+        ) {
+            ictAssetEditErrors.value.life_span_ended =
+                'Life Span Ended cannot be earlier than Date Acquired.'
+        }
+    }
+
+    if (propertyNumber) {
+        const duplicate =
+            ictAssetDetails(
+                ictAssetEditingItem.value
+            ).some((asset) => {
+                if (
+                    Number(asset._index)
+                    === Number(
+                        ictAssetEditingIndex.value
+                    )
+                ) {
+                    return false
+                }
+
+                return (
+                    String(
+                        asset.property_number
+                        || ''
+                    )
+                        .trim()
+                        .toLowerCase()
+                    ===
+                    propertyNumber.toLowerCase()
+                )
+            })
+
+        if (duplicate) {
+            ictAssetEditErrors.value.property_number =
+                'Property Number must be unique for this item.'
+        }
+    }
+
+    if (
+        Object.keys(
+            ictAssetEditErrors.value
+        ).length
+    ) {
+        return
+    }
+
+    const assetPayload =
+        isOtherProperty
+            ? {
+                description,
+                property_number:
+                    propertyNumber,
+                current_user:
+                    currentUser || null,
+            }
+            : {
+                description,
+                accessories:
+                    accessories || null,
+                property_number:
+                    propertyNumber,
+                current_user:
+                    currentUser || null,
+                date_acquired:
+                    dateAcquired || null,
+                life_span_ended:
+                    lifeSpanEnded || null,
+                status,
+                mr_personnel_id:
+                    mrPersonnelId
+                        ? Number(
+                            mrPersonnelId
+                        )
+                        : null,
+                mr:
+                    mrPersonnelId
+                        ? mrPersonnelName(
+                            mrPersonnelId
+                        )
+                        : null,
+            }
+
+    const payload = {
+        asset_index:
+            ictAssetEditingIndex.value,
+        asset:
+            assetPayload,
+    }
+
+    ictAssetEditProcessing.value = true
+
+    router.put(
+        `/dts/inventory/${ictAssetEditingItem.value.id}`,
+        payload,
+        {
+            preserveScroll: true,
+            preserveState: true,
+
+            onSuccess: () => {
+                const itemId =
+                    ictAssetEditingItem.value?.id
+
+                showIctAssetEditModal.value = false
+                ictAssetEditingItem.value = null
+                ictAssetEditingIndex.value = null
+                ictAssetEditingOriginalPropertyNumber.value = ''
+                ictAssetEditErrors.value = {}
+
+                if (itemId) {
+                    expandedIctItems.value = {
+                        ...expandedIctItems.value,
+                        [itemId]: true,
+                    }
+                }
+
+                router.reload({
+                    only: ['inventoryItems'],
+                    preserveScroll: true,
+                    preserveState: true,
+                })
+            },
+
+            onError: (errors) => {
+                ictAssetEditErrors.value = {
+                    ...errors,
+                }
+            },
+
+            onFinish: () => {
+                ictAssetEditProcessing.value = false
+            },
+        }
+    )
+}
+
 
 const saveFullEditItem = () => {
     if (!canManageInventory.value) {
@@ -4792,24 +5976,89 @@ const saveFullEditItem = () => {
                 'Location is required.'
         }
 
+        /*
+         * Other Items use a category-aware Add button.
+         *
+         * Furniture/Fixtures:
+         *   reveal one new Property Detail row, then Count +1.
+         *
+         * Emergency Kits / Token & Giveaways:
+         *   reveal Quantity to Add.
+         */
         if (
             requiresItemCount
-            && (
-                fullEditForm.value.currently_available === ''
-                || fullEditForm.value.currently_available === null
-                || fullEditForm.value.currently_available === undefined
-                || !Number.isInteger(
-                    Number(
-                        fullEditForm.value.currently_available
-                    )
-                )
-                || Number(
-                    fullEditForm.value.currently_available
-                ) < 0
-            )
+            && showAddOtherCountField.value
         ) {
-            fullEditErrors.value.currently_available =
-                'Enter a valid count.'
+            if (
+                isPropertyTrackedOtherCategory(
+                    category
+                )
+            ) {
+                const description =
+                    String(
+                        newOtherAssetForm.value
+                            .description || ''
+                    ).trim()
+
+                const propertyNumber =
+                    String(
+                        newOtherAssetForm.value
+                            .property_number || ''
+                    ).trim()
+
+                if (!description) {
+                    fullEditErrors.value[
+                        'new_other_asset.description'
+                    ] =
+                        'Description is required.'
+                }
+
+                if (!propertyNumber) {
+                    fullEditErrors.value[
+                        'new_other_asset.property_number'
+                    ] =
+                        'Property Number is required.'
+                }
+
+                if (propertyNumber) {
+                    const duplicate =
+                        ictAssetDetails(
+                            original
+                        ).some(
+                            (asset) =>
+                                String(
+                                    asset.property_number
+                                    || ''
+                                )
+                                    .trim()
+                                    .toLowerCase()
+                                ===
+                                propertyNumber
+                                    .toLowerCase()
+                        )
+
+                    if (duplicate) {
+                        fullEditErrors.value[
+                            'new_other_asset.property_number'
+                        ] =
+                            'Property Number already exists for this item.'
+                    }
+                }
+            } else {
+                const addCount =
+                    Number(otherCountToAdd.value)
+
+                if (
+                    otherCountToAdd.value === ''
+                    || otherCountToAdd.value === null
+                    || otherCountToAdd.value === undefined
+                    || !Number.isInteger(addCount)
+                    || addCount < 1
+                ) {
+                    fullEditErrors.value.add_other_count =
+                        'Enter how many items you want to add.'
+                }
+            }
         }
     } else {
         if (!unit) {
@@ -4881,7 +6130,119 @@ const saveFullEditItem = () => {
                     ? 'Enter a valid number of month(s).'
                     : isIctYearBased(unit)
                         ? 'Enter a valid number of year(s).'
-                        : 'Enter a valid count.'
+                        : 'Current Count is invalid.'
+        }
+
+        if (
+            !isIctSubscription(unit)
+            && showAddIctUnitFields.value
+        ) {
+            const newDescription =
+                String(
+                    newIctAssetForm.value
+                        .description || ''
+                ).trim()
+
+            const newPropertyNumber =
+                String(
+                    newIctAssetForm.value
+                        .property_number || ''
+                ).trim()
+
+            const newDateAcquired =
+                normalizeIctDateInput(
+                    newIctAssetForm.value
+                        .date_acquired
+                )
+
+            const newLifeSpanEnded =
+                normalizeIctDateInput(
+                    newIctAssetForm.value
+                        .life_span_ended
+                )
+
+            const newStatus =
+                normalizeIctAssetStatus(
+                    newIctAssetForm.value.status
+                )
+
+            if (!newDescription) {
+                fullEditErrors.value[
+                    'new_ict_asset.description'
+                ] =
+                    'Description is required.'
+            }
+
+            if (!newPropertyNumber) {
+                fullEditErrors.value[
+                    'new_ict_asset.property_number'
+                ] =
+                    'Property Number is required.'
+            }
+
+            if (!newStatus) {
+                fullEditErrors.value[
+                    'new_ict_asset.status'
+                ] =
+                    'Select Working or Returned.'
+            }
+
+            if (
+                newIctAssetForm.value.date_acquired
+                && !newDateAcquired
+            ) {
+                fullEditErrors.value[
+                    'new_ict_asset.date_acquired'
+                ] =
+                    'Enter a valid Date Acquired.'
+            }
+
+            if (
+                newIctAssetForm.value.life_span_ended
+                && !newLifeSpanEnded
+            ) {
+                fullEditErrors.value[
+                    'new_ict_asset.life_span_ended'
+                ] =
+                    'Enter a valid Life Span Ended date.'
+            }
+
+            if (
+                !isValidIctDateRange(
+                    newDateAcquired,
+                    newLifeSpanEnded
+                )
+            ) {
+                fullEditErrors.value[
+                    'new_ict_asset.life_span_ended'
+                ] =
+                    'Life Span Ended cannot be earlier than Date Acquired.'
+            }
+
+            if (newPropertyNumber) {
+                const duplicate =
+                    ictAssetDetails(
+                        fullEditingItem.value
+                    ).some(
+                        (asset) =>
+                            String(
+                                asset.property_number
+                                || ''
+                            )
+                                .trim()
+                                .toLowerCase()
+                            ===
+                            newPropertyNumber
+                                .toLowerCase()
+                    )
+
+                if (duplicate) {
+                    fullEditErrors.value[
+                        'new_ict_asset.property_number'
+                    ] =
+                        'Property Number must be unique for this ICT item.'
+                }
+            }
         }
     }
 
@@ -4912,30 +6273,11 @@ const saveFullEditItem = () => {
             fullEditForm.value.ict_assets
         )
 
-    const shouldValidatePropertyDetails =
-        (
-            isIct
-            && !isIctSubscription(unit)
-        )
-        || (
-            isOtherItems
-            && isPropertyTrackedOtherCategory(
-                category
-            )
-            && (
-                existingPropertyAssets.length > 0
-                || editedPropertyAssets.length > 0
-            )
-        )
-
-    if (shouldValidatePropertyDetails) {
-        validateIctAssetRows(
-            fullEditForm.value.ict_assets,
-            fullEditErrors.value,
-            currentValue,
-            category
-        )
-    }
+    /*
+     * Existing Furniture/Fixtures property rows are NOT bulk-edited
+     * from the item modal. Each row has its own Edit button in the
+     * accordion, so item-level Save must not validate or rewrite them.
+     */
 
     const quarterStockPayload = {}
 
@@ -4952,6 +6294,11 @@ const saveFullEditItem = () => {
                     Number(
                         existing.current
                     ),
+                remarks:
+                    String(
+                        existing.remarks
+                        ?? ''
+                    ).trim(),
             }
         })
     }
@@ -5049,33 +6396,134 @@ const saveFullEditItem = () => {
 
     if (isOtherItems) {
         payload.location = location
-        payload.currently_available =
+
+        if (
             requiresItemCount
-                ? Number(
-                    fullEditForm.value.currently_available
+            && showAddOtherCountField.value
+        ) {
+            if (
+                isPropertyTrackedOtherCategory(
+                    category
                 )
-                : null
-        payload.ict_assets =
-            isPropertyTrackedOtherCategory(
-                category
-            )
-                ? normalizeIctAssets(
-                    fullEditForm.value.ict_assets
-                )
-                : []
+            ) {
+                payload.new_other_asset = {
+                    description:
+                        String(
+                            newOtherAssetForm.value
+                                .description || ''
+                        ).trim(),
+
+                    property_number:
+                        String(
+                            newOtherAssetForm.value
+                                .property_number || ''
+                        ).trim(),
+
+                    current_user:
+                        String(
+                            newOtherAssetForm.value
+                                .current_user || ''
+                        ).trim()
+                        || null,
+                }
+            } else {
+                payload.add_other_count =
+                    Number(otherCountToAdd.value)
+            }
+        }
+
+        /*
+         * Existing Furniture/Fixtures property rows are preserved.
+         * Only new_other_asset is sent when Add Unit is used.
+         * Existing rows are edited individually from the accordion.
+         */
     } else if (isIct) {
         payload.location = null
         payload.unit = unit
         payload.inventory_year = inventoryYear
         payload.fixed_value = null
-        payload.currently_available =
-            currentValue
-        payload.ict_assets =
-            isIctSubscription(unit)
-                ? []
-                : normalizeIctAssets(
-                    fullEditForm.value.ict_assets
-                )
+
+        if (isIctSubscription(unit)) {
+            payload.currently_available =
+                currentValue
+            payload.ict_assets = []
+        } else {
+            /*
+             * Existing Property Details are edited one row at a time
+             * from the accordion. The Item Edit modal can optionally
+             * add one new ICT unit at a time.
+             */
+            if (showAddIctUnitFields.value) {
+                const mrPersonnelId =
+                    String(
+                        newIctAssetForm.value
+                            .mr_personnel_id || ''
+                    ).trim()
+
+                payload.new_ict_asset = {
+                    description:
+                        String(
+                            newIctAssetForm.value
+                                .description || ''
+                        ).trim(),
+
+                    accessories:
+                        String(
+                            newIctAssetForm.value
+                                .accessories || ''
+                        ).trim()
+                        || null,
+
+                    property_number:
+                        String(
+                            newIctAssetForm.value
+                                .property_number || ''
+                        ).trim(),
+
+                    current_user:
+                        String(
+                            newIctAssetForm.value
+                                .current_user || ''
+                        ).trim()
+                        || null,
+
+                    date_acquired:
+                        normalizeIctDateInput(
+                            newIctAssetForm.value
+                                .date_acquired
+                        )
+                        || null,
+
+                    life_span_ended:
+                        normalizeIctDateInput(
+                            newIctAssetForm.value
+                                .life_span_ended
+                        )
+                        || null,
+
+                    status:
+                        normalizeIctAssetStatus(
+                            newIctAssetForm.value
+                                .status
+                        )
+                        || 'working',
+
+                    mr_personnel_id:
+                        mrPersonnelId
+                            ? Number(
+                                mrPersonnelId
+                            )
+                            : null,
+
+                    mr:
+                        mrPersonnelId
+                            ? mrPersonnelName(
+                                mrPersonnelId
+                            )
+                            : null,
+                }
+            }
+        }
     } else {
         payload.location = null
         payload.unit = unit
@@ -5110,6 +6558,17 @@ const saveFullEditItem = () => {
                 unitFilter.value = 'all'
                 search.value = ''
                 currentPage.value = 1
+
+                if (
+                    isIct
+                    && !isIctSubscription(unit)
+                    && showAddIctUnitFields.value
+                ) {
+                    expandedIctItems.value = {
+                        ...expandedIctItems.value,
+                        [original.id]: true,
+                    }
+                }
 
                 closeFullEditModal()
 
@@ -5509,6 +6968,7 @@ const openReleaseItemModal = (item) => {
         releaseQuantity: '',
         releasePropertyNumber: '',
         releaseDestination: '',
+        releaseMrPersonnelId: '',
         remarks: '',
     }
 
@@ -5524,10 +6984,35 @@ const closeReleaseItemModal = () => {
         releaseQuantity: '',
         releasePropertyNumber: '',
         releaseDestination: '',
+        releaseMrPersonnelId: '',
         remarks: '',
     }
 
     releaseItemErrors.value = {}
+}
+
+const syncReleaseMrHolder = () => {
+    if (!releaseIsIctAsset.value) {
+        return
+    }
+
+    const mrName =
+        mrPersonnelName(
+            releaseItemForm.value
+                .releaseMrPersonnelId
+        )
+
+    if (
+        mrName
+        && !String(
+            releaseItemForm.value
+                .releaseDestination || ''
+        ).trim()
+    ) {
+        releaseItemForm.value
+            .releaseDestination =
+                mrName
+    }
 }
 
 const saveReleaseItem = () => {
@@ -5623,6 +7108,23 @@ const saveReleaseItem = () => {
             || ''
         ).trim()
 
+    const releaseMrPersonnelId =
+        String(
+            releaseItemForm.value
+                .releaseMrPersonnelId
+            || ''
+        ).trim()
+
+    if (
+        releaseIsIctAsset.value
+        && !releaseMrPersonnelId
+    ) {
+        releaseItemErrors.value.releaseMrPersonnelId =
+            'Select the MR Holder.'
+
+        return
+    }
+
     /*
      * Supplies do not require a destination.
      * ICT and counted Other Items still do so History can show
@@ -5707,6 +7209,13 @@ const saveReleaseItem = () => {
             release_property_number:
                 releaseIsIctAsset.value
                     ? releasePropertyNumber
+                    : null,
+
+            release_mr_personnel_id:
+                releaseIsIctAsset.value
+                    ? Number(
+                        releaseMrPersonnelId
+                    )
                     : null,
 
             /*
@@ -7183,19 +8692,8 @@ const generateInventoryReport = () => {
                                 </p>
 
                                 <h1 class="mt-0.5 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
-                                    {{
-                                        activeTab === 'purchase_request'
-                                            ? 'Purchase Request Validation'
-                                            : 'Inventory Monitoring'
-                                    }}
+                                    Inventory Monitoring
                                 </h1>
-
-                                <p
-                                    v-if="activeTab === 'purchase_request'"
-                                    class="mt-1 text-xs font-semibold text-slate-500"
-                                >
-                                    {{ purchaseRequestCategoryLabel(prValidationCategory) }} Purchase Request
-                                </p>
                             </div>
                         </div>
 
@@ -7205,57 +8703,8 @@ const generateInventoryReport = () => {
                     <div
                         class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end"
                     >
-                        <!-- PURCHASE REQUEST VALIDATION -->
                         <button
-                            v-if="['supplies', 'ict', 'other'].includes(activeTab)"
-                            type="button"
-                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border-2 border-blue-600 bg-blue-600 px-5 text-sm font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
-                            @click="openPurchaseRequestValidation"
-                        >
-                            <svg
-                                class="h-4 w-4"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                aria-hidden="true"
-                            >
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                                <path d="M14 2v6h6" />
-                                <path d="m9 15 2 2 4-4" />
-                            </svg>
-
-                            <span>{{ prButtonLabel }}</span>
-                        </button>
-
-                        <button
-                            v-if="activeTab === 'purchase_request'"
-                            type="button"
-                            class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-slate-100"
-                            @click="backFromPurchaseRequestValidation"
-                        >
-                            <svg
-                                class="h-4 w-4"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                aria-hidden="true"
-                            >
-                                <path d="m15 18-6-6 6-6" />
-                            </svg>
-
-                            <span>
-                                Back to {{ purchaseRequestCategoryLabel(prValidationCategory) }}
-                            </span>
-                        </button>
-
-                        <button
-                            v-if="activeTab !== 'reconciliation' && activeTab !== 'purchase_request'"
+                            v-if="!['reconciliation', 'returned'].includes(activeTab)"
                             type="button"
                             class="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 text-sm font-black text-blue-700 transition hover:bg-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-100"
                             @click="generateInventoryReport"
@@ -7281,8 +8730,9 @@ const generateInventoryReport = () => {
                         <button
                             v-if="
                                 canManageInventory
-                                && activeTab !== 'reconciliation'
-                                && activeTab !== 'purchase_request'
+                                && !['reconciliation', 'returned'].includes(
+                                    activeTab
+                                )
                             "
                             type="button"
                             class="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 px-5 text-sm font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-100"
@@ -7296,7 +8746,6 @@ const generateInventoryReport = () => {
                             v-if="
                                 !canManageInventory
                                 && activeTab !== 'reconciliation'
-                                && activeTab !== 'purchase_request'
                             "
                             class="inline-flex h-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 text-xs font-black text-slate-500"
                         >
@@ -7334,6 +8783,8 @@ const generateInventoryReport = () => {
                             <span>ICT</span>
                         </button>
 
+                        
+
                         <button
                             type="button"
                             class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[180px]"
@@ -7345,6 +8796,30 @@ const generateInventoryReport = () => {
                             @click="switchTab('other')"
                         >
                             <span>Other Items</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            class="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-black transition sm:min-w-[165px]"
+                            :class="
+                                activeTab === 'returned'
+                                    ? 'bg-rose-600 text-white shadow-sm shadow-rose-100'
+                                    : 'text-slate-600 hover:bg-rose-50 hover:text-rose-700'
+                            "
+                            @click="switchTab('returned')"
+                        >
+                            <span>Returned</span>
+
+                            <span
+                                class="inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[9px] font-black"
+                                :class="
+                                    activeTab === 'returned'
+                                        ? 'bg-white/20 text-white'
+                                        : 'bg-rose-100 text-rose-700'
+                                "
+                            >
+                                {{ returnedAssetCount }}
+                            </span>
                         </button>
 
                     </div>
@@ -7372,468 +8847,9 @@ const generateInventoryReport = () => {
             </section>
 
 
-            <!-- PURCHASE REQUEST VALIDATION -->
-            <section
-                v-if="activeTab === 'purchase_request'"
-                class="mt-4 space-y-4"
-            >
-                <div
-                    class="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
-                >
-                    <div
-                        class="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 sm:px-6 xl:flex-row xl:items-end xl:justify-between"
-                    >
-                        <div class="min-w-0">
-                            <p
-                                class="text-[10px] font-black uppercase tracking-[0.14em] text-blue-600"
-                            >
-                                {{ purchaseRequestCategoryLabel(prValidationCategory) }} Purchase Request
-                            </p>
-
-                            <h2
-                                class="mt-1 text-lg font-black text-slate-900"
-                            >
-                                Purchase Request Validation
-                            </h2>
-                        </div>
-
-                        <div
-                            class="grid w-full gap-2 sm:grid-cols-[150px_1fr] xl:w-auto xl:grid-cols-[150px_auto]"
-                            :class="!prValidationRequiresYear ? 'sm:grid-cols-1 xl:grid-cols-1' : ''"
-                        >
-                            <div
-                                v-if="prValidationRequiresYear"
-                            >
-                                <label
-                                    class="mb-1.5 block text-[9px] font-black uppercase tracking-[0.10em] text-slate-500"
-                                >
-                                    Inventory Year
-                                </label>
-
-                                <select
-                                    v-model="prValidationYear"
-                                    class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                                >
-                                    <option
-                                        v-for="year in yearOptions"
-                                        :key="`pr-year-${year}`"
-                                        :value="year"
-                                    >
-                                        {{ year }}
-                                    </option>
-                                </select>
-                            </div>
-
-                            <div
-                                v-if="canManageInventory"
-                                class="sm:self-end"
-                            >
-                                <input
-                                    ref="prValidationFileInput"
-                                    type="file"
-                                    accept=".xlsx,.csv"
-                                    class="hidden"
-                                    @change="uploadPurchaseRequestFile"
-                                />
-
-                                <button
-                                    type="button"
-                                    class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 text-xs font-black text-white shadow-sm shadow-blue-100 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-                                    :disabled="prValidationUploading"
-                                    @click="choosePurchaseRequestFile"
-                                >
-                                    <svg
-                                        class="h-4 w-4"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="2"
-                                        aria-hidden="true"
-                                    >
-                                        <path d="M12 3v12" />
-                                        <path d="m7 8 5-5 5 5" />
-                                        <path d="M5 21h14a2 2 0 0 0 2-2v-4" />
-                                        <path d="M3 15v4a2 2 0 0 0 2 2" />
-                                    </svg>
-
-                                    <span>
-                                        {{
-                                            prValidationUploading
-                                                ? 'Checking...'
-                                                : (
-                                                    prValidationData.has_file
-                                                        ? 'Replace Purchase Request'
-                                                        : 'Upload Purchase Request'
-                                                )
-                                        }}
-                                    </span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div
-                        v-if="prValidationUploadError"
-                        class="border-b border-rose-100 bg-rose-50 px-5 py-3 text-xs font-bold text-rose-700 sm:px-6"
-                    >
-                        {{ prValidationUploadError }}
-                    </div>
-
-                    <div
-                        v-if="prValidationData.error"
-                        class="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs font-bold text-amber-700 sm:px-6"
-                    >
-                        {{ prValidationData.error }}
-                    </div>
-
-                    <div
-                        v-if="prValidationData.has_file"
-                        class="grid gap-3 px-5 py-4 sm:grid-cols-2 lg:grid-cols-4 sm:px-6"
-                    >
-                        <div>
-                            <p
-                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
-                            >
-                                PR File
-                            </p>
-                            <p
-                                class="mt-1 break-words text-xs font-black text-slate-800"
-                            >
-                                {{
-                                    prValidationData.file?.original_name
-                                    || 'Purchase Request'
-                                }}
-                            </p>
-                        </div>
-
-                        <div>
-                            <p
-                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
-                            >
-                                Inventory
-                            </p>
-                            <p
-                                class="mt-1 text-xs font-black text-slate-800"
-                            >
-                                {{ purchaseRequestCategoryLabel(prValidationCategory) }}
-                                <template
-                                    v-if="prValidationRequiresYear"
-                                >
-                                    · {{ prValidationData.context?.inventory_year || prValidationYear }}
-                                </template>
-                            </p>
-                        </div>
-
-                        <div>
-                            <p
-                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
-                            >
-                                Uploaded By
-                            </p>
-                            <p
-                                class="mt-1 text-xs font-black text-slate-800"
-                            >
-                                {{ prValidationData.file?.uploaded_by || '—' }}
-                            </p>
-                        </div>
-
-                        <div>
-                            <p
-                                class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
-                            >
-                                Uploaded
-                            </p>
-                            <p
-                                class="mt-1 text-xs font-black text-slate-800"
-                            >
-                                {{ prUploadedAt }}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div
-                    v-if="!prValidationData.has_file"
-                    class="rounded-[1.75rem] border border-dashed border-blue-200 bg-white px-6 py-14 text-center shadow-sm"
-                >
-                    <div
-                        class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"
-                    >
-                        <svg
-                            class="h-7 w-7"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            aria-hidden="true"
-                        >
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                            <path d="M14 2v6h6" />
-                            <path d="m9 15 2 2 4-4" />
-                        </svg>
-                    </div>
-
-                    <h3
-                        class="mt-4 text-lg font-black text-slate-900"
-                    >
-                        Upload the Purchase Request
-                    </h3>
-
-                    <p
-                        class="mx-auto mt-2 max-w-2xl text-xs font-semibold leading-6 text-slate-500"
-                    >
-                        Required columns: {{ prValidationRequiredFields }}
-                    </p>
-                </div>
-
-                <template v-else>
-                    <div
-                        class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-                    >
-                        <div
-                            class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
-                        >
-                            <p
-                                class="text-[10px] font-black uppercase tracking-[0.12em] text-slate-400"
-                            >
-                                PR Items
-                            </p>
-                            <p
-                                class="mt-2 text-2xl font-black tabular-nums text-slate-900"
-                            >
-                                {{ prValidationData.summary?.total || 0 }}
-                            </p>
-                        </div>
-
-                        <div
-                            class="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 shadow-sm"
-                        >
-                            <p
-                                class="text-[10px] font-black uppercase tracking-[0.12em] text-emerald-600"
-                            >
-                                Match
-                            </p>
-                            <p
-                                class="mt-2 text-2xl font-black tabular-nums text-emerald-700"
-                            >
-                                {{ prValidationData.summary?.match || 0 }}
-                            </p>
-                        </div>
-
-                        <div
-                            class="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 shadow-sm"
-                        >
-                            <p
-                                class="text-[10px] font-black uppercase tracking-[0.12em] text-amber-600"
-                            >
-                                Not Match
-                            </p>
-                            <p
-                                class="mt-2 text-2xl font-black tabular-nums text-amber-700"
-                            >
-                                {{ prValidationData.summary?.not_match || 0 }}
-                            </p>
-                        </div>
-
-                        <div
-                            class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 shadow-sm"
-                        >
-                            <p
-                                class="text-[10px] font-black uppercase tracking-[0.12em] text-rose-600"
-                            >
-                                Not Found
-                            </p>
-                            <p
-                                class="mt-2 text-2xl font-black tabular-nums text-rose-700"
-                            >
-                                {{ prValidationData.summary?.not_found || 0 }}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div
-                        class="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
-                    >
-                        <div
-                            class="border-b border-slate-200 px-5 py-4 sm:px-6"
-                        >
-                            <div
-                                class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between"
-                            >
-                                <div>
-                                    <h3
-                                        class="text-base font-black text-slate-900"
-                                    >
-                                        Validation Results
-                                    </h3>
-                                </div>
-
-                                <div
-                                    class="grid gap-2 sm:grid-cols-2 xl:w-[520px]"
-                                >
-                                    <input
-                                        v-model="prValidationSearch"
-                                        type="text"
-                                        placeholder="Search item or notes..."
-                                        class="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 outline-none focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100"
-                                    />
-
-                                    <select
-                                        v-model="prValidationStatusFilter"
-                                        class="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                                    >
-                                        <option value="all">
-                                            All results
-                                        </option>
-                                        <option value="match">
-                                            Match
-                                        </option>
-                                        <option value="not_match">
-                                            Not Match
-                                        </option>
-                                        <option value="not_found">
-                                            Not Found
-                                        </option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div
-                            v-if="prValidationRows.length"
-                            class="overflow-x-auto"
-                        >
-                            <table
-                                class="min-w-[820px] w-full table-fixed"
-                            >
-                                <thead
-                                    class="bg-blue-600 text-white"
-                                >
-                                    <tr>
-                                        <th
-                                            class="px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Item
-                                        </th>
-
-                                        <th
-                                            v-if="prValidationUsesUnit"
-                                            class="w-[12%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Unit
-                                        </th>
-
-                                        <th
-                                            v-if="prValidationUsesQuarter"
-                                            class="w-[12%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Quarter
-                                        </th>
-
-                                        <th
-                                            class="w-[13%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Quantity
-                                        </th>
-
-                                        <th
-                                            class="w-[14%] px-4 py-3 text-center text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Result
-                                        </th>
-
-                                        <th
-                                            class="w-[32%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.1em]"
-                                        >
-                                            Notes
-                                        </th>
-                                    </tr>
-                                </thead>
-
-                                <tbody
-                                    class="divide-y divide-slate-100"
-                                >
-                                    <tr
-                                        v-for="row in prValidationRows"
-                                        :key="row.id"
-                                        class="align-top transition hover:bg-blue-50/30"
-                                    >
-                                        <td class="px-4 py-4">
-                                            <p
-                                                class="break-words text-xs font-black leading-5 text-slate-900"
-                                            >
-                                                {{ row.item || '—' }}
-                                            </p>
-                                        </td>
-
-                                        <td
-                                            v-if="prValidationUsesUnit"
-                                            class="px-4 py-4 text-center text-xs font-black text-slate-800"
-                                        >
-                                            {{ row.unit || '—' }}
-                                        </td>
-
-                                        <td
-                                            v-if="prValidationUsesQuarter"
-                                            class="px-4 py-4 text-center text-xs font-black text-blue-700"
-                                        >
-                                            {{ prQuarterLabel(row.quarter) || '—' }}
-                                        </td>
-
-                                        <td
-                                            class="px-4 py-4 text-center text-sm font-black tabular-nums text-slate-900"
-                                        >
-                                            {{ prDisplayNumber(row.quantity) }}
-                                        </td>
-
-                                        <td
-                                            class="px-4 py-4 text-center"
-                                        >
-                                            <span
-                                                class="inline-flex rounded-full border px-2.5 py-1.5 text-[10px] font-black"
-                                                :class="prStatusClass(row.status)"
-                                            >
-                                                {{ prStatusLabel(row.status) }}
-                                            </span>
-                                        </td>
-
-                                        <td class="px-4 py-4">
-                                            <p
-                                                class="text-[11px] font-semibold leading-5"
-                                                :class="
-                                                    row.status === 'match'
-                                                        ? 'text-emerald-700'
-                                                        : row.status === 'not_found'
-                                                            ? 'text-rose-700'
-                                                            : 'text-amber-700'
-                                                "
-                                            >
-                                                {{ row.notes || '—' }}
-                                            </p>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-
-                        <div
-                            v-else
-                            class="px-6 py-12 text-center"
-                        >
-                            <p
-                                class="text-sm font-black text-slate-700"
-                            >
-                                No PR rows match the current filters.
-                            </p>
-                        </div>
-                    </div>
-                </template>
-            </section>
-
-
             <!-- LEDGER WORKSPACE -->
             <section
-                v-if="activeTab !== 'reconciliation' && activeTab !== 'purchase_request'"
+                v-if="activeTab !== 'reconciliation'"
                 class="inventory-ledger-surface mt-4 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"
             >
                 <!-- TOOLBAR -->
@@ -7856,6 +8872,29 @@ const generateInventoryReport = () => {
                                 >
                                     {{ quarterFilter.toUpperCase() }}
                                 </span>
+
+                                <span
+                                    v-if="
+                                        ['ict', 'returned'].includes(
+                                            activeTab
+                                        )
+                                        && mrFilter !== 'all'
+                                    "
+                                    class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700"
+                                >
+                                    {{ selectedMrName || 'Selected MR' }}
+                                    ·
+                                    {{ filteredMrAssetCount }}
+                                    {{ filteredMrAssetCount === 1 ? 'asset' : 'assets' }}
+                                </span>
+
+                                <span
+                                    v-if="activeTab === 'returned'"
+                                    class="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-black text-rose-700"
+                                >
+                                    {{ filteredReturnedAssetRows.length }}
+                                    returned
+                                </span>
                             </div>
                            
                         </div>
@@ -7867,7 +8906,11 @@ const generateInventoryReport = () => {
                                     ? 'xl:w-[520px] xl:grid-cols-1'
                                     : activeTab === 'supplies'
                                         ? 'xl:w-[1080px] xl:grid-cols-[minmax(260px,1fr)_110px_140px_120px_150px]'
-                                        : 'xl:w-[900px] xl:grid-cols-[minmax(260px,1fr)_110px_140px_120px]'
+                                        : activeTab === 'ict'
+                                            ? 'xl:w-[1120px] xl:grid-cols-[minmax(240px,1fr)_110px_130px_220px_120px]'
+                                            : activeTab === 'returned'
+                                                ? 'xl:w-[980px] xl:grid-cols-[minmax(260px,1fr)_110px_130px_260px]'
+                                                : 'xl:w-[520px] xl:grid-cols-1'
                             "
                         >
                             <!-- SEARCH -->
@@ -7892,7 +8935,9 @@ const generateInventoryReport = () => {
                                             ? 'Search supplies...'
                                             : activeTab === 'ict'
                                                 ? 'Search ICT...'
-                                                : 'Search item, location, or remarks...'
+                                                : activeTab === 'returned'
+                                                    ? 'Search returned ICT...'
+                                                    : 'Search item, location, or remarks...'
                                     "
                                     class="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-4 text-xs font-semibold text-slate-700 outline-none transition focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-100"
                                 />
@@ -7927,6 +8972,25 @@ const generateInventoryReport = () => {
                                     :value="unit.value"
                                 >
                                     {{ unit.label }}
+                                </option>
+                            </select>
+
+                            <select
+                                v-if="['ict', 'returned'].includes(activeTab)"
+                                v-model="mrFilter"
+                                class="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                title="Filter ICT assets by MR"
+                            >
+                                <option value="all">
+                                    All MR
+                                </option>
+
+                                <option
+                                    v-for="person in mrPersonnelOptions"
+                                    :key="`mr-filter-${person.id}`"
+                                    :value="person.id"
+                                >
+                                    {{ person.name }}
                                 </option>
                             </select>
 
@@ -8279,15 +9343,41 @@ const generateInventoryReport = () => {
 
                                 <!-- REMARKS -->
                                 <td class="px-3 py-3 align-middle">
-                                    <p
-                                        v-if="item.remarks"
-                                        class="break-words text-[11px] font-semibold leading-4 text-slate-600"
+                                    <div
+                                        v-if="hasQuarterRemarks(item)"
+                                        class="space-y-1.5"
                                     >
-                                        {{ item.remarks }}
-                                    </p>
+                                        <div
+                                            v-for="entry in quarterRemarksEntries(item)"
+                                            :key="`quarter-remarks-${item.id}-${entry.quarter}`"
+                                            class="rounded-lg border border-blue-100 bg-blue-50/70 px-2.5 py-2"
+                                        >
+                                            <p class="text-[8px] font-black uppercase tracking-[0.08em] text-blue-500">
+                                                {{ entry.quarter.toUpperCase() }} Remarks
+                                            </p>
+                                            <p class="mt-1 break-words text-[10px] font-semibold leading-4 text-blue-900">
+                                                {{ entry.remarks }}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div
+                                        v-if="String(item.remarks || '').trim()"
+                                        class="mt-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2"
+                                    >
+                                        <p class="text-[8px] font-black uppercase tracking-[0.08em] text-slate-400">
+                                            General
+                                        </p>
+                                        <p class="mt-1 break-words text-[10px] font-semibold leading-4 text-slate-600">
+                                            {{ item.remarks }}
+                                        </p>
+                                    </div>
 
                                     <span
-                                        v-else
+                                        v-if="
+                                            !hasQuarterRemarks(item)
+                                            && !String(item.remarks || '').trim()
+                                        "
                                         class="text-xs font-semibold text-slate-300"
                                     >
                                         —
@@ -8401,14 +9491,225 @@ const generateInventoryReport = () => {
                     </table>
                 </div>
 
-                
+
+                <!-- RETURNED ICT -->
+                <div
+                    v-if="activeTab === 'returned'"
+                    class="overflow-hidden"
+                >
+                    <div
+                        class="border-b border-rose-100 bg-rose-50/60 px-5 py-4 sm:px-6"
+                    >
+                        <div
+                            class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                            <div>
+                                <h3
+                                    class="text-sm font-black text-rose-900"
+                                >
+                                    Returned ICT Properties
+                                </h3>
+
+                                <p
+                                    class="mt-1 text-[10px] font-semibold leading-5 text-rose-700/80"
+                                >
+                                    ICT units automatically appear here when their Status is changed to Returned.
+                                </p>
+                            </div>
+
+                            <span
+                                class="self-start rounded-full border border-rose-200 bg-white px-3 py-1.5 text-[10px] font-black text-rose-700 sm:self-auto"
+                            >
+                                {{ filteredReturnedAssetRows.length }}
+                                {{
+                                    filteredReturnedAssetRows.length === 1
+                                        ? 'property'
+                                        : 'properties'
+                                }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table
+                            class="inventory-ledger-table w-full min-w-[1250px] table-fixed"
+                        >
+                            <thead class="bg-rose-600 text-white">
+                                <tr>
+                                    <th class="w-[15%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Item Name
+                                    </th>
+
+                                    <th class="w-[15%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Description
+                                    </th>
+
+                                    <th class="w-[13%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Accessories
+                                    </th>
+
+                                    <th class="w-[14%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Property Number
+                                    </th>
+
+                                    <th class="w-[13%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Current User
+                                    </th>
+
+                                    <th class="w-[10%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Status
+                                    </th>
+
+                                    <th class="w-[12%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]">
+                                        MR
+                                    </th>
+
+                                    <th class="w-[8%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.09em]">
+                                        Action
+                                    </th>
+                                </tr>
+                            </thead>
+
+                            <tbody class="divide-y divide-rose-100">
+                                <tr
+                                    v-for="row in paginatedReturnedAssets"
+                                    :key="`returned-${row.key}`"
+                                    class="bg-white transition hover:bg-rose-50/45"
+                                >
+                                    <td class="px-3 py-3 align-top">
+                                        <p
+                                            class="break-words text-[11px] font-black leading-5 text-blue-950"
+                                        >
+                                            {{ row.item.item || '—' }}
+                                        </p>
+
+                                        <p
+                                            class="mt-1 text-[9px] font-bold text-slate-400"
+                                        >
+                                            {{ row.item.inventory_year || '—' }}
+                                            ·
+                                            {{ row.item.unit || '—' }}
+                                        </p>
+                                    </td>
+
+                                    <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-700">
+                                        {{ row.asset.description || '—' }}
+                                    </td>
+
+                                    <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-600">
+                                        {{ row.asset.accessories || '—' }}
+                                    </td>
+
+                                    <td class="px-3 py-3 align-top">
+                                        <span
+                                            class="inline-flex rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-black text-slate-800"
+                                        >
+                                            {{ row.asset.property_number || '—' }}
+                                        </span>
+                                    </td>
+
+                                    <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-600">
+                                        {{ row.asset.current_user || 'Unassigned' }}
+                                    </td>
+
+                                    <td class="px-3 py-3 text-center align-top">
+                                        <span
+                                            class="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.06em] text-rose-700"
+                                        >
+                                            Returned
+                                        </span>
+                                    </td>
+
+                                    <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-700">
+                                        {{ row.asset.mr || '—' }}
+                                    </td>
+
+                                    <td class="px-3 py-3 text-center align-top">
+                                        <div
+                                            class="flex items-center justify-center"
+                                        >
+
+                                            <button
+                                                type="button"
+                                                title="View History"
+                                                aria-label="View History"
+                                                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                                                @click="
+                                                    openHistoryModal(
+                                                        row.item,
+                                                        row.asset
+                                                    )
+                                                "
+                                            >
+                                                <svg
+                                                    class="h-4 w-4"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    stroke-width="2"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path d="M20 6v5h-5" />
+                                                    <path d="M19 11a7 7 0 1 0 1 4" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <tr
+                                    v-if="!paginatedReturnedAssets.length"
+                                >
+                                    <td
+                                        colspan="8"
+                                        class="px-6 py-16 text-center"
+                                    >
+                                        <div
+                                            class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 text-rose-400"
+                                        >
+                                            <svg
+                                                class="h-5 w-5"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <path d="M3 12h18" />
+                                                <path d="m8 7-5 5 5 5" />
+                                            </svg>
+                                        </div>
+
+                                        <p
+                                            class="mt-4 text-sm font-black text-slate-700"
+                                        >
+                                            No returned ICT properties found
+                                        </p>
+
+                                        <p
+                                            class="mt-1 text-xs font-semibold text-slate-400"
+                                        >
+                                            Change an ICT Property Status to Returned and it will appear here automatically.
+                                        </p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+
                 <!-- ICT TABLE -->
                 <div
                     v-if="activeTab === 'ict'"
                     class="hidden overflow-hidden lg:block"
                 >
                     <table class="inventory-ledger-table w-full table-fixed">
-                        <thead class="bg-blue-500 text-white">
+                        <thead class="border-b border-blue-700 bg-blue-600 text-white">
                             <tr>
                                 <th class="w-[28%] px-4 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Item Name
@@ -8438,30 +9739,30 @@ const generateInventoryReport = () => {
                                 :key="`${activeTab}-${item.category}-${item.id || item.item}`"
                             >
                                 <tr
-                                    :role="hasIctAssetDetails(item) ? 'button' : undefined"
-                                    :tabindex="hasIctAssetDetails(item) ? 0 : -1"
-                                    :aria-expanded="hasIctAssetDetails(item) ? isIctExpanded(item) : undefined"
-                                    :title="hasIctAssetDetails(item) ? 'Click to view Property Details' : undefined"
+                                    :role="hasVisibleIctAssetDetails(item) ? 'button' : undefined"
+                                    :tabindex="hasVisibleIctAssetDetails(item) ? 0 : -1"
+                                    :aria-expanded="hasVisibleIctAssetDetails(item) ? isIctExpanded(item) : undefined"
+                                    :title="hasVisibleIctAssetDetails(item) ? 'Click to view Property Details' : undefined"
                                     class="bg-white transition"
                                     :class="
-                                        hasIctAssetDetails(item)
+                                        hasVisibleIctAssetDetails(item)
                                             ? (
                                                 isIctExpanded(item)
                                                     ? 'cursor-pointer bg-blue-50/70 hover:bg-blue-50'
-                                                    : 'cursor-pointer hover:bg-blue-50/55'
+                                                    : 'cursor-pointer hover:bg-blue-50/45'
                                             )
                                             : 'cursor-default hover:bg-blue-50/35'
                                     "
                                     @click="
-                                        hasIctAssetDetails(item)
+                                        hasVisibleIctAssetDetails(item)
                                         && toggleIctAssetDetails(item)
                                     "
                                     @keydown.enter.prevent="
-                                        hasIctAssetDetails(item)
+                                        hasVisibleIctAssetDetails(item)
                                         && toggleIctAssetDetails(item)
                                     "
                                     @keydown.space.prevent="
-                                        hasIctAssetDetails(item)
+                                        hasVisibleIctAssetDetails(item)
                                         && toggleIctAssetDetails(item)
                                     "
                                 >
@@ -8472,7 +9773,7 @@ const generateInventoryReport = () => {
                                             </p>
 
                                             <svg
-                                                v-if="hasIctAssetDetails(item)"
+                                                v-if="hasVisibleIctAssetDetails(item)"
                                                 class="h-4 w-4 shrink-0 text-blue-600 transition-transform duration-200"
                                                 :class="isIctExpanded(item) ? 'rotate-180' : ''"
                                                 viewBox="0 0 24 24"
@@ -8615,36 +9916,129 @@ const generateInventoryReport = () => {
                                 </tr>
 
                                 <tr
-                                    v-if="hasIctAssetDetails(item) && isIctExpanded(item)"
+                                    v-if="hasVisibleIctAssetDetails(item) && isIctExpanded(item)"
                                     class="bg-slate-50/80"
                                 >
                                     <td
                                         colspan="5"
                                         class="px-4 pb-4 pt-1"
                                     >
-                                        <div class="overflow-hidden rounded-xl border border-blue-100 bg-white">
-                                            <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
-                                                <span>Description</span>
-                                                <span>Property Number</span>
-                                                <span>Current User</span>
-                                            </div>
+                                        <div class="overflow-hidden rounded-xl border border-blue-100 bg-white shadow-sm">
+                                            <div class="overflow-x-auto">
+                                                <table class="w-full min-w-[1080px] table-fixed">
+                                                    <thead
+                                                        class="text-white"
+                                                        style="background-color: #2563EB !important; color: #FFFFFF !important; border-bottom: 1px solid #1D4ED8 !important;"
+                                                    >
+                                                        <tr>
+                                                            <th class="w-[20%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Description
+                                                            </th>
+                                                            <th class="w-[18%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Accessories
+                                                            </th>
+                                                            <th class="w-[16%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Property Number
+                                                            </th>
+                                                            <th class="w-[17%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Current User
+                                                            </th>
+                                                            <th class="w-[13%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Status
+                                                            </th>
+                                                            <th class="w-[14%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                MR
+                                                            </th>
+                                                            <th class="w-[10%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
+                                                                Action
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
 
-                                            <div
-                                                v-for="(asset, assetIndex) in ictAssetDetails(item)"
-                                                :key="`ict-asset-row-${item.id}-${assetIndex}`"
-                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
-                                            >
-                                                <span class="break-words text-[11px] font-semibold text-slate-700">
-                                                    {{ asset.description || '—' }}
-                                                </span>
+                                                    <tbody class="divide-y divide-blue-100 bg-white">
+                                                        <tr
+                                                            v-for="(asset, assetIndex) in filteredIctAssetDetails(item)"
+                                                            :key="`ict-asset-row-${item.id}-${assetIndex}`"
+                                                            class="transition"
+                                                            :class="ictLifeSpanRowClass(asset)"
+                                                            :title="
+                                                                ictLifeSpanState(asset)?.title
+                                                                || undefined
+                                                            "
+                                                        >
+                                                            <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-700">
+                                                                {{ asset.description || '—' }}
+                                                            </td>
 
-                                                <span class="break-words text-[11px] font-black text-slate-800">
-                                                    {{ asset.property_number || '—' }}
-                                                </span>
+                                                            <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-600">
+                                                                {{ asset.accessories || '—' }}
+                                                            </td>
 
-                                                <span class="break-words text-[11px] font-semibold text-slate-600">
-                                                    {{ asset.current_user || 'Unassigned' }}
-                                                </span>
+                                                            <td class="px-3 py-3 align-top text-[11px] font-black leading-5 text-slate-800">
+                                                                <div class="flex items-start gap-1.5">
+                                                                    <span>
+                                                                        {{ asset.property_number || '—' }}
+                                                                    </span>
+
+                                                                    <span
+                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset)"
+                                                                        class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full border px-1 text-[10px] font-black"
+                                                                        :class="ictLifeSpanBadgeClass(asset)"
+                                                                        :title="ictLifeSpanState(asset)?.title"
+                                                                        aria-label="Life span warning"
+                                                                    >
+                                                                        ⚠
+                                                                    </span>
+                                                                </div>
+                                                            </td>
+
+                                                            <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-600">
+                                                                {{ asset.current_user || 'Unassigned' }}
+                                                            </td>
+
+                                                            <td class="px-3 py-3 text-center align-top">
+                                                                <div class="flex flex-col items-center gap-1.5">
+                                                                    <span
+                                                                        class="inline-flex rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.06em]"
+                                                                        :class="ictAssetStatusClass(asset.status)"
+                                                                    >
+                                                                        {{ ictAssetStatusLabel(asset.status) }}
+                                                                    </span>
+
+                                                                    <span
+                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset)"
+                                                                        class="inline-flex rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-[0.05em]"
+                                                                        :class="ictLifeSpanBadgeClass(asset)"
+                                                                        :title="ictLifeSpanState(asset)?.title"
+                                                                    >
+                                                                        ⚠
+                                                                        {{ ictLifeSpanState(asset)?.label }}
+                                                                    </span>
+                                                                </div>
+                                                            </td>
+
+                                                            <td class="px-3 py-3 align-top text-[11px] font-semibold leading-5 text-slate-700">
+                                                                {{ asset.mr || '—' }}
+                                                            </td>
+
+                                                            <td class="px-3 py-3 text-center align-top">
+                                                                <button
+                                                                    v-if="canManageInventory"
+                                                                    type="button"
+                                                                    class="rounded-lg border border-blue-200 bg-indigo-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100"
+                                                                    @click.stop="
+                                                                        openIctAssetEditModal(
+                                                                            item,
+                                                                            asset
+                                                                        )
+                                                                    "
+                                                                >
+                                                                    Edit
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
                                             </div>
                                         </div>
                                     </td>
@@ -8934,16 +10328,17 @@ const generateInventoryReport = () => {
                                         class="px-4 pb-4 pt-1"
                                     >
                                         <div class="overflow-hidden rounded-xl border border-blue-100 bg-white">
-                                            <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
+                                            <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-4 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
                                                 <span>Description</span>
                                                 <span>Property Number</span>
                                                 <span>Current User</span>
+                                                <span class="text-center">Action</span>
                                             </div>
 
                                             <div
                                                 v-for="(asset, assetIndex) in ictAssetDetails(item)"
                                                 :key="`other-asset-row-${item.id}-${assetIndex}`"
-                                                class="grid grid-cols-3 gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
+                                                class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
                                             >
                                                 <span class="break-words text-[11px] font-semibold text-slate-700">
                                                     {{ asset.description || '—' }}
@@ -8956,6 +10351,20 @@ const generateInventoryReport = () => {
                                                 <span class="break-words text-[11px] font-semibold text-slate-600">
                                                     {{ asset.current_user || 'Unassigned' }}
                                                 </span>
+
+                                                <button
+                                                    v-if="canManageInventory"
+                                                    type="button"
+                                                    class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] font-black text-blue-700 transition hover:bg-blue-100"
+                                                    @click.stop="
+                                                        openIctAssetEditModal(
+                                                            item,
+                                                            asset
+                                                        )
+                                                    "
+                                                >
+                                                    Edit
+                                                </button>
                                             </div>
                                         </div>
                                     </td>
@@ -9121,16 +10530,17 @@ const generateInventoryReport = () => {
                                 @click.stop
                                 @keydown.stop
                             >
-                                <div class="grid grid-cols-3 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
+                                <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-2 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
                                     <span>Description</span>
                                     <span>Property Number</span>
                                     <span>Current User</span>
+                                    <span class="text-center">Action</span>
                                 </div>
 
                                 <div
                                     v-for="(asset, assetIndex) in ictAssetDetails(item)"
                                     :key="`mobile-other-asset-${item.id}-${assetIndex}`"
-                                    class="grid grid-cols-3 gap-3 border-b border-blue-100 px-3 py-2.5 last:border-b-0"
+                                    class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-2 border-b border-blue-100 px-3 py-2.5 last:border-b-0"
                                 >
                                     <span class="break-words text-[10px] font-semibold text-slate-700">
                                         {{ asset.description || '—' }}
@@ -9141,6 +10551,20 @@ const generateInventoryReport = () => {
                                     <span class="break-words text-[10px] font-semibold text-slate-600">
                                         {{ asset.current_user || 'Unassigned' }}
                                     </span>
+
+                                    <button
+                                        v-if="canManageInventory"
+                                        type="button"
+                                        class="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[9px] font-black text-blue-700 transition hover:bg-blue-100"
+                                        @click.stop="
+                                            openIctAssetEditModal(
+                                                item,
+                                                asset
+                                            )
+                                        "
+                                    >
+                                        Edit
+                                    </button>
                                 </div>
                             </div>
 
@@ -9217,7 +10641,7 @@ const generateInventoryReport = () => {
                         </span>
                         of
                         <span class="font-black text-slate-800">
-                            {{ filteredItems.length }}
+                            {{ activeFilteredCount }}
                         </span>
                     </p>
 
@@ -9743,7 +11167,7 @@ const generateInventoryReport = () => {
                                     <p class="mt-1 text-xs font-semibold text-slate-500">
                                         {{
                                             activeTab === 'ict'
-                                                ? 'Each ICT unit requires Description and Property Number. Current User is optional.'
+                                                ? 'Each ICT unit tracks Description, Accessories, Property Number, Current User, Life Span Ended, Status, and MR.'
                                                 : (
                                                     activeTab === 'other'
                                                     && addOtherCategoryIsAssetTracked
@@ -9789,15 +11213,14 @@ const generateInventoryReport = () => {
                                     :key="`new-ict-asset-${assetIndex}`"
                                     class="grid gap-3 rounded-xl border border-slate-200 bg-white p-3"
                                     :class="
-                                        (
-                                            activeTab === 'ict'
-                                            || (
+                                        activeTab === 'ict'
+                                            ? 'sm:grid-cols-2'
+                                            : (
                                                 activeTab === 'other'
                                                 && addOtherCategoryIsAssetTracked
                                             )
-                                        )
-                                            ? 'sm:grid-cols-3'
-                                            : 'sm:grid-cols-2'
+                                                ? 'sm:grid-cols-3'
+                                                : 'sm:grid-cols-2'
                                     "
                                 >
                                     <div
@@ -9810,7 +11233,7 @@ const generateInventoryReport = () => {
                                         "
                                     >
                                         <label
-                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
                                         >
                                             Description
                                             <span class="text-rose-500">*</span>
@@ -9825,7 +11248,7 @@ const generateInventoryReport = () => {
                                             :class="
                                                 addItemErrors[`ict_assets.${assetIndex}.description`]
                                                     ? 'border-rose-400'
-                                                    : 'border-slate-200 focus:border-blue-400'
+                                                    : 'border-blue-200 focus:border-blue-400'
                                             "
                                         />
 
@@ -9839,7 +11262,7 @@ const generateInventoryReport = () => {
 
                                     <div>
                                         <label
-                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
                                         >
                                             Property Number
                                             <span class="text-rose-500">*</span>
@@ -9854,7 +11277,7 @@ const generateInventoryReport = () => {
                                             :class="
                                                 addItemErrors[`ict_assets.${assetIndex}.property_number`]
                                                     ? 'border-rose-400'
-                                                    : 'border-slate-200 focus:border-blue-400'
+                                                    : 'border-blue-200 focus:border-blue-400'
                                             "
                                         />
 
@@ -9866,9 +11289,18 @@ const generateInventoryReport = () => {
                                         </p>
                                     </div>
 
-                                    <div>
+                                                                        <div
+                                        v-if="activeTab === 'ict'"
+                                        class="sm:col-span-2 -mb-1 mt-1"
+                                    >
+                                        <p class="text-[9px] font-black uppercase tracking-[0.10em] text-emerald-700">
+                                            Assignment & Status
+                                        </p>
+                                    </div>
+
+<div>
                                         <label
-                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
                                         >
                                             Current User
                                             <span class="font-semibold normal-case tracking-normal text-slate-400">
@@ -9881,8 +11313,155 @@ const generateInventoryReport = () => {
                                             type="text"
                                             maxlength="255"
                                             placeholder="Employee / Office / User"
+                                            class="h-10 w-full rounded-lg border border-emerald-200 bg-emerald-50/40 px-3 text-xs font-semibold text-emerald-950 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+                                        />
+                                    </div>
+
+<div v-if="activeTab === 'ict'">
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
+                                        >
+                                            Status
+                                            <span class="text-rose-500">*</span>
+                                        </label>
+
+                                        <select
+                                            v-model="asset.status"
+                                            class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-emerald-950 outline-none focus:ring-4 focus:ring-emerald-100"
+                                            :class="
+                                                addItemErrors[`ict_assets.${assetIndex}.status`]
+                                                    ? 'border-rose-400'
+                                                    : 'border-emerald-200 bg-emerald-50/40 focus:border-emerald-400'
+                                            "
+                                        >
+                                            <option
+                                                v-for="option in ictAssetStatusOptions"
+                                                :key="`add-status-${assetIndex}-${option.value}`"
+                                                :value="option.value"
+                                            >
+                                                {{ option.label }}
+                                            </option>
+                                        </select>
+
+                                        <p
+                                            v-if="addItemErrors[`ict_assets.${assetIndex}.status`]"
+                                            class="mt-1 text-[10px] font-bold text-rose-600"
+                                        >
+                                            {{ addItemErrors[`ict_assets.${assetIndex}.status`] }}
+                                        </p>
+                                    </div>
+
+                                    <div
+                                        v-if="activeTab === 'ict'"
+                                        class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 sm:col-span-2"
+                                    >
+                                        <p class="mb-3 text-[9px] font-black uppercase tracking-[0.10em] text-rose-700">
+                                            Asset Life Cycle
+                                        </p>
+
+                                        <div class="grid gap-3 sm:grid-cols-2">
+                                            <div>
+                                                <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
+                                                    Date Acquired
+                                                </label>
+
+                                                <input
+                                                    v-model="asset.date_acquired"
+                                                    type="date"
+                                                    class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                                    :class="
+                                                        addItemErrors[`ict_assets.${assetIndex}.date_acquired`]
+                                                            ? 'border-rose-400'
+                                                            : 'border-rose-200 bg-white focus:border-rose-400'
+                                                    "
+                                                />
+
+                                                <p
+                                                    v-if="addItemErrors[`ict_assets.${assetIndex}.date_acquired`]"
+                                                    class="mt-1 text-[10px] font-bold text-rose-600"
+                                                >
+                                                    {{ addItemErrors[`ict_assets.${assetIndex}.date_acquired`] }}
+                                                </p>
+                                            </div>
+
+                                            <div>
+                                                <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
+                                                    Life Span Ended
+                                                </label>
+
+                                                <input
+                                                    v-model="asset.life_span_ended"
+                                                    type="date"
+                                                    class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                                    :class="
+                                                        addItemErrors[`ict_assets.${assetIndex}.life_span_ended`]
+                                                            ? 'border-rose-400'
+                                                            : 'border-rose-200 bg-white focus:border-rose-400'
+                                                    "
+                                                />
+
+                                                <p
+                                                    v-if="addItemErrors[`ict_assets.${assetIndex}.life_span_ended`]"
+                                                    class="mt-1 text-[10px] font-bold text-rose-600"
+                                                >
+                                                    {{ addItemErrors[`ict_assets.${assetIndex}.life_span_ended`] }}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
+                                            Red warning starts automatically when 365 days or less remain before the Life Span Ended date.
+                                        </p>
+                                    </div>
+
+                                    <div v-if="activeTab === 'ict'">
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                        >
+                                            Accessories
+                                            <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                                (Optional)
+                                            </span>
+                                        </label>
+
+                                        <input
+                                            v-model="asset.accessories"
+                                            type="text"
+                                            maxlength="500"
+                                            placeholder="Mouse, charger, bag, etc."
                                             class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                                         />
+                                    </div>
+
+                                    
+
+                                    <div v-if="activeTab === 'ict'">
+                                        <label
+                                            class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-indigo-700"
+                                        >
+                                            MR
+                                            <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                                (Permanent Employee)
+                                            </span>
+                                        </label>
+
+                                        <select
+                                            v-model="asset.mr_personnel_id"
+                                            class="h-10 w-full rounded-lg border border-indigo-200 bg-indigo-50/40 px-3 text-xs font-semibold text-indigo-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100"
+                                            @change="syncAssetMr(asset)"
+                                        >
+                                            <option value="">
+                                                No MR / Unassigned
+                                            </option>
+
+                                            <option
+                                                v-for="person in mrPersonnelOptions"
+                                                :key="`add-mr-${assetIndex}-${person.id}`"
+                                                :value="person.id"
+                                            >
+                                                {{ person.name }}
+                                            </option>
+                                        </select>
                                     </div>
                                 </div>
                             </div>
@@ -10176,6 +11755,29 @@ const generateInventoryReport = () => {
                                             </strong>
                                         </p>
                                     </div>
+
+                                    <div class="mt-3 border-t border-slate-100 pt-3">
+                                        <label class="mb-2 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500">
+                                            {{ quarter.toUpperCase() }} Remarks
+                                            <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                                (Optional)
+                                            </span>
+                                        </label>
+
+                                        <textarea
+                                            :value="quarterStockFormRemarks(newItemForm, quarter)"
+                                            rows="2"
+                                            maxlength="1000"
+                                            :placeholder="`Remarks for ${quarter.toUpperCase()}...`"
+                                            class="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold leading-5 text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                            @input="
+                                                setNewQuarterStockRemarks(
+                                                    quarter,
+                                                    $event.target.value
+                                                )
+                                            "
+                                        ></textarea>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -10183,12 +11785,58 @@ const generateInventoryReport = () => {
                     </div>
 
 
-                                        <!-- REMARKS -->
+                                        <!-- ICT MR HOLDER -->
+                    <div v-if="releaseIsIctAsset">
+                        <label class="mb-2 block text-sm font-black text-indigo-950">
+                            MR Holder
+                            <span class="text-rose-500">*</span>
+                        </label>
+
+                        <select
+                            v-model="releaseItemForm.releaseMrPersonnelId"
+                            class="h-12 w-full rounded-xl border bg-white px-4 text-sm font-semibold text-indigo-950 outline-none transition focus:ring-4 focus:ring-indigo-100"
+                            :class="
+                                releaseItemErrors.releaseMrPersonnelId
+                                    ? 'border-rose-400'
+                                    : 'border-indigo-200 bg-indigo-50/40 focus:border-indigo-400'
+                            "
+                            @change="syncReleaseMrHolder"
+                        >
+                            <option value="" disabled>
+                                Select MR holder
+                            </option>
+
+                            <option
+                                v-for="person in mrPersonnelOptions"
+                                :key="`release-mr-${person.id}`"
+                                :value="person.id"
+                            >
+                                {{ person.name }}
+                            </option>
+                        </select>
+
+                        <p
+                            v-if="releaseItemErrors.releaseMrPersonnelId"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ releaseItemErrors.releaseMrPersonnelId }}
+                        </p>
+
+                        <p class="mt-2 text-[10px] font-semibold leading-4 text-slate-400">
+                            Saved directly to the selected ICT Property Number.
+                        </p>
+                    </div>
+
+                    <!-- REMARKS -->
                     <div>
                         <label
                             class="mb-2 block text-sm font-black text-slate-800"
                         >
-                            Remarks
+                            {{
+                                activeTab === 'supplies'
+                                    ? 'General Remarks'
+                                    : 'Remarks'
+                            }}
                         </label>
 
                         <textarea
@@ -10196,7 +11844,11 @@ const generateInventoryReport = () => {
                                 newItemForm.remarks
                             "
                             rows="3"
-                            placeholder="Optional remarks..."
+                            :placeholder="
+                                activeTab === 'supplies'
+                                    ? 'Optional general remarks for the whole item...'
+                                    : 'Optional remarks...'
+                            "
                             class="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
                         ></textarea>
                     </div>
@@ -10247,15 +11899,52 @@ const generateInventoryReport = () => {
                                 }}
                             </h3>
                             <p class="mt-1 text-xs font-semibold text-slate-500">
-                                Edit all item details here. Quantity Released remains automatic.
+                                {{
+                                    fullEditingItem.category === 'ict'
+                                    && !isIctSubscription(fullEditingItem)
+                                        ? 'Edit the item details or add new units. Edit each Property Detail from the accordion.'
+                                        : 'Edit item details here. Quantity Released remains automatic.'
+                                }}
                             </p>
                         </div>
 
-                        <button
-                            type="button"
-                            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50"
-                            @click="closeFullEditModal"
-                        >×</button>
+                        <div
+                            class="flex shrink-0 items-center gap-2"
+                        >
+                            <button
+                                type="button"
+                                title="View History"
+                                aria-label="View History"
+                                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-slate-200"
+                                @click="
+                                    openHistoryModal(
+                                        fullEditingItem
+                                    )
+                                "
+                            >
+                                <svg
+                                    class="h-5 w-5"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M20 6v5h-5" />
+                                    <path d="M19 11a7 7 0 1 0 1 4" />
+                                </svg>
+                            </button>
+
+                            <button
+                                type="button"
+                                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50"
+                                @click="closeFullEditModal"
+                            >
+                                ×
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -10309,20 +11998,266 @@ const generateInventoryReport = () => {
                                 fullEditForm.category
                             )
                         "
-                        class="sm:col-span-2">
-                        <label class="mb-2 block text-sm font-black text-slate-800">Count</label>
-                        <input
-                            v-model.number="fullEditForm.currently_available"
-                            type="number"
-                            min="0"
-                            step="1"
-                            placeholder="Enter number of items"
-                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100" />
-                        <p
-                            v-if="fullEditErrors.currently_available"
-                            class="mt-2 text-xs font-bold text-rose-600">
-                            {{ fullEditErrors.currently_available }}
-                        </p>
+                        class="sm:col-span-2"
+                    >
+                        <div
+                            class="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"
+                        >
+                            <div
+                                class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"
+                            >
+                                <div class="min-w-0">
+                                    <label
+                                        class="mb-2 block text-sm font-black text-slate-800"
+                                    >
+                                        Current Count
+                                    </label>
+
+                                    <div
+                                        class="flex h-11 min-w-[120px] items-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-black tabular-nums text-slate-900"
+                                    >
+                                        {{
+                                            fullEditForm.currently_available
+                                            || 0
+                                        }}
+                                    </div>
+
+                                    <p
+                                        class="mt-2 text-[10px] font-semibold leading-4 text-slate-500"
+                                    >
+                                        Current Count is protected from direct editing. Use the Add button when new stock or a new unit arrives.
+                                    </p>
+                                </div>
+
+                                <button
+                                    v-if="!showAddOtherCountField"
+                                    type="button"
+                                    class="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                                    @click="
+                                        showAddOtherCountField = true
+                                    "
+                                >
+                                    <span
+                                        class="text-lg leading-none"
+                                        aria-hidden="true"
+                                    >
+                                        +
+                                    </span>
+                                    {{
+                                        isPropertyTrackedOtherCategory(
+                                            fullEditForm.category
+                                        )
+                                            ? 'Add Unit'
+                                            : 'Add Stock'
+                                    }}
+                                </button>
+
+                                <button
+                                    v-else
+                                    type="button"
+                                    class="inline-flex h-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50"
+                                    @click="resetAddOtherCount"
+                                >
+                                    Cancel Add
+                                </button>
+                            </div>
+
+                            <div
+                                v-if="showAddOtherCountField"
+                                class="mt-4 border-t border-blue-100 pt-4"
+                            >
+                                <!-- FURNITURE / FIXTURES -->
+                                <div
+                                    v-if="
+                                        isPropertyTrackedOtherCategory(
+                                            fullEditForm.category
+                                        )
+                                    "
+                                    class="rounded-xl border border-blue-200 bg-white p-4"
+                                >
+                                    <div
+                                        class="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                                    >
+                                        <div>
+                                            <p
+                                                class="text-xs font-black text-blue-900"
+                                            >
+                                                New Furniture / Fixture Unit
+                                            </p>
+
+                                            <p
+                                                class="mt-1 text-[10px] font-semibold leading-4 text-slate-500"
+                                            >
+                                                Complete the Property Details below. Saving automatically adds 1 to the Current Count.
+                                            </p>
+                                        </div>
+
+                                        <span
+                                            class="self-start rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-black text-emerald-700 sm:self-auto"
+                                        >
+                                            New Count:
+                                            {{
+                                                Number(
+                                                    fullEditForm.currently_available
+                                                    || 0
+                                                ) + 1
+                                            }}
+                                        </span>
+                                    </div>
+
+                                    <div
+                                        class="grid gap-3 md:grid-cols-3"
+                                    >
+                                        <div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                            >
+                                                Description
+                                                <span class="text-rose-500">*</span>
+                                            </label>
+
+                                            <input
+                                                v-model="newOtherAssetForm.description"
+                                                type="text"
+                                                maxlength="255"
+                                                placeholder="Example: Office Chair"
+                                                class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                                :class="
+                                                    fullEditErrors['new_other_asset.description']
+                                                        ? 'border-rose-400'
+                                                        : 'border-blue-200 focus:border-blue-400'
+                                                "
+                                            />
+
+                                            <p
+                                                v-if="fullEditErrors['new_other_asset.description']"
+                                                class="mt-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                                {{ fullEditErrors['new_other_asset.description'] }}
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                            >
+                                                Property Number
+                                                <span class="text-rose-500">*</span>
+                                            </label>
+
+                                            <input
+                                                v-model="newOtherAssetForm.property_number"
+                                                type="text"
+                                                maxlength="100"
+                                                placeholder="Enter property number"
+                                                class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                                :class="
+                                                    fullEditErrors['new_other_asset.property_number']
+                                                        ? 'border-rose-400'
+                                                        : 'border-blue-200 focus:border-blue-400'
+                                                "
+                                            />
+
+                                            <p
+                                                v-if="fullEditErrors['new_other_asset.property_number']"
+                                                class="mt-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                                {{ fullEditErrors['new_other_asset.property_number'] }}
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
+                                            >
+                                                Current User
+                                                <span
+                                                    class="font-semibold normal-case tracking-normal text-slate-400"
+                                                >
+                                                    (Optional)
+                                                </span>
+                                            </label>
+
+                                            <input
+                                                v-model="newOtherAssetForm.current_user"
+                                                type="text"
+                                                maxlength="255"
+                                                placeholder="Employee / Office / User"
+                                                class="h-10 w-full rounded-lg border border-emerald-200 bg-emerald-50/40 px-3 text-xs font-semibold text-emerald-950 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- EMERGENCY KITS / TOKEN & GIVEAWAYS -->
+                                <div
+                                    v-else
+                                    class="rounded-xl border border-emerald-100 bg-emerald-50 p-4"
+                                >
+                                    <label
+                                        class="mb-2 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
+                                    >
+                                        Quantity to Add
+                                    </label>
+
+                                    <input
+                                        v-model.number="otherCountToAdd"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        placeholder="Example: 5"
+                                        class="h-11 w-full rounded-xl border bg-white px-4 text-sm font-black tabular-nums text-slate-900 outline-none focus:ring-4 focus:ring-emerald-100"
+                                        :class="
+                                            fullEditErrors.add_other_count
+                                                ? 'border-rose-400'
+                                                : 'border-emerald-200 focus:border-emerald-400'
+                                        "
+                                    />
+
+                                    <p
+                                        v-if="fullEditErrors.add_other_count"
+                                        class="mt-2 text-xs font-bold text-rose-600"
+                                    >
+                                        {{ fullEditErrors.add_other_count }}
+                                    </p>
+
+                                    <p
+                                        class="mt-2 text-[10px] font-semibold leading-4 text-emerald-700"
+                                    >
+                                        Saving adds this quantity to the Current Count. Existing stock is not replaced.
+                                    </p>
+
+                                    <div
+                                        v-if="
+                                            Number.isInteger(
+                                                Number(otherCountToAdd)
+                                            )
+                                            && Number(otherCountToAdd) > 0
+                                        "
+                                        class="mt-3 flex items-center justify-between rounded-lg border border-emerald-200 bg-white px-3 py-2"
+                                    >
+                                        <span
+                                            class="text-[10px] font-bold text-slate-500"
+                                        >
+                                            New Count
+                                        </span>
+
+                                        <span
+                                            class="text-sm font-black tabular-nums text-emerald-700"
+                                        >
+                                            {{
+                                                Number(
+                                                    fullEditForm.currently_available
+                                                    || 0
+                                                )
+                                                +
+                                                Number(otherCountToAdd)
+                                            }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div
@@ -10375,203 +12310,403 @@ const generateInventoryReport = () => {
 
                     <div
                         v-if="fullEditForm.category === 'ict'"
+                        :class="
+                            !isIctSubscription(
+                                fullEditForm.unit
+                            )
+                                ? 'sm:col-span-2'
+                                : ''
+                        "
                     >
-                        <label class="mb-2 block text-sm font-black text-slate-800">
-                            {{
-                                isIctMonthBased(fullEditForm.unit)
-                                    ? 'Subscription Duration (Month/s)'
-                                    : isIctYearBased(fullEditForm.unit)
-                                        ? 'Subscription Duration (Year/s)'
-                                        : 'Count'
-                            }}
-                        </label>
-
-                        <input
-                            v-model.number="fullEditForm.currently_available"
-                            type="number"
-                            min="0"
-                            step="1"
-                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                        />
-
-                        <p
-                            v-if="fullEditErrors.currently_available"
-                            class="mt-2 text-xs font-bold text-rose-600"
+                        <template
+                            v-if="
+                                isIctSubscription(
+                                    fullEditForm.unit
+                                )
+                            "
                         >
-                            {{ fullEditErrors.currently_available }}
-                        </p>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                {{
+                                    isIctMonthBased(fullEditForm.unit)
+                                        ? 'Subscription Duration (Month/s)'
+                                        : 'Subscription Duration (Year/s)'
+                                }}
+                            </label>
+
+                            <input
+                                v-model.number="fullEditForm.currently_available"
+                                type="number"
+                                min="0"
+                                step="1"
+                                class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-black tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            />
+
+                            <p
+                                v-if="fullEditErrors.currently_available"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ fullEditErrors.currently_available }}
+                            </p>
+                        </template>
+
+                        <template v-else>
+                            <div
+                                class="rounded-2xl border border-blue-100 bg-blue-50/50 p-4"
+                            >
+                                <div
+                                    class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"
+                                >
+                                    <div class="min-w-0">
+                                        <label
+                                            class="mb-2 block text-sm font-black text-slate-800"
+                                        >
+                                            Current Count
+                                        </label>
+
+                                        <div
+                                            class="flex h-11 min-w-[120px] items-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-black tabular-nums text-slate-900"
+                                        >
+                                            {{
+                                                fullEditForm.currently_available
+                                                || 0
+                                            }}
+                                        </div>
+
+                                        <p
+                                            class="mt-2 text-[10px] font-semibold leading-4 text-slate-500"
+                                        >
+                                            Count updates automatically when a new ICT unit is added.
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        v-if="!showAddIctUnitFields"
+                                        type="button"
+                                        class="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                                        @click="
+                                            showAddIctUnitFields = true
+                                        "
+                                    >
+                                        <span
+                                            class="text-lg leading-none"
+                                            aria-hidden="true"
+                                        >
+                                            +
+                                        </span>
+                                        Add ICT Unit
+                                    </button>
+
+                                    <button
+                                        v-else
+                                        type="button"
+                                        class="inline-flex h-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50"
+                                        @click="resetNewIctAssetForm"
+                                    >
+                                        Cancel Add
+                                    </button>
+                                </div>
+
+                                <div
+                                    v-if="showAddIctUnitFields"
+                                    class="mt-4 border-t border-blue-100 pt-4"
+                                >
+                                    <div
+                                        class="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3"
+                                    >
+                                        <p
+                                            class="text-xs font-black text-emerald-800"
+                                        >
+                                            New ICT Unit
+                                        </p>
+
+                                        <p
+                                            class="mt-1 text-[10px] font-semibold leading-5 text-emerald-700"
+                                        >
+                                            Complete the details below. Saving this item will automatically add 1 to the Current Count.
+                                        </p>
+                                    </div>
+
+                                    <div
+                                        class="grid gap-4 sm:grid-cols-2"
+                                    >
+                                        <div class="sm:col-span-2">
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                            >
+                                                Description
+                                                <span class="text-rose-500">*</span>
+                                            </label>
+
+                                            <input
+                                                v-model="newIctAssetForm.description"
+                                                type="text"
+                                                maxlength="255"
+                                                :placeholder="
+                                individualPropertyEditIsOther
+                                    ? 'Example: Office Chair, Table, Cabinet'
+                                    : 'Example: Laptop, Desktop, Monitor'
+                            "
+                                                class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                                :class="
+                                                    fullEditErrors['new_ict_asset.description']
+                                                        ? 'border-rose-400'
+                                                        : 'border-blue-200 focus:border-blue-400'
+                                                "
+                                            />
+
+                                            <p
+                                                v-if="fullEditErrors['new_ict_asset.description']"
+                                                class="mt-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                                {{ fullEditErrors['new_ict_asset.description'] }}
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
+                                            >
+                                                Accessories
+                                            </label>
+
+                                            <input
+                                                v-model="newIctAssetForm.accessories"
+                                                type="text"
+                                                maxlength="500"
+                                                placeholder="Mouse, charger, bag, etc."
+                                                class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                            >
+                                                Property Number
+                                                <span class="text-rose-500">*</span>
+                                            </label>
+
+                                            <input
+                                                v-model="newIctAssetForm.property_number"
+                                                type="text"
+                                                maxlength="100"
+                                                placeholder="Enter Property Number"
+                                                class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                                                :class="
+                                                    fullEditErrors['new_ict_asset.property_number']
+                                                        ? 'border-rose-400'
+                                                        : 'border-blue-200 focus:border-blue-400'
+                                                "
+                                            />
+
+                                            <p
+                                                v-if="fullEditErrors['new_ict_asset.property_number']"
+                                                class="mt-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                                {{ fullEditErrors['new_ict_asset.property_number'] }}
+                                            </p>
+                                        </div>
+
+                                                                                <div class="sm:col-span-2 -mb-1 mt-1">
+                                            <p class="text-[9px] font-black uppercase tracking-[0.10em] text-emerald-700">
+                                                Assignment & Status
+                                            </p>
+                                        </div>
+
+<div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
+                                            >
+                                                Current User
+                                            </label>
+
+                                            <input
+                                                v-model="newIctAssetForm.current_user"
+                                                type="text"
+                                                maxlength="255"
+                                                placeholder="Employee / Office / User"
+                                                class="h-10 w-full rounded-lg border border-emerald-200 bg-emerald-50/40 px-3 text-xs font-semibold text-emerald-950 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+                                            />
+                                        </div>
+
+<div>
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-emerald-700"
+                                            >
+                                                Status
+                                                <span class="text-rose-500">*</span>
+                                            </label>
+
+                                            <select
+                                                v-model="newIctAssetForm.status"
+                                                class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-emerald-950 outline-none focus:ring-4 focus:ring-emerald-100"
+                                                :class="
+                                                    fullEditErrors['new_ict_asset.status']
+                                                        ? 'border-rose-400'
+                                                        : 'border-emerald-200 bg-emerald-50/40 focus:border-emerald-400'
+                                                "
+                                            >
+                                                <option
+                                                    v-for="option in ictAssetStatusOptions"
+                                                    :key="`new-item-status-${option.value}`"
+                                                    :value="option.value"
+                                                >
+                                                    {{ option.label }}
+                                                </option>
+                                            </select>
+
+                                            <p
+                                                v-if="fullEditErrors['new_ict_asset.status']"
+                                                class="mt-1 text-[10px] font-bold text-rose-600"
+                                            >
+                                                {{ fullEditErrors['new_ict_asset.status'] }}
+                                            </p>
+                                        </div>
+
+                                        <div
+                                            class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 sm:col-span-2"
+                                        >
+                                            <p class="mb-3 text-[9px] font-black uppercase tracking-[0.10em] text-blue-600">
+                                                Asset Life Cycle
+                                            </p>
+
+                                            <div class="grid gap-3 sm:grid-cols-2">
+                                                <div>
+                                                    <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
+                                                        Date Acquired
+                                                    </label>
+
+                                                    <input
+                                                        v-model="newIctAssetForm.date_acquired"
+                                                        type="date"
+                                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                                        :class="
+                                                            fullEditErrors['new_ict_asset.date_acquired']
+                                                                ? 'border-rose-400'
+                                                                : 'border-rose-200 bg-white focus:border-rose-400'
+                                                        "
+                                                    />
+
+                                                    <p
+                                                        v-if="fullEditErrors['new_ict_asset.date_acquired']"
+                                                        class="mt-1 text-[10px] font-bold text-rose-600"
+                                                    >
+                                                        {{ fullEditErrors['new_ict_asset.date_acquired'] }}
+                                                    </p>
+                                                </div>
+
+                                                <div>
+                                                    <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
+                                                        Life Span Ended
+                                                    </label>
+
+                                                    <input
+                                                        v-model="newIctAssetForm.life_span_ended"
+                                                        type="date"
+                                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                                        :class="
+                                                            fullEditErrors['new_ict_asset.life_span_ended']
+                                                                ? 'border-rose-400'
+                                                                : 'border-rose-200 bg-white focus:border-rose-400'
+                                                        "
+                                                    />
+
+                                                    <p
+                                                        v-if="fullEditErrors['new_ict_asset.life_span_ended']"
+                                                        class="mt-1 text-[10px] font-bold text-rose-600"
+                                                    >
+                                                        {{ fullEditErrors['new_ict_asset.life_span_ended'] }}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
+                                                Near For Return warning starts within 365 days of the Life Span Ended date.
+                                            </p>
+                                        </div>
+
+                                        
+
+                                        <div class="sm:col-span-2">
+                                            <label
+                                                class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-indigo-700"
+                                            >
+                                                MR
+                                                <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                                    (Permanent Employee)
+                                                </span>
+                                            </label>
+
+                                            <select
+                                                v-model="newIctAssetForm.mr_personnel_id"
+                                                class="h-10 w-full rounded-lg border border-indigo-200 bg-indigo-50/40 px-3 text-xs font-semibold text-indigo-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100"
+                                                @change="
+                                                    syncAssetMr(
+                                                        newIctAssetForm
+                                                    )
+                                                "
+                                            >
+                                                <option value="">
+                                                    No MR / Unassigned
+                                                </option>
+
+                                                <option
+                                                    v-for="person in mrPersonnelOptions"
+                                                    :key="`new-item-mr-${person.id}`"
+                                                    :value="person.id"
+                                                >
+                                                    {{ person.name }}
+                                                </option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
                     </div>
 
                     <div
                         v-if="
-                            (
-                                fullEditForm.category === 'ict'
-                                && !isIctSubscription(fullEditForm.unit)
-                            )
-                            || isPropertyTrackedOtherCategory(
+                            isPropertyTrackedOtherCategory(
                                 fullEditForm.category
                             )
                         "
                         class="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/40 p-4"
                     >
                         <div
-                            class="flex flex-wrap items-center justify-between gap-3"
+                            class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
                         >
                             <div>
-                                <p class="text-sm font-black text-slate-900">
-                                    Property Details
+                                <p
+                                    class="text-sm font-black text-slate-900"
+                                >
+                                    Individual Property Editing
                                 </p>
-                                <p class="mt-1 text-xs font-semibold text-slate-500">
-                                    {{
-                                        fullEditForm.category === 'ict'
-                                            ? 'Each ICT unit requires Description and Property Number. Current User is optional.'
-                                            : (
-                                                isPropertyTrackedOtherCategory(
-                                                    fullEditForm.category
-                                                )
-                                                    ? 'Each Furniture/Fixtures unit requires Description and Property Number. Current User is optional.'
-                                                    : 'Property rows automatically match the Count. Property Number is required; Current User is optional.'
-                                            )
-                                    }}
+
+                                <p
+                                    class="mt-1 text-xs font-semibold leading-5 text-slate-500"
+                                >
+                                    Existing Furniture/Fixtures properties are edited one at a time from the accordion, just like ICT. Use Add Unit above only when adding a new property.
                                 </p>
                             </div>
 
                             <span
-                                class="rounded-xl border border-blue-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                class="shrink-0 rounded-xl border border-blue-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
                             >
                                 {{
-                                    ictEquipmentCount(
-                                        fullEditForm.currently_available
-                                    )
+                                    ictAssetDetails(
+                                        fullEditingItem
+                                    ).length
                                 }}
-                                Property
+                                Existing
                                 {{
-                                    ictEquipmentCount(
-                                        fullEditForm.currently_available
-                                    ) === 1
-                                        ? 'Row'
-                                        : 'Rows'
+                                    ictAssetDetails(
+                                        fullEditingItem
+                                    ).length === 1
+                                        ? 'Property'
+                                        : 'Properties'
                                 }}
                             </span>
-                        </div>
-
-                        <p
-                            v-if="fullEditErrors.ict_assets"
-                            class="mt-3 text-xs font-bold text-rose-600"
-                        >
-                            {{ fullEditErrors.ict_assets }}
-                        </p>
-
-                        <div
-                            v-if="fullEditForm.ict_assets.length"
-                            class="mt-4 space-y-3"
-                        >
-                            <div
-                                v-for="(asset, assetIndex) in fullEditForm.ict_assets"
-                                :key="`edit-ict-asset-${assetIndex}`"
-                                class="grid gap-3 rounded-xl border border-slate-200 bg-white p-3"
-                                :class="
-                                    (
-                                        fullEditForm.category === 'ict'
-                                        || isPropertyTrackedOtherCategory(
-                                            fullEditForm.category
-                                        )
-                                    )
-                                        ? 'sm:grid-cols-3'
-                                        : 'sm:grid-cols-2'
-                                "
-                            >
-                                <div
-                                    v-if="
-                                        fullEditForm.category === 'ict'
-                                        || isPropertyTrackedOtherCategory(
-                                            fullEditForm.category
-                                        )
-                                    "
-                                >
-                                    <label
-                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
-                                    >
-                                        Description
-                                        <span class="text-rose-500">*</span>
-                                    </label>
-
-                                    <input
-                                        v-model="asset.description"
-                                        type="text"
-                                        maxlength="255"
-                                        :placeholder="`Description #${assetIndex + 1}`"
-                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
-                                        :class="
-                                            fullEditErrors[`ict_assets.${assetIndex}.description`]
-                                                ? 'border-rose-400'
-                                                : 'border-slate-200 focus:border-blue-400'
-                                        "
-                                    />
-
-                                    <p
-                                        v-if="fullEditErrors[`ict_assets.${assetIndex}.description`]"
-                                        class="mt-1 text-[10px] font-bold text-rose-600"
-                                    >
-                                        {{ fullEditErrors[`ict_assets.${assetIndex}.description`] }}
-                                    </p>
-                                </div>
-
-                                <div>
-                                    <label
-                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
-                                    >
-                                        Property Number
-                                        <span class="text-rose-500">*</span>
-                                    </label>
-
-                                    <input
-                                        v-model="asset.property_number"
-                                        type="text"
-                                        maxlength="100"
-                                        :placeholder="`Property #${assetIndex + 1}`"
-                                        class="h-10 w-full rounded-lg border bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
-                                        :class="
-                                            fullEditErrors[`ict_assets.${assetIndex}.property_number`]
-                                                ? 'border-rose-400'
-                                                : 'border-slate-200 focus:border-blue-400'
-                                        "
-                                    />
-
-                                    <p
-                                        v-if="fullEditErrors[`ict_assets.${assetIndex}.property_number`]"
-                                        class="mt-1 text-[10px] font-bold text-rose-600"
-                                    >
-                                        {{ fullEditErrors[`ict_assets.${assetIndex}.property_number`] }}
-                                    </p>
-                                </div>
-
-                                <div>
-                                    <label
-                                        class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500"
-                                    >
-                                        Current User
-                                        <span class="font-semibold normal-case tracking-normal text-slate-400">
-                                            (Optional)
-                                        </span>
-                                    </label>
-
-                                    <input
-                                        v-model="asset.current_user"
-                                        type="text"
-                                        maxlength="255"
-                                        placeholder="Employee / Office / User"
-                                        class="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div
-                            v-else
-                            class="mt-4 rounded-xl border border-dashed border-blue-200 bg-white/70 px-4 py-5 text-center text-xs font-semibold text-slate-400"
-                        >
-                            Set the Count above to generate the Property Detail rows.
                         </div>
                     </div>
 
@@ -10767,6 +12902,29 @@ const generateInventoryReport = () => {
                                         </strong>
                                     </p>
                                 </div>
+
+                                <div class="mt-3 border-t border-slate-100 pt-3">
+                                    <label class="mb-2 block text-[10px] font-black uppercase tracking-[0.08em] text-slate-500">
+                                        {{ quarter.toUpperCase() }} Remarks
+                                        <span class="font-semibold normal-case tracking-normal text-slate-400">
+                                            (Optional)
+                                        </span>
+                                    </label>
+
+                                    <textarea
+                                        :value="quarterStockFormRemarks(fullEditForm, quarter)"
+                                        rows="2"
+                                        maxlength="1000"
+                                        :placeholder="`Remarks for ${quarter.toUpperCase()}...`"
+                                        class="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold leading-5 text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                                        @input="
+                                            setEditQuarterStockRemarks(
+                                                quarter,
+                                                $event.target.value
+                                            )
+                                        "
+                                    ></textarea>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -10783,7 +12941,13 @@ const generateInventoryReport = () => {
                     </div>
 
                     <div class="sm:col-span-2">
-                        <label class="mb-2 block text-sm font-black text-slate-800">Remarks</label>
+                        <label class="mb-2 block text-sm font-black text-slate-800">
+                            {{
+                                fullEditForm.category === 'supplies'
+                                    ? 'General Remarks'
+                                    : 'Remarks'
+                            }}
+                        </label>
                         <textarea
                             v-model="fullEditForm.remarks"
                             rows="4"
@@ -10803,6 +12967,408 @@ const generateInventoryReport = () => {
                             type="submit"
                             class="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm transition hover:bg-blue-700"
                         >Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- EDIT ONE PROPERTY ROW: ICT / FURNITURE / FIXTURES -->
+        <div
+            v-if="
+                canManageInventory
+                && showIctAssetEditModal
+                && ictAssetEditingItem
+            "
+            class="fixed inset-0 z-[75] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+            @click.self="closeIctAssetEditModal"
+        >
+            <div
+                class="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-[2rem] bg-white shadow-2xl sm:rounded-3xl"
+            >
+                <div
+                    class="sticky top-0 z-10 border-b border-slate-200 bg-white px-5 py-5 sm:px-6"
+                >
+                    <div
+                        class="flex items-start justify-between gap-4"
+                    >
+                        <div class="min-w-0">
+                            <p
+                                class="text-[10px] font-black uppercase tracking-[0.15em] text-blue-600"
+                            >
+                                Edit Property Detail
+                            </p>
+
+                            <h3
+                                class="mt-1 break-words text-xl font-black text-slate-900"
+                            >
+                                {{
+                                    ictAssetEditingItem.item
+                                    || 'ICT Item'
+                                }}
+                            </h3>
+
+                            <p
+                                class="mt-1 text-xs font-semibold text-slate-500"
+                            >
+                                {{
+                                    individualPropertyEditIsOther
+                                        ? 'Editing one Furniture/Fixtures property only.'
+                                        : 'Editing one ICT unit only.'
+                                }}
+                                Property Row
+                                {{
+                                    Number(
+                                        ictAssetEditingIndex
+                                    ) + 1
+                                }}
+                            </p>
+                        </div>
+
+                        <div
+                            class="flex shrink-0 items-center gap-2"
+                        >
+                            <button
+                                type="button"
+                                title="View History"
+                                aria-label="View History"
+                                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-slate-200"
+                                @click="
+                                    openHistoryModal(
+                                        ictAssetEditingItem,
+                                        {
+                                            property_number:
+                                                ictAssetEditingOriginalPropertyNumber
+                                                || ictAssetEditForm.property_number,
+                                            description:
+                                                ictAssetEditForm.description,
+                                        }
+                                    )
+                                "
+                            >
+                                <svg
+                                    class="h-5 w-5"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M20 6v5h-5" />
+                                    <path d="M19 11a7 7 0 1 0 1 4" />
+                                </svg>
+                            </button>
+
+                            <button
+                                type="button"
+                                class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50"
+                                @click="closeIctAssetEditModal"
+                            >
+                                ×
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <form
+                    class="grid gap-4 p-5 sm:grid-cols-2 sm:p-6"
+                    @submit.prevent="saveIctAssetEdit"
+                >
+                    <div class="sm:col-span-2">
+                        <label
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Description
+                            <span class="text-rose-500">*</span>
+                        </label>
+
+                        <input
+                            v-model="ictAssetEditForm.description"
+                            type="text"
+                            maxlength="255"
+                            placeholder="Example: Laptop, Desktop, Monitor"
+                            class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                            :class="
+                                ictAssetEditErrors.description
+                                    || ictAssetEditErrors['asset.description']
+                                    ? 'border-rose-400'
+                                    : 'border-blue-200 focus:border-blue-400'
+                            "
+                        />
+
+                        <p
+                            v-if="
+                                ictAssetEditErrors.description
+                                || ictAssetEditErrors['asset.description']
+                            "
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{
+                                ictAssetEditErrors.description
+                                || ictAssetEditErrors['asset.description']
+                            }}
+                        </p>
+                    </div>
+
+                    <div v-if="individualPropertyEditIsIct">
+                        <label
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Accessories
+                        </label>
+
+                        <input
+                            v-model="ictAssetEditForm.accessories"
+                            type="text"
+                            maxlength="500"
+                            placeholder="Mouse, charger, bag, etc."
+                            class="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        />
+                    </div>
+
+                    <div>
+                        <label
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Property Number
+                            <span class="text-rose-500">*</span>
+                        </label>
+
+                        <input
+                            v-model="ictAssetEditForm.property_number"
+                            type="text"
+                            maxlength="100"
+                            placeholder="Enter Property Number"
+                            class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-slate-800 outline-none focus:ring-4 focus:ring-blue-100"
+                            :class="
+                                ictAssetEditErrors.property_number
+                                    || ictAssetEditErrors['asset.property_number']
+                                    ? 'border-rose-400'
+                                    : 'border-blue-200 focus:border-blue-400'
+                            "
+                        />
+
+                        <p
+                            v-if="
+                                ictAssetEditErrors.property_number
+                                || ictAssetEditErrors['asset.property_number']
+                            "
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{
+                                ictAssetEditErrors.property_number
+                                || ictAssetEditErrors['asset.property_number']
+                            }}
+                        </p>
+                    </div>
+
+                    <div
+                        v-if="individualPropertyEditIsIct"
+                        class="sm:col-span-2 -mb-1 mt-1"
+                    >
+                        <p class="text-[10px] font-black uppercase tracking-[0.10em] text-emerald-700">
+                            Assignment & Status
+                        </p>
+                    </div>
+
+<div>
+                        <label
+                            class="mb-2 block text-sm font-black text-emerald-950"
+                        >
+                            Current User
+                        </label>
+
+                        <input
+                            v-model="ictAssetEditForm.current_user"
+                            type="text"
+                            maxlength="255"
+                            placeholder="Employee / Office / User"
+                            class="h-11 w-full rounded-xl border border-emerald-200 bg-emerald-50/40 px-3 text-sm font-semibold text-emerald-950 outline-none focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100"
+                        />
+                    </div>
+
+<div v-if="individualPropertyEditIsIct">
+                        <label
+                            class="mb-2 block text-sm font-black text-emerald-950"
+                        >
+                            Status
+                            <span class="text-rose-500">*</span>
+                        </label>
+
+                        <select
+                            v-model="ictAssetEditForm.status"
+                            class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-emerald-950 outline-none focus:ring-4 focus:ring-emerald-100"
+                            :class="
+                                ictAssetEditErrors.status
+                                    || ictAssetEditErrors['asset.status']
+                                    ? 'border-rose-400'
+                                    : 'border-emerald-200 bg-emerald-50/40 focus:border-emerald-400'
+                            "
+                        >
+                            <option
+                                v-for="option in ictAssetStatusOptions"
+                                :key="`single-edit-status-${option.value}`"
+                                :value="option.value"
+                            >
+                                {{ option.label }}
+                            </option>
+                        </select>
+
+                        <p
+                            v-if="
+                                ictAssetEditErrors.status
+                                || ictAssetEditErrors['asset.status']
+                            "
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{
+                                ictAssetEditErrors.status
+                                || ictAssetEditErrors['asset.status']
+                            }}
+                        </p>
+                    </div>
+
+                    <div
+                        v-if="individualPropertyEditIsIct"
+                        class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 sm:col-span-2"
+                    >
+                        <p class="mb-3 text-[10px] font-black uppercase tracking-[0.10em] text-rose-700">
+                            Asset Life Cycle
+                        </p>
+
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div>
+                                <label class="mb-2 block text-sm font-black text-rose-950">
+                                    Date Acquired
+                                </label>
+
+                                <input
+                                    v-model="ictAssetEditForm.date_acquired"
+                                    type="date"
+                                    class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                    :class="
+                                        ictAssetEditErrors.date_acquired
+                                            || ictAssetEditErrors['asset.date_acquired']
+                                            ? 'border-rose-400'
+                                            : 'border-rose-200 bg-white focus:border-rose-400'
+                                    "
+                                />
+
+                                <p
+                                    v-if="
+                                        ictAssetEditErrors.date_acquired
+                                        || ictAssetEditErrors['asset.date_acquired']
+                                    "
+                                    class="mt-2 text-xs font-bold text-rose-600"
+                                >
+                                    {{
+                                        ictAssetEditErrors.date_acquired
+                                        || ictAssetEditErrors['asset.date_acquired']
+                                    }}
+                                </p>
+                            </div>
+
+                            <div>
+                                <label class="mb-2 block text-sm font-black text-rose-950">
+                                    Life Span Ended
+                                </label>
+
+                                <input
+                                    v-model="ictAssetEditForm.life_span_ended"
+                                    type="date"
+                                    class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                    :class="
+                                        ictAssetEditErrors.life_span_ended
+                                            || ictAssetEditErrors['asset.life_span_ended']
+                                            ? 'border-rose-400'
+                                            : 'border-rose-200 bg-white focus:border-rose-400'
+                                    "
+                                />
+
+                                <p
+                                    v-if="
+                                        ictAssetEditErrors.life_span_ended
+                                        || ictAssetEditErrors['asset.life_span_ended']
+                                    "
+                                    class="mt-2 text-xs font-bold text-rose-600"
+                                >
+                                    {{
+                                        ictAssetEditErrors.life_span_ended
+                                        || ictAssetEditErrors['asset.life_span_ended']
+                                    }}
+                                </p>
+                            </div>
+                        </div>
+
+                        <p class="mt-3 text-[10px] font-semibold leading-4 text-slate-400">
+                            These dates are kept in the property record but are not shown as table columns. The row turns red when 365 days or less remain.
+                        </p>
+                    </div>
+
+                    
+
+                    <div
+                        v-if="individualPropertyEditIsIct"
+                        class="sm:col-span-2"
+                    >
+                        <label
+                            class="mb-2 block text-sm font-black text-indigo-950"
+                        >
+                            MR
+                            <span
+                                class="font-medium text-slate-400"
+                            >
+                                (Permanent Employee)
+                            </span>
+                        </label>
+
+                        <select
+                            v-model="ictAssetEditForm.mr_personnel_id"
+                            class="h-11 w-full rounded-xl border border-indigo-200 bg-indigo-50/40 px-3 text-sm font-semibold text-indigo-950 outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100"
+                            @change="
+                                syncAssetMr(
+                                    ictAssetEditForm
+                                )
+                            "
+                        >
+                            <option value="">
+                                No MR / Unassigned
+                            </option>
+
+                            <option
+                                v-for="person in mrPersonnelOptions"
+                                :key="`single-edit-mr-${person.id}`"
+                                :value="person.id"
+                            >
+                                {{ person.name }}
+                            </option>
+                        </select>
+                    </div>
+
+                    <div
+                        class="flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:col-span-2 sm:flex-row sm:justify-end"
+                    >
+                        <button
+                            type="button"
+                            :disabled="ictAssetEditProcessing"
+                            class="h-11 rounded-xl border border-slate-200 bg-white px-5 text-sm font-black text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+                            @click="closeIctAssetEditModal"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="submit"
+                            :disabled="ictAssetEditProcessing"
+                            class="h-11 rounded-xl bg-blue-600 px-6 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {{
+                                ictAssetEditProcessing
+                                    ? 'Saving...'
+                                    : 'Save Property'
+                            }}
+                        </button>
                     </div>
                 </form>
             </div>
@@ -11159,10 +13725,16 @@ const generateInventoryReport = () => {
                                 releaseCurrentAvailable <= 0
                                 || (
                                     releaseIsIctAsset
-                                    && !String(
-                                        releaseItemForm.releasePropertyNumber
-                                        || ''
-                                    ).trim()
+                                    && (
+                                        !String(
+                                            releaseItemForm.releasePropertyNumber
+                                            || ''
+                                        ).trim()
+                                        || !String(
+                                            releaseItemForm.releaseMrPersonnelId
+                                            || ''
+                                        ).trim()
+                                    )
                                 )
                             "
                         >
@@ -11244,77 +13816,132 @@ const generateInventoryReport = () => {
 
         <div
             v-if="showHistoryModal"
-            class="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]"
+            class="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/50 p-3 backdrop-blur-sm sm:p-4"
             @click.self="closeHistoryModal"
         >
             <div
-                class="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+                class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-[1.75rem] border border-slate-300 bg-slate-50 shadow-2xl"
             >
-                <!-- HEADER -->
+                <!-- HISTORY HEADER -->
                 <div
-                    class="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6"
+                    class="shrink-0 border-b border-blue-200 bg-blue-50 px-5 py-5 sm:px-6"
                 >
-                    <div class="min-w-0">
-                        <p
-                            class="text-[10px] font-black uppercase tracking-[0.16em] text-blue-600"
-                        >
-                            Inventory History
-                        </p>
-
-                        <h3
-                            class="mt-1 break-words text-xl font-black text-slate-900"
-                        >
-                            {{
-                                historyItem?.item
-                                || 'Inventory Item'
-                            }}
-                        </h3>
-
-                        <div
-                            class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-semibold text-slate-500">
-                            <span>
-                                Currently Available:
-                                <strong class="text-emerald-700">
+                    <div
+                        class="flex items-start justify-between gap-4"
+                    >
+                        <div class="min-w-0">
+                            <div
+                                class="flex flex-wrap items-center gap-2"
+                            >
+                                <p
+                                    class="text-[10px] font-black uppercase tracking-[0.16em] text-blue-700"
+                                >
                                     {{
-                                        currentAvailableValue(
-                                            historyItem
-                                        )
-                                        ?? '—'
+                                        historyIsPropertyScoped
+                                            ? 'Property History'
+                                            : 'Inventory History'
                                     }}
-                                </strong>
-                            </span>
+                                </p>
 
-                            <span>
-                                Quantity Released:
-                                <strong class="text-blue-700">
-                                    {{
-                                        quantityReleasedValue(
-                                            historyItem
-                                        )
-                                        ?? '—'
-                                    }}
-                                </strong>
-                            </span>
+                                <span
+                                    v-if="historyIsPropertyScoped"
+                                    class="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[9px] font-black text-blue-700"
+                                >
+                                    {{ historyPropertyNumber }}
+                                </span>
+                            </div>
+
+                            <h3
+                                class="mt-1 break-words text-xl font-black text-slate-900"
+                            >
+                                {{
+                                    historyItem?.item
+                                    || 'Inventory Item'
+                                }}
+                            </h3>
+
+                            <p
+                                v-if="
+                                    historyIsPropertyScoped
+                                    && historyPropertyDescription
+                                "
+                                class="mt-1 text-xs font-semibold text-slate-500"
+                            >
+                                {{ historyPropertyDescription }}
+                            </p>
+
+                            <div
+                                v-if="!historyIsPropertyScoped"
+                                class="mt-3 flex flex-wrap gap-2"
+                            >
+                                <span
+                                    class="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[10px] font-bold text-emerald-700"
+                                >
+                                    Current:
+                                    <strong
+                                        class="ml-1 font-black tabular-nums"
+                                    >
+                                        {{
+                                            currentAvailableValue(
+                                                historyItem
+                                            )
+                                            ?? '—'
+                                        }}
+                                    </strong>
+                                </span>
+
+                                <span
+                                    class="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[10px] font-bold text-blue-700"
+                                >
+                                    Released:
+                                    <strong
+                                        class="ml-1 font-black tabular-nums"
+                                    >
+                                        {{
+                                            quantityReleasedValue(
+                                                historyItem
+                                            )
+                                            ?? '—'
+                                        }}
+                                    </strong>
+                                </span>
+                            </div>
                         </div>
+
+                        <button
+                            type="button"
+                            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-white text-lg font-black text-blue-700 shadow-sm transition hover:bg-blue-100"
+                            @click="closeHistoryModal"
+                        >
+                            ×
+                        </button>
                     </div>
 
-                    <button
-                        type="button"
-                        class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
-                        @click="closeHistoryModal"
+                    <div
+                        class="mt-4 rounded-xl border border-blue-200 bg-white px-4 py-3 shadow-sm"
                     >
-                        ×
-                    </button>
+                        <p
+                            class="text-[10px] font-semibold leading-5 text-slate-500"
+                        >
+                            Newest activity appears first.
+                            <span
+                                v-if="historyIsPropertyScoped"
+                                class="font-black text-slate-700"
+                            >
+                                Only changes for Property
+                                {{ historyPropertyNumber }} are shown.
+                            </span>
+                        </p>
+                    </div>
                 </div>
 
-                <!-- BODY -->
+                <!-- HISTORY BODY -->
                 <div
-                    class="min-h-0 flex-1 overflow-y-auto"
+                    class="min-h-0 flex-1 overflow-y-auto bg-slate-100"
                 >
-                    <!-- LOADING -->
                     <div
                         v-if="historyLoading"
-                        class="flex min-h-52 flex-col items-center justify-center px-6 text-center"
+                        class="flex min-h-60 flex-col items-center justify-center px-6 text-center"
                     >
                         <div
                             class="h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-blue-500"
@@ -11327,7 +13954,6 @@ const generateInventoryReport = () => {
                         </p>
                     </div>
 
-                    <!-- ERROR -->
                     <div
                         v-else-if="historyError"
                         class="m-5 rounded-xl border border-rose-200 bg-rose-50 p-4 sm:m-6"
@@ -11345,13 +13971,14 @@ const generateInventoryReport = () => {
                         </p>
                     </div>
 
-                    <!-- EMPTY -->
                     <div
-                        v-else-if="!inventoryHistories.length"
-                        class="flex min-h-60 flex-col items-center justify-center px-6 text-center"
+                        v-else-if="
+                            !visibleInventoryHistories.length
+                        "
+                        class="flex min-h-64 flex-col items-center justify-center px-6 text-center"
                     >
                         <div
-                            class="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400"
+                            class="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-slate-400"
                         >
                             <svg
                                 class="h-5 w-5"
@@ -11375,41 +14002,72 @@ const generateInventoryReport = () => {
                         </p>
 
                         <p
-                            class="mt-1 text-xs font-semibold text-slate-400"
+                            class="mt-1 max-w-sm text-xs font-semibold leading-5 text-slate-400"
                         >
-                            Inventory updates will appear here.
+                            {{
+                                historyIsPropertyScoped
+                                    ? 'No recorded changes were found for this Property Number.'
+                                    : 'Edits, added units, and releases will appear here.'
+                            }}
                         </p>
                     </div>
 
-                    <!-- CLEAN HISTORY LIST -->
-                    <div v-else>
+                    <!-- ACTIVITY LIST -->
+                    <div
+                        v-else
+                        class="space-y-3 p-4 sm:p-5"
+                    >
                         <article
-                            v-for="history in inventoryHistories"
+                            v-for="history in visibleInventoryHistories"
                             :key="`inventory-history-${history.id}`"
-                            class="border-b border-slate-100 px-5 py-4 last:border-b-0 sm:px-6"
+                            class="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-md"
                         >
-                            <!-- TOP ROW -->
+                            <!-- AT-A-GLANCE SUMMARY -->
                             <div
-                                class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                                class="border-b border-blue-100 bg-blue-50/60 px-4 py-4 sm:px-5"
                             >
-                                <div class="flex min-w-0 items-center gap-2">
+                                <div
+                                    class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+                                >
                                     <div
-                                        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[11px] font-black text-blue-700"
+                                        class="min-w-0"
                                     >
-                                        {{
-                                            String(
-                                                history.updated_by_name
-                                                || 'U'
-                                            )
-                                                .trim()
-                                                .charAt(0)
-                                                .toUpperCase()
-                                        }}
+                                        <span
+                                            class="inline-flex rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.08em]"
+                                            :class="
+                                                historyActionToneClass(
+                                                    history
+                                                )
+                                            "
+                                        >
+                                            {{
+                                                historyActionLabel(
+                                                    history
+                                                )
+                                            }}
+                                        </span>
+
+                                        <p
+                                            v-if="
+                                                historyEventSummary(
+                                                    history
+                                                )
+                                            "
+                                            class="mt-2 break-words text-sm font-black leading-5 text-slate-900"
+                                        >
+                                            {{
+                                                historyEventSummary(
+                                                    history
+                                                )
+                                            }}
+                                        </p>
                                     </div>
 
-                                    <div class="min-w-0">
+                                    <div
+                                        class="shrink-0 text-left sm:text-right"
+                                    >
                                         <p
-                                            class="truncate text-xs font-black text-slate-800"
+                                            class="text-[10px] font-black text-slate-700"
                                         >
                                             {{
                                                 history.updated_by_name
@@ -11418,82 +14076,52 @@ const generateInventoryReport = () => {
                                         </p>
 
                                         <p
-                                            class="text-[10px] font-semibold text-slate-400"
+                                            class="mt-0.5 text-[10px] font-semibold text-slate-400"
                                         >
                                             {{
-                                                historyActionLabel(
-                                                    history
-                                                )
+                                                history.created_at
+                                                || '—'
                                             }}
                                         </p>
                                     </div>
                                 </div>
-
-                                <span
-                                    class="pl-10 text-[10px] font-bold text-slate-400 sm:pl-0"
-                                >
-                                    {{
-                                        history.created_at
-                                        || '—'
-                                    }}
-                                </span>
                             </div>
 
-                            <!-- CHANGES -->
+                            <!-- WHAT CHANGED -->
                             <div
-                                class="mt-3 space-y-2 pl-10"
+                                class="px-4 py-4 sm:px-5"
                             >
-                                <!-- FULL FIELD-BY-FIELD AUDIT -->
+                                <p
+                                    class="mb-3 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400"
+                                >
+                                    What Changed
+                                </p>
+
                                 <div
-                                    v-if="historyHasDetailedChanges(history)"
+                                    v-if="
+                                        historyHasDetailedChanges(
+                                            history
+                                        )
+                                    "
                                     class="space-y-2"
                                 >
                                     <div
                                         v-for="(change, changeIndex) in history.changes"
                                         :key="`history-${history.id}-change-${changeIndex}`"
-                                        class="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                                        class="rounded-xl border border-slate-200 bg-slate-100 px-3 py-3"
                                     >
                                         <p
-                                            class="text-[9px] font-black uppercase tracking-[0.10em] text-slate-400"
+                                            class="text-[10px] font-black leading-4 text-slate-700"
                                         >
                                             {{ change.label }}
                                         </p>
 
                                         <div
                                             v-if="change.single"
-                                            class="mt-1 break-words text-xs font-black text-blue-700"
+                                            class="mt-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2"
                                         >
-                                            {{
-                                                historyChangeValue(
-                                                    change,
-                                                    change.new
-                                                )
-                                            }}
-                                        </div>
-
-                                        <div
-                                            v-else
-                                            class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"
-                                        >
-                                            <span
-                                                class="break-words font-semibold text-slate-500"
-                                            >
-                                                {{
-                                                    historyChangeValue(
-                                                        change,
-                                                        change.old
-                                                    )
-                                                }}
-                                            </span>
-
-                                            <span
-                                                class="font-black text-slate-300"
-                                            >
-                                                →
-                                            </span>
-
-                                            <span
-                                                class="break-words font-black text-blue-700"
+                                            <p
+                                                class="break-words text-xs font-black leading-5 text-blue-700"
                                             >
                                                 {{
                                                     historyChangeValue(
@@ -11501,94 +14129,145 @@ const generateInventoryReport = () => {
                                                         change.new
                                                     )
                                                 }}
-                                            </span>
+                                            </p>
+                                        </div>
+
+                                        <div
+                                            v-else
+                                            class="mt-2 grid gap-2 sm:grid-cols-[1fr_32px_1fr]"
+                                        >
+                                            <div
+                                                class="rounded-lg border border-slate-300 bg-slate-200/70 px-3 py-2"
+                                            >
+                                                <p
+                                                    class="text-[8px] font-black uppercase tracking-[0.1em] text-slate-400"
+                                                >
+                                                    Before
+                                                </p>
+
+                                                <p
+                                                    class="mt-1 break-words text-xs font-semibold leading-5 text-slate-600"
+                                                >
+                                                    {{
+                                                        historyChangeValue(
+                                                            change,
+                                                            change.old
+                                                        )
+                                                    }}
+                                                </p>
+                                            </div>
+
+                                            <div
+                                                class="hidden items-center justify-center text-sm font-black text-slate-300 sm:flex"
+                                            >
+                                                →
+                                            </div>
+
+                                            <div
+                                                class="rounded-lg border border-blue-300 bg-blue-100/70 px-3 py-2"
+                                            >
+                                                <p
+                                                    class="text-[8px] font-black uppercase tracking-[0.1em] text-blue-400"
+                                                >
+                                                    After
+                                                </p>
+
+                                                <p
+                                                    class="mt-1 break-words text-xs font-black leading-5 text-blue-700"
+                                                >
+                                                    {{
+                                                        historyChangeValue(
+                                                            change,
+                                                            change.new
+                                                        )
+                                                    }}
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
 
-                                <!-- LEGACY HISTORY FALLBACK -->
+                                <!-- LEGACY HISTORY -->
                                 <div
-                                    v-if="
-                                        !historyHasDetailedChanges(history)
-                                        && historyReleasedChanged(history)
-                                    "
-                                    class="flex items-center gap-2 text-xs"
+                                    v-else
+                                    class="rounded-xl border border-slate-200 bg-slate-100 px-3 py-3"
                                 >
-                                    <span
-                                        class="font-semibold text-slate-500"
+                                    <p
+                                        v-if="
+                                            historyReleasedChanged(
+                                                history
+                                            )
+                                        "
+                                        class="text-xs font-semibold text-slate-600"
                                     >
                                         {{
                                             historyQuantityLabel(
                                                 history
                                             )
                                         }}:
-                                    </span>
+                                        <strong
+                                            class="ml-1 font-black text-blue-700"
+                                        >
+                                            {{
+                                                historyQuantityDisplay(
+                                                    history
+                                                )
+                                            }}
+                                        </strong>
+                                    </p>
 
-                                    <span
-                                        class="font-black tabular-nums text-blue-700"
-                                    >
-                                        {{
-                                            historyQuantityDisplay(
+                                    <p
+                                        v-if="
+                                            historyRemarksChanged(
                                                 history
                                             )
-                                        }}
-                                    </span>
-                                </div>
-
-                                <div
-                                    v-if="
-                                        !historyHasDetailedChanges(history)
-                                        && historyRemarksChanged(history)
-                                    "
-                                    class="text-xs"
-                                >
-                                    <span
-                                        class="font-semibold text-slate-500"
+                                        "
+                                        class="mt-1 text-xs font-semibold text-slate-600"
                                     >
                                         Remarks:
-                                    </span>
+                                        <strong
+                                            class="ml-1 text-slate-800"
+                                        >
+                                            {{
+                                                historyRemarksText(
+                                                    history
+                                                )
+                                            }}
+                                        </strong>
+                                    </p>
 
-                                    <span
-                                        class="ml-1 break-words font-semibold text-slate-700"
-                                    >
-                                        {{
-                                            historyRemarksText(
+                                    <p
+                                        v-if="
+                                            !historyReleasedChanged(
                                                 history
                                             )
-                                        }}
-                                    </span>
+                                            && !historyRemarksChanged(
+                                                history
+                                            )
+                                        "
+                                        class="text-xs font-semibold text-slate-500"
+                                    >
+                                        Inventory record updated.
+                                    </p>
                                 </div>
-
-                                <p
-                                    v-if="
-                                        !historyHasDetailedChanges(history)
-                                        && !historyReleasedChanged(history)
-                                        && !historyRemarksChanged(history)
-                                    "
-                                    class="text-xs font-semibold text-slate-400"
-                                >
-                                    Inventory record updated.
-                                </p>
                             </div>
                         </article>
                     </div>
                 </div>
 
-                <!-- FOOTER -->
                 <div
-                    class="shrink-0 border-t border-slate-200 bg-slate-50 px-5 py-3 sm:px-6"
+                    class="shrink-0 border-t border-slate-300 bg-slate-50 px-5 py-3 sm:px-6"
                 >
                     <button
                         type="button"
-                        class="h-10 w-full rounded-xl bg-blue-500 text-xs font-black text-white transition hover:bg-blue-600"
+                        class="h-10 w-full rounded-xl bg-blue-600 text-xs font-black text-white transition hover:bg-blue-700"
                         @click="closeHistoryModal"
                     >
-                        Close
+                        Close History
                     </button>
                 </div>
             </div>
         </div>
-
 
 
 
@@ -11710,7 +14389,6 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
-/* Softer expanded rows without the old vertical blue stripe. */
 .inventory-comfort-theme
     .inventory-ledger-table
     tbody
@@ -11726,7 +14404,6 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
-/* Property-detail blocks stay distinct without a thick blue left line. */
 .inventory-comfort-theme .inventory-ledger-table .border-2.border-blue-200 {
     border-color: #adc4dc !important;
     background-color: #f3f7fb !important;
@@ -11734,7 +14411,6 @@ const generateInventoryReport = () => {
         0 8px 20px rgba(51, 65, 85, 0.08);
 }
 
-/* Soften blue pills while retaining readable contrast. */
 .inventory-comfort-theme .bg-blue-50 {
     background-color: #e7f0fa !important;
 }
@@ -11747,7 +14423,6 @@ const generateInventoryReport = () => {
     border-color: #a9c7e4 !important;
 }
 
-/* Keep non-interactive rows/cards visually neutral. Only controls look clickable. */
 .inventory-comfort-theme .cursor-default {
     cursor: default !important;
 }
