@@ -561,6 +561,12 @@ const loadCustomUnits = () => {
                         normalizeCustomUnitValue
                     )
                     .filter(Boolean)
+                    .filter(
+                        (value) =>
+                            !ICT_HIDDEN_UNIT_VALUES.has(
+                                value
+                            )
+                    )
                 : [],
         }
     } catch (error) {
@@ -676,6 +682,10 @@ const newIctAssetForm = ref({
     date_acquired: '',
     life_span_ended: '',
     status: 'working',
+    returned_at: '',
+    return_remarks: '',
+    returned_by: '',
+    returned_by_user_id: '',
     mr_personnel_id: '',
     mr: '',
 })
@@ -689,6 +699,10 @@ const resetNewIctAssetForm = () => {
         date_acquired: '',
         life_span_ended: '',
         status: 'working',
+        returned_at: '',
+        return_remarks: '',
+        returned_by: '',
+        returned_by_user_id: '',
         mr_personnel_id: '',
         mr: '',
     }
@@ -711,6 +725,10 @@ const ictAssetEditForm = ref({
     date_acquired: '',
     life_span_ended: '',
     status: 'working',
+    returned_at: '',
+    return_remarks: '',
+    returned_by: '',
+    returned_by_user_id: '',
     mr_personnel_id: '',
     mr: '',
 })
@@ -2055,8 +2073,17 @@ const ictAssetStatusClass = (value) => {
 }
 
 const ictDateToLocalMidnight = (value) => {
+    const raw =
+        String(value ?? '').trim()
+
+    const dateOnly =
+        raw.match(
+            /^\d{4}-\d{2}-\d{2}/
+        )?.[0]
+        || raw
+
     const normalized =
-        normalizeIctDateInput(value)
+        normalizeIctDateInput(dateOnly)
 
     if (!normalized) {
         return null
@@ -2178,6 +2205,32 @@ const normalizeIctDateInput = (value) => {
     return ''
 }
 
+const normalizeIctReturnDateTimeInput = (
+    value
+) => {
+    const raw =
+        String(value ?? '').trim()
+
+    if (!raw) {
+        return ''
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return `${raw}T00:00`
+    }
+
+    const match =
+        raw.match(
+            /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?$/
+        )
+
+    if (!match) {
+        return ''
+    }
+
+    return `${match[1]}T${match[2]}:${match[3]}`
+}
+
 const isValidIctDateRange = (
     dateAcquired,
     lifeSpanEnded
@@ -2225,6 +2278,21 @@ const ictEditorAssetRows = (assets) => {
             normalizeIctAssetStatus(
                 asset?.status
             ),
+        returned_at:
+            normalizeIctReturnDateTimeInput(
+                asset?.returned_at
+            ),
+        return_remarks: String(
+            asset?.return_remarks ?? ''
+        ).trim(),
+        returned_by: String(
+            asset?.returned_by ?? ''
+        ).trim(),
+        returned_by_user_id:
+            String(
+                asset?.returned_by_user_id
+                ?? ''
+            ).trim(),
         mr_personnel_id:
             String(
                 asset?.mr_personnel_id
@@ -2250,6 +2318,10 @@ const normalizeIctAssets = (assets) => {
                 || asset.date_acquired
                 || asset.life_span_ended
                 || asset.status
+                || asset.returned_at
+                || asset.return_remarks
+                || asset.returned_by
+                || asset.returned_by_user_id
                 || asset.mr_personnel_id
                 || asset.mr
         )
@@ -2286,6 +2358,10 @@ const syncIctAssetRowsToCount = (
             date_acquired: '',
             life_span_ended: '',
             status: '',
+            returned_at: '',
+            return_remarks: '',
+            returned_by: '',
+            returned_by_user_id: '',
             mr_personnel_id: '',
             mr: '',
         })
@@ -2505,6 +2581,1298 @@ const filteredReturnedAssetRows = computed(() => {
         }
     )
 })
+
+
+/*
+|--------------------------------------------------------------------------
+| RETURNED + MR REPORT GENERATION
+|--------------------------------------------------------------------------
+|
+| Reports open in a clean print-ready browser window.
+| The browser Print dialog can print directly or Save as PDF.
+|
+*/
+
+const reportHtmlEscape = (value) =>
+    String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+
+const reportDateLabel = (
+    value,
+    fallback = '—'
+) => {
+    const normalized =
+        normalizeIctDateInput(value)
+
+    if (!normalized) {
+        return fallback
+    }
+
+    const [year, month, day] =
+        normalized
+            .split('-')
+            .map(Number)
+
+    const date =
+        new Date(
+            year,
+            month - 1,
+            day
+        )
+
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+        return fallback
+    }
+
+    return date.toLocaleDateString(
+        'en-PH',
+        {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+        }
+    )
+}
+
+const reportDateTimeLabel = (
+    value,
+    fallback = '—'
+) => {
+    const raw = String(value ?? '').trim()
+    if (!raw) return fallback
+
+    const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (dateOnly) {
+        const date = new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+        if (Number.isNaN(date.getTime())) return fallback
+        return `${date.toLocaleDateString('en-PH', {year: 'numeric', month: 'long', day: 'numeric'})} · Time not recorded`
+    }
+
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/)
+    if (!match) return fallback
+
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0))
+    if (Number.isNaN(date.getTime())) return fallback
+
+    return date.toLocaleString('en-PH', {year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit'})
+}
+
+const reportGeneratedAtLabel = () =>
+    new Date().toLocaleString(
+        'en-PH',
+        {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+        }
+    )
+
+const reportLifeCycleLabel = (
+    asset,
+    referenceDate = ''
+) => {
+    const lifeEnd =
+        ictDateToLocalMidnight(
+            asset?.life_span_ended
+        )
+
+    if (!lifeEnd) {
+        return 'No Life Span Ended date'
+    }
+
+    const reference =
+        ictDateToLocalMidnight(
+            referenceDate
+        )
+        || (() => {
+            const today = new Date()
+            today.setHours(0, 0, 0, 0)
+            return today
+        })()
+
+    const dayMs =
+        24 * 60 * 60 * 1000
+
+    const days =
+        Math.ceil(
+            (
+                lifeEnd.getTime()
+                - reference.getTime()
+            ) / dayMs
+        )
+
+    if (
+        normalizeIctAssetStatus(
+            asset?.status
+        ) === 'returned'
+    ) {
+        if (days < 0) {
+            return `Returned ${Math.abs(days)} day(s) after life span ended`
+        }
+
+        if (days === 0) {
+            return 'Returned on Life Span Ended date'
+        }
+
+        return `Returned ${days} day(s) before life span ended`
+    }
+
+    if (days <= 0) {
+        return 'Life Span Ended'
+    }
+
+    if (days <= 365) {
+        return `Near For Return · ${days} day(s) remaining`
+    }
+
+    return `Active · ${days} day(s) remaining`
+}
+
+const reportItemSummaryForRows = (rows) => {
+    const grouped = new Map()
+
+    rows.forEach(({ item, asset }) => {
+        const key =
+            [
+                String(item?.item || '').trim(),
+                String(item?.unit || '').trim(),
+            ].join('||')
+
+        if (!grouped.has(key)) {
+            grouped.set(key, {
+                item:
+                    String(item?.item || '—'),
+                unit:
+                    String(item?.unit || '—'),
+                working: 0,
+                returned: 0,
+                near: 0,
+                ended: 0,
+                total: 0,
+            })
+        }
+
+        const entry = grouped.get(key)
+        const status =
+            normalizeIctAssetStatus(
+                asset?.status
+            )
+
+        entry.total += 1
+
+        if (status === 'returned') {
+            entry.returned += 1
+        } else {
+            entry.working += 1
+
+            const warning =
+                ictLifeSpanState(asset)
+
+            if (warning?.level === 'near') {
+                entry.near += 1
+            }
+
+            if (warning?.level === 'ended') {
+                entry.ended += 1
+            }
+        }
+    })
+
+    return [...grouped.values()]
+        .sort((a, b) =>
+            a.item.localeCompare(
+                b.item,
+                undefined,
+                {
+                    sensitivity: 'base',
+                }
+            )
+        )
+}
+
+const printInventoryReport = ({
+    title,
+    subtitle = '',
+    filters = [],
+    summary = [],
+    plainDetails = [],
+    itemSummary = [],
+    columns = [],
+    rows = [],
+    emptyMessage = 'No records found.',
+    noGray = false,
+}) => {
+    if (!rows.length) {
+        window.alert(emptyMessage)
+        return
+    }
+
+    const reportWindow =
+        window.open(
+            '',
+            '_blank',
+            'width=1500,height=900'
+        )
+
+    if (!reportWindow) {
+        window.alert(
+            'The report window was blocked. Please allow pop-ups for this site and try again.'
+        )
+        return
+    }
+
+    const filtersHtml =
+        filters
+            .filter(
+                (entry) =>
+                    String(
+                        entry?.value ?? ''
+                    ).trim() !== ''
+            )
+            .map(
+                (entry) => `
+                    <div class="filter">
+                        <span>${reportHtmlEscape(entry.label)}</span>
+                        <strong>${reportHtmlEscape(entry.value)}</strong>
+                    </div>
+                `
+            )
+            .join('')
+
+    const summaryHtml =
+        summary
+            .map(
+                (entry) => `
+                    <div class="summary-card">
+                        <span>${reportHtmlEscape(entry.label)}</span>
+                        <strong>${reportHtmlEscape(entry.value)}</strong>
+                    </div>
+                `
+            )
+            .join('')
+
+    const plainDetailsHtml =
+        plainDetails
+            .map(
+                (entry) => `
+                    <div class="plain-detail">
+                        <span>${reportHtmlEscape(entry.label)}</span>
+                        <strong>${reportHtmlEscape(entry.value)}</strong>
+                    </div>
+                `
+            )
+            .join('')
+
+    const itemSummaryHtml =
+        itemSummary.length
+            ? `
+                <section class="report-section">
+                    <h2>Item Count Summary</h2>
+                    <table class="summary-table">
+                        <thead>
+                            <tr>
+                                <th>Item Name</th>
+                                <th>Unit</th>
+                                <th class="number">Working</th>
+                                <th class="number">Returned</th>
+                                <th class="number">Near For Return</th>
+                                <th class="number">Life Span Ended</th>
+                                <th class="number">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${itemSummary
+                                .map(
+                                    (entry) => `
+                                        <tr>
+                                            <td>${reportHtmlEscape(entry.item)}</td>
+                                            <td>${reportHtmlEscape(entry.unit)}</td>
+                                            <td class="number">${reportHtmlEscape(entry.working)}</td>
+                                            <td class="number">${reportHtmlEscape(entry.returned)}</td>
+                                            <td class="number">${reportHtmlEscape(entry.near)}</td>
+                                            <td class="number">${reportHtmlEscape(entry.ended)}</td>
+                                            <td class="number"><strong>${reportHtmlEscape(entry.total)}</strong></td>
+                                        </tr>
+                                    `
+                                )
+                                .join('')}
+                        </tbody>
+                    </table>
+                </section>
+            `
+            : ''
+
+    const tableHead =
+        columns
+            .map(
+                (column) => `
+                    <th>${reportHtmlEscape(column.label)}</th>
+                `
+            )
+            .join('')
+
+    const tableBody =
+        rows
+            .map(
+                (row, index) => `
+                    <tr>
+                        <td class="row-number">${index + 1}</td>
+                        ${columns
+                            .map(
+                                (column) => `
+                                    <td>${reportHtmlEscape(row[column.key] ?? '—')}</td>
+                                `
+                            )
+                            .join('')}
+                    </tr>
+                `
+            )
+            .join('')
+
+    reportWindow.document.open()
+    reportWindow.document.write(`
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>${reportHtmlEscape(title)}</title>
+            <style>
+                @page {
+                    size: A4 landscape;
+                    margin: 9mm;
+                }
+
+                * {
+                    box-sizing: border-box;
+                }
+
+                body {
+                    margin: 0;
+                    color: #0f172a;
+                    font-family: Arial, Helvetica, sans-serif;
+                    font-size: 9px;
+                    line-height: 1.35;
+                }
+
+                .report-header {
+                    border-bottom: 2px solid #2563eb;
+                    padding-bottom: 10px;
+                }
+
+                .eyebrow {
+                    margin: 0 0 3px;
+                    color: #2563eb;
+                    font-size: 8px;
+                    font-weight: 800;
+                    letter-spacing: .12em;
+                    text-transform: uppercase;
+                }
+
+                h1 {
+                    margin: 0;
+                    font-size: 20px;
+                    line-height: 1.15;
+                }
+
+                .subtitle {
+                    margin: 4px 0 0;
+                    color: #475569;
+                    font-size: 9px;
+                }
+
+                .generated {
+                    margin-top: 5px;
+                    color: #64748b;
+                    font-size: 8px;
+                }
+
+                .filters,
+                .summary-grid {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 6px;
+                    margin-top: 10px;
+                }
+
+                .plain-details {
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    column-gap: 28px;
+                    row-gap: 8px;
+                    margin-top: 12px;
+                }
+
+                .plain-detail {
+                    min-width: 0;
+                }
+
+                .plain-detail span {
+                    display: block;
+                    color: #0f172a;
+                    font-size: 8px;
+                    font-weight: 900;
+                    letter-spacing: .05em;
+                    text-transform: uppercase;
+                }
+
+                .plain-detail strong {
+                    display: block;
+                    margin-top: 2px;
+                    color: #020617;
+                    font-size: 11px;
+                    font-weight: 900;
+                    line-height: 1.25;
+                    overflow-wrap: anywhere;
+                }
+
+                .filter,
+                .summary-card {
+                    border: 1px solid #cbd5e1;
+                    border-radius: 6px;
+                    background: #f8fafc;
+                    padding: 5px 7px;
+                }
+
+                .filter span,
+                .summary-card span {
+                    display: block;
+                    color: #64748b;
+                    font-size: 7px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                }
+
+                .filter strong,
+                .summary-card strong {
+                    display: block;
+                    margin-top: 1px;
+                    color: #0f172a;
+                    font-size: 10px;
+                }
+
+                .report-section {
+                    margin-top: 12px;
+                }
+
+                .report-section h2 {
+                    margin: 0 0 5px;
+                    font-size: 11px;
+                }
+
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    table-layout: auto;
+                }
+
+                th,
+                td {
+                    border: 1px solid #cbd5e1;
+                    padding: 4px 5px;
+                    vertical-align: top;
+                    overflow-wrap: anywhere;
+                }
+
+                th {
+                    background: #2563eb;
+                    color: white;
+                    font-size: 7px;
+                    font-weight: 800;
+                    letter-spacing: .03em;
+                    text-align: left;
+                    text-transform: uppercase;
+                }
+
+                tbody tr:nth-child(even) {
+                    background: #f8fafc;
+                }
+
+                .summary-table th {
+                    background: #334155;
+                }
+
+                .number {
+                    text-align: center;
+                }
+
+                .row-number {
+                    width: 24px;
+                    color: #64748b;
+                    text-align: center;
+                }
+
+                .footer {
+                    margin-top: 8px;
+                    color: #64748b;
+                    font-size: 7px;
+                }
+
+                /*
+                 * MR Assigned Assets report
+                 * -----------------------------------------------
+                 * Match the EXISTING Supplies generated report.
+                 *
+                 * Supplies report uses:
+                 * - white rows
+                 * - #eff6ff table headers
+                 * - #1e3a8a header text
+                 * - #94a3b8 borders
+                 * - #0f172a body text
+                 */
+                .report-no-gray {
+                    background: #ffffff !important;
+                    color: #0f172a !important;
+                    font-family: Arial, Helvetica, sans-serif !important;
+                }
+
+                .report-no-gray .report-header {
+                    background: #ffffff !important;
+                    border-bottom: 2px solid #1d4ed8 !important;
+                }
+
+                .report-no-gray h1,
+                .report-no-gray .report-section h2,
+                .report-no-gray .plain-detail span,
+                .report-no-gray .plain-detail strong,
+                .report-no-gray .generated,
+                .report-no-gray .footer,
+                .report-no-gray td,
+                .report-no-gray .row-number {
+                    color: #0f172a !important;
+                }
+
+                .report-no-gray .eyebrow {
+                    color: #475569 !important;
+                }
+
+                .report-no-gray .plain-detail span {
+                    font-size: 8px !important;
+                    font-weight: 700 !important;
+                    letter-spacing: 0.08em !important;
+                    text-transform: uppercase !important;
+                }
+
+                .report-no-gray .plain-detail strong {
+                    margin-top: 3px !important;
+                    font-size: 10px !important;
+                    font-weight: 700 !important;
+                }
+
+                .report-no-gray .subtitle,
+                .report-no-gray .generated,
+                .report-no-gray .filter span,
+                .report-no-gray .filter strong,
+                .report-no-gray .summary-card span,
+                .report-no-gray .summary-card strong {
+                    color: #0f172a !important;
+                }
+
+                .report-no-gray .filter,
+                .report-no-gray .summary-card {
+                    background: #ffffff !important;
+                    border: 1px solid #94a3b8 !important;
+                }
+
+                .report-no-gray table,
+                .report-no-gray tbody,
+                .report-no-gray tr,
+                .report-no-gray td {
+                    background: #ffffff !important;
+                }
+
+                .report-no-gray tbody tr:nth-child(even),
+                .report-no-gray tbody tr:nth-child(odd) {
+                    background: #ffffff !important;
+                }
+
+                .report-no-gray th,
+                .report-no-gray td {
+                    border: 1px solid #94a3b8 !important;
+                    padding: 7px 8px !important;
+                    vertical-align: top !important;
+                    word-wrap: break-word !important;
+                    overflow-wrap: break-word !important;
+                }
+
+                .report-no-gray th,
+                .report-no-gray .summary-table th {
+                    background: #eff6ff !important;
+                    color: #1e3a8a !important;
+                    font-size: 9px !important;
+                    font-weight: 800 !important;
+                    text-align: left !important;
+                    text-transform: uppercase !important;
+                    letter-spacing: normal !important;
+                }
+
+                .report-no-gray td,
+                .report-no-gray .summary-table td {
+                    background: #ffffff !important;
+                    color: #0f172a !important;
+                    font-size: 9px !important;
+                }
+
+                .report-no-gray .summary-table {
+                    background: #ffffff !important;
+                    font-size: 9px !important;
+                    margin-bottom: 0 !important;
+                }
+
+                .report-no-gray .summary-table th,
+                .report-no-gray .summary-table td {
+                    padding: 5px 7px !important;
+                }
+
+                .report-no-gray .number {
+                    text-align: center !important;
+                    font-variant-numeric: tabular-nums !important;
+                }
+
+                .report-no-gray .row-number {
+                    text-align: center !important;
+                }
+
+                .report-no-gray .footer {
+                    border-top: 1px solid #cbd5e1 !important;
+                    background: #ffffff !important;
+                    color: #0f172a !important;
+                }
+
+                @media print {
+                    .no-print {
+                        display: none !important;
+                    }
+
+                    thead {
+                        display: table-header-group;
+                    }
+
+                    tr {
+                        break-inside: avoid;
+                    }
+                }
+            </style>
+        </head>
+        <body class="${noGray ? 'report-no-gray' : ''}">
+            <header class="report-header">
+                <p class="eyebrow">DOST · SPD Inventory Management System</p>
+                <h1>${reportHtmlEscape(title)}</h1>
+                ${
+                    subtitle
+                        ? `<p class="subtitle">${reportHtmlEscape(subtitle)}</p>`
+                        : ''
+                }
+                <p class="generated">
+                    Generated: ${reportHtmlEscape(reportGeneratedAtLabel())}
+                </p>
+
+                ${
+                    filtersHtml
+                        ? `<div class="filters">${filtersHtml}</div>`
+                        : ''
+                }
+
+                ${
+                    plainDetailsHtml
+                        ? `<div class="plain-details">${plainDetailsHtml}</div>`
+                        : ''
+                }
+
+                ${
+                    summaryHtml
+                        ? `<div class="summary-grid">${summaryHtml}</div>`
+                        : ''
+                }
+            </header>
+
+            ${itemSummaryHtml}
+
+            <section class="report-section">
+                <h2>Detailed Property Listing</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            ${tableHead}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${tableBody}
+                    </tbody>
+                </table>
+            </section>
+
+            <p class="footer">
+                Report generated from the current Inventory records and active report filters.
+            </p>
+        </body>
+        </html>
+    `)
+    reportWindow.document.close()
+    reportWindow.focus()
+
+    window.setTimeout(
+        () => {
+            reportWindow.print()
+        },
+        250
+    )
+}
+
+const generateReturnedReport = () => {
+    const sourceRows =
+        filteredReturnedAssetRows.value
+
+    const rows =
+        sourceRows.map(
+            ({ item, asset }) => ({
+                item:
+                    [
+                        item.item || '—',
+                        item.inventory_year
+                            ? `Year ${item.inventory_year}`
+                            : '',
+                        item.unit || '',
+                    ]
+                        .filter(Boolean)
+                        .join(' · '),
+
+                property_number:
+                    asset.property_number || '—',
+
+                description:
+                    asset.description || '—',
+
+                accessories:
+                    asset.accessories || '—',
+
+                current_user:
+                    asset.current_user || 'Unassigned',
+
+                mr:
+                    asset.mr || 'Unassigned',
+
+                date_acquired:
+                    reportDateLabel(
+                        asset.date_acquired
+                    ),
+
+                life_span_ended:
+                    reportDateLabel(
+                        asset.life_span_ended
+                    ),
+
+                life_cycle:
+                    reportLifeCycleLabel(
+                        asset,
+                        asset.returned_at
+                    ),
+
+                date_returned:
+                    reportDateTimeLabel(
+                        asset.returned_at,
+                        'Not recorded (legacy)'
+                    ),
+
+                returned_by:
+                    asset.returned_by
+                    || 'Not recorded',
+
+                return_remarks:
+                    asset.return_remarks
+                    || '—',
+
+                item_remarks:
+                    String(
+                        item.remarks || ''
+                    ).trim()
+                    || '—',
+
+                status:
+                    ictAssetStatusLabel(
+                        asset.status
+                    ),
+            })
+        )
+
+    const uniqueItems =
+        new Set(
+            sourceRows.map(
+                ({ item }) =>
+                    String(
+                        item?.item || ''
+                    ).trim()
+            )
+            .filter(Boolean)
+        ).size
+
+    const uniqueMr =
+        new Set(
+            sourceRows.map(
+                ({ asset }) =>
+                    String(
+                        asset?.mr || ''
+                    ).trim()
+            )
+            .filter(Boolean)
+        ).size
+
+    const withReturnRemarks =
+        sourceRows.filter(
+            ({ asset }) =>
+                String(
+                    asset?.return_remarks
+                    || ''
+                ).trim() !== ''
+        ).length
+
+    printInventoryReport({
+        title:
+            'Returned ICT Properties Report',
+
+        noGray: true,
+
+        subtitle:
+            'Returned ICT property details including acquisition, life span, MR assignment, date and time returned, returned by, and return remarks.',
+
+        plainDetails: [
+            {
+                label: 'Inventory Year',
+                value: yearFilter.value,
+            },
+            {
+                label: 'Unit',
+                value:
+                    unitFilter.value === 'all'
+                        ? 'All units'
+                        : unitFilter.value,
+            },
+            {
+                label: 'MR Holder',
+                value:
+                    mrFilter.value === 'all'
+                        ? 'All MR'
+                        : (
+                            selectedMrName.value
+                            || 'Selected MR'
+                        ),
+            },
+            {
+                label: 'Returned Properties',
+                value: sourceRows.length,
+            },
+        ],
+
+        itemSummary:
+            reportItemSummaryForRows(
+                sourceRows
+            ),
+
+        columns: [
+            {
+                key: 'item',
+                label: 'Item / Year / Unit',
+            },
+            {
+                key: 'property_number',
+                label: 'Property Number',
+            },
+            {
+                key: 'description',
+                label: 'Description',
+            },
+            {
+                key: 'accessories',
+                label: 'Accessories',
+            },
+            {
+                key: 'current_user',
+                label: 'Current User',
+            },
+            {
+                key: 'mr',
+                label: 'MR',
+            },
+            {
+                key: 'date_acquired',
+                label: 'Date Acquired',
+            },
+            {
+                key: 'life_span_ended',
+                label: 'Life Span Ended',
+            },
+            {
+                key: 'life_cycle',
+                label: 'Life Cycle',
+            },
+            {
+                key: 'date_returned',
+                label: 'Date Returned',
+            },
+            {
+                key: 'returned_by',
+                label: 'Returned By',
+            },
+            {
+                key: 'return_remarks',
+                label: 'Return Remarks',
+            },
+        ],
+
+        rows,
+
+        emptyMessage:
+            'No returned ICT properties match the current filters.',
+    })
+}
+
+const mrReportRows = computed(() => {
+    if (mrFilter.value === 'all') {
+        return []
+    }
+
+    const selectedId =
+        String(
+            mrFilter.value || ''
+        ).trim()
+
+    const selectedName =
+        mrPersonnelName(
+            selectedId
+        )
+            .trim()
+            .toLowerCase()
+
+    const term =
+        String(search.value || '')
+            .trim()
+            .toLowerCase()
+
+    const rows = []
+
+    for (const item of ictItems.value) {
+        if (
+            Number(item.inventory_year)
+            !== Number(yearFilter.value)
+        ) {
+            continue
+        }
+
+        if (
+            unitFilter.value !== 'all'
+            && String(item.unit || '')
+                !== String(unitFilter.value)
+        ) {
+            continue
+        }
+
+        for (
+            const asset
+            of ictAssetDetails(item)
+        ) {
+            const assetMrId =
+                String(
+                    asset?.mr_personnel_id
+                    ?? ''
+                ).trim()
+
+            const assetMrName =
+                String(asset?.mr || '')
+                    .trim()
+                    .toLowerCase()
+
+            const matchesMr =
+                assetMrId === selectedId
+                || (
+                    !assetMrId
+                    && selectedName
+                    && assetMrName
+                        === selectedName
+                )
+
+            if (!matchesMr) {
+                continue
+            }
+
+            const searchableValues = [
+                item.item,
+                item.unit,
+                item.inventory_year,
+                item.remarks,
+                asset.description,
+                asset.accessories,
+                asset.property_number,
+                asset.current_user,
+                asset.mr,
+                ictAssetStatusLabel(
+                    asset.status
+                ),
+            ]
+
+            if (
+                term
+                && !searchableValues.some(
+                    (value) =>
+                        String(value || '')
+                            .toLowerCase()
+                            .includes(term)
+                )
+            ) {
+                continue
+            }
+
+            rows.push({
+                item,
+                asset,
+            })
+        }
+    }
+
+    return rows
+})
+
+const generateMrAssignedReport = () => {
+    if (mrFilter.value === 'all') {
+        window.alert(
+            'Select an MR first before generating the MR Assigned Assets Report.'
+        )
+        return
+    }
+
+    const sourceRows =
+        mrReportRows.value
+
+    const working =
+        sourceRows.filter(
+            ({ asset }) =>
+                normalizeIctAssetStatus(
+                    asset.status
+                ) !== 'returned'
+        )
+
+    const returned =
+        sourceRows.filter(
+            ({ asset }) =>
+                normalizeIctAssetStatus(
+                    asset.status
+                ) === 'returned'
+        )
+
+    const nearForReturn =
+        working.filter(
+            ({ asset }) =>
+                ictLifeSpanState(
+                    asset
+                )?.level === 'near'
+        ).length
+
+    const lifeSpanEnded =
+        working.filter(
+            ({ asset }) =>
+                ictLifeSpanState(
+                    asset
+                )?.level === 'ended'
+        ).length
+
+    const uniqueItems =
+        new Set(
+            sourceRows
+                .map(
+                    ({ item }) =>
+                        String(
+                            item?.item || ''
+                        ).trim()
+                )
+                .filter(Boolean)
+        ).size
+
+    const rows =
+        sourceRows.map(
+            ({ item, asset }) => {
+                const status =
+                    ictAssetStatusLabel(
+                        asset.status
+                    )
+
+                return {
+                    item:
+                        [
+                            item.item || '—',
+                            item.inventory_year
+                                ? `Year ${item.inventory_year}`
+                                : '',
+                            item.unit || '',
+                        ]
+                            .filter(Boolean)
+                            .join(' · '),
+
+                    property_number:
+                        asset.property_number
+                        || '—',
+
+                    description:
+                        asset.description
+                        || '—',
+
+                    accessories:
+                        asset.accessories
+                        || '—',
+
+                    current_user:
+                        asset.current_user
+                        || 'Unassigned',
+
+                    date_acquired:
+                        reportDateLabel(
+                            asset.date_acquired
+                        ),
+
+                    life_span_ended:
+                        reportDateLabel(
+                            asset.life_span_ended
+                        ),
+
+                    life_cycle:
+                        reportLifeCycleLabel(
+                            asset,
+                            normalizeIctAssetStatus(
+                                asset.status
+                            ) === 'returned'
+                                ? asset.returned_at
+                                : ''
+                        ),
+
+                    status,
+
+                    date_returned:
+                        normalizeIctAssetStatus(
+                            asset.status
+                        ) === 'returned'
+                            ? reportDateLabel(
+                                asset.returned_at,
+                                'Not recorded (legacy)'
+                            )
+                            : '—',
+
+                    return_remarks:
+                        normalizeIctAssetStatus(
+                            asset.status
+                        ) === 'returned'
+                            ? (
+                                asset.return_remarks
+                                || '—'
+                            )
+                            : '—',
+
+                    item_remarks:
+                        String(
+                            item.remarks || ''
+                        ).trim()
+                        || '—',
+                }
+            }
+        )
+
+    printInventoryReport({
+        title:
+            'MR Assigned Assets Report',
+
+        noGray: true,
+
+
+        plainDetails: [
+            {
+                label: 'MR Holder Name',
+                value:
+                    selectedMrName.value
+                    || 'Selected MR',
+            },
+            {
+                label: 'Inventory Year',
+                value: yearFilter.value,
+            },
+            {
+                label: 'Current Assigned',
+                value: working.length,
+            },
+            {
+                label: 'Near for Return',
+                value: nearForReturn,
+            },
+            {
+                label: 'Life Span Ended',
+                value: lifeSpanEnded,
+            },
+            {
+                label: 'Total Property Records',
+                value: sourceRows.length,
+            },
+        ],
+
+        itemSummary:
+            reportItemSummaryForRows(
+                sourceRows
+            ),
+
+        columns: [
+            {
+                key: 'item',
+                label: 'Item / Year / Unit',
+            },
+            {
+                key: 'property_number',
+                label: 'Property Number',
+            },
+            {
+                key: 'description',
+                label: 'Description',
+            },
+            {
+                key: 'accessories',
+                label: 'Accessories',
+            },
+            {
+                key: 'current_user',
+                label: 'Current User',
+            },
+            {
+                key: 'date_acquired',
+                label: 'Date Acquired',
+            },
+            {
+                key: 'life_span_ended',
+                label: 'Life Span Ended',
+            },
+            {
+                key: 'life_cycle',
+                label: 'Life Cycle',
+            },
+            {
+                key: 'status',
+                label: 'Status',
+            },
+            {
+                key: 'item_remarks',
+                label: 'Item Remarks',
+            },
+        ],
+
+        rows,
+
+        emptyMessage:
+            'No ICT property records are assigned to the selected MR under the current filters.',
+    })
+}
 
 const filteredMrAssetCount = computed(() => {
     if (
@@ -2871,12 +4239,15 @@ const suppliesUnitOptions = [
     { value: 'BUNDLE', label: 'Bundle' },
 ]
 
+const ICT_HIDDEN_UNIT_VALUES = new Set([
+    'UNIT',
+    'PAX',
+    'LOT',
+])
+
 const ictUnitOptions = [
     { value: 'MONTH', label: 'Month (Subscription)' },
     { value: 'YEAR', label: 'Year (Subscription)' },
-    { value: 'UNIT', label: 'Unit' },
-    { value: 'LOT', label: 'Lot' },
-    { value: 'PAX', label: 'Pax' },
 ]
 
 const unitOptionLabel = (
@@ -2923,6 +4294,13 @@ const inventoryUnitsForCategory = (
                         )
                 )
                 .filter(Boolean)
+                .filter(
+                    (value) =>
+                        category !== 'ict'
+                        || !ICT_HIDDEN_UNIT_VALUES.has(
+                            value
+                        )
+                )
         ),
     ]
 }
@@ -2953,6 +4331,13 @@ const mergedUnitOptions = (
             normalizeCustomUnitValue
         )
         .filter(Boolean)
+        .filter(
+            (value) =>
+                category !== 'ict'
+                || !ICT_HIDDEN_UNIT_VALUES.has(
+                    value
+                )
+        )
         .filter((value) => {
             if (seen.has(value)) {
                 return false
@@ -3008,7 +4393,10 @@ const unitOptions = computed(() => {
         )
     }
 
-    if (activeTab.value === 'ict') {
+    if (
+        activeTab.value === 'ict'
+        || activeTab.value === 'returned'
+    ) {
         return (
             ictUnitOptionsWithCustom
                 .value
@@ -3052,6 +4440,19 @@ const addCustomUnitToCategory = (
             ok: false,
             error:
                 'Unit must not exceed 50 characters.',
+        }
+    }
+
+    if (
+        category === 'ict'
+        && ICT_HIDDEN_UNIT_VALUES.has(
+            value
+        )
+    ) {
+        return {
+            ok: false,
+            error:
+                'UNIT, PAX, and LOT are not available for ICT.',
         }
     }
 
@@ -5543,6 +6944,10 @@ const openIctAssetEditModal = (
             date_acquired: '',
             life_span_ended: '',
             status: 'working',
+            returned_at: '',
+            return_remarks: '',
+            returned_by: '',
+            returned_by_user_id: '',
             mr_personnel_id: '',
             mr: '',
         }
@@ -5577,6 +6982,14 @@ const openIctAssetEditModal = (
                 normalizedAsset.status
             )
             || 'working',
+        returned_at:
+            normalizedAsset.returned_at,
+        return_remarks:
+            normalizedAsset.return_remarks,
+        returned_by:
+            normalizedAsset.returned_by,
+        returned_by_user_id:
+            normalizedAsset.returned_by_user_id,
         mr_personnel_id:
             normalizedAsset.mr_personnel_id,
         mr:
@@ -5594,6 +7007,45 @@ const openIctAssetEditModal = (
 
     ictAssetEditErrors.value = {}
     showIctAssetEditModal.value = true
+}
+
+const localNowDateTimeInput = () => {
+    const now = new Date()
+    const local =
+        new Date(
+            now.getTime()
+            - now.getTimezoneOffset()
+                * 60
+                * 1000
+        )
+
+    return local
+        .toISOString()
+        .slice(0, 16)
+}
+
+const handleIctReturnStatusChange = () => {
+    if (
+        normalizeIctAssetStatus(
+            ictAssetEditForm.value.status
+        ) === 'returned'
+    ) {
+        if (
+            !normalizeIctReturnDateTimeInput(
+                ictAssetEditForm.value
+                    .returned_at
+            )
+        ) {
+            ictAssetEditForm.value
+                .returned_at =
+                localNowDateTimeInput()
+        }
+
+        return
+    }
+
+    ictAssetEditForm.value.returned_at = ''
+    ictAssetEditForm.value.return_remarks = ''
 }
 
 const individualPropertyEditIsOther = computed(
@@ -5703,6 +7155,18 @@ const saveIctAssetEdit = () => {
             ictAssetEditForm.value.status
         )
 
+    const returnedAt =
+        normalizeIctReturnDateTimeInput(
+            ictAssetEditForm.value
+                .returned_at
+        )
+
+    const returnRemarks =
+        String(
+            ictAssetEditForm.value
+                .return_remarks || ''
+        ).trim()
+
     const mrPersonnelId =
         String(
             ictAssetEditForm.value
@@ -5754,6 +7218,14 @@ const saveIctAssetEdit = () => {
         ) {
             ictAssetEditErrors.value.life_span_ended =
                 'Life Span Ended cannot be earlier than Date Acquired.'
+        }
+
+        if (
+            status === 'returned'
+            && !returnedAt
+        ) {
+            ictAssetEditErrors.value.returned_at =
+                'Date Returned is required.'
         }
     }
 
@@ -5819,6 +7291,14 @@ const saveIctAssetEdit = () => {
                 life_span_ended:
                     lifeSpanEnded || null,
                 status,
+                returned_at:
+                    status === 'returned'
+                        ? returnedAt
+                        : null,
+                return_remarks:
+                    status === 'returned'
+                        ? returnRemarks || null
+                        : null,
                 mr_personnel_id:
                     mrPersonnelId
                         ? Number(
@@ -8907,9 +10387,9 @@ const generateInventoryReport = () => {
                                     : activeTab === 'supplies'
                                         ? 'xl:w-[1080px] xl:grid-cols-[minmax(260px,1fr)_110px_140px_120px_150px]'
                                         : activeTab === 'ict'
-                                            ? 'xl:w-[1120px] xl:grid-cols-[minmax(240px,1fr)_110px_130px_220px_120px]'
+                                            ? 'xl:w-[1320px] xl:grid-cols-[minmax(220px,1fr)_105px_125px_210px_120px_180px]'
                                             : activeTab === 'returned'
-                                                ? 'xl:w-[980px] xl:grid-cols-[minmax(260px,1fr)_110px_130px_260px]'
+                                                ? 'xl:w-[1200px] xl:grid-cols-[minmax(220px,1fr)_105px_125px_210px_190px]'
                                                 : 'xl:w-[520px] xl:grid-cols-1'
                             "
                         >
@@ -8993,6 +10473,65 @@ const generateInventoryReport = () => {
                                     {{ person.name }}
                                 </option>
                             </select>
+
+                            <button
+                                v-if="activeTab === 'ict'"
+                                type="button"
+                                :disabled="
+                                    mrFilter === 'all'
+                                    || !mrReportRows.length
+                                "
+                                class="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                                :title="
+                                    mrFilter === 'all'
+                                        ? 'Select an MR first'
+                                        : 'Generate a detailed report of assets assigned to this MR'
+                                "
+                                @click="generateMrAssignedReport"
+                            >
+                                <svg
+                                    class="h-4 w-4"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M6 9V2h12v7" />
+                                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                                    <rect width="12" height="8" x="6" y="14" />
+                                </svg>
+                                Generate MR Report
+                            </button>
+
+                            <button
+                                v-if="activeTab === 'returned'"
+                                type="button"
+                                :disabled="
+                                    !filteredReturnedAssetRows.length
+                                "
+                                class="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-3 text-xs font-black text-white shadow-sm transition hover:bg-rose-700 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                                title="Generate a complete Returned ICT report using the current filters"
+                                @click="generateReturnedReport"
+                            >
+                                <svg
+                                    class="h-4 w-4"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M6 9V2h12v7" />
+                                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                                    <rect width="12" height="8" x="6" y="14" />
+                                </svg>
+                                Generate Return Report
+                            </button>
 
                             <button
                                 v-if="
@@ -13199,6 +14738,7 @@ const generateInventoryReport = () => {
                         <select
                             v-model="ictAssetEditForm.status"
                             class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-emerald-950 outline-none focus:ring-4 focus:ring-emerald-100"
+                            @change="handleIctReturnStatusChange"
                             :class="
                                 ictAssetEditErrors.status
                                     || ictAssetEditErrors['asset.status']
@@ -13227,6 +14767,107 @@ const generateInventoryReport = () => {
                                 || ictAssetEditErrors['asset.status']
                             }}
                         </p>
+                    </div>
+
+                    <div
+                        v-if="
+                            individualPropertyEditIsIct
+                            && normalizeIctAssetStatus(
+                                ictAssetEditForm.status
+                            ) === 'returned'
+                        "
+                        class="rounded-2xl border border-rose-200 bg-rose-50/70 p-4 sm:col-span-2"
+                    >
+                        <div
+                            class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                            <div>
+                                <p
+                                    class="text-[10px] font-black uppercase tracking-[0.10em] text-rose-700"
+                                >
+                                    Return Details
+                                </p>
+
+                                <p
+                                    class="mt-1 text-[10px] font-semibold leading-4 text-rose-700/80"
+                                >
+                                    These details are included in the Returned ICT report and individual property history.
+                                </p>
+                            </div>
+
+                            <span
+                                v-if="ictAssetEditForm.returned_by"
+                                class="self-start rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-rose-700 sm:self-auto"
+                            >
+                                Previously returned by:
+                                {{ ictAssetEditForm.returned_by }}
+                            </span>
+                        </div>
+
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div>
+                                <label
+                                    class="mb-2 block text-sm font-black text-rose-950"
+                                >
+                                    Date Returned
+                                    <span class="text-rose-500">*</span>
+                                </label>
+
+                                <input
+                                    v-model="ictAssetEditForm.returned_at"
+                                    type="datetime-local"
+                                    step="60"
+                                    class="h-11 w-full rounded-xl border bg-white px-3 text-sm font-bold text-rose-950 outline-none focus:ring-4 focus:ring-rose-100"
+                                    :class="
+                                        ictAssetEditErrors.returned_at
+                                            || ictAssetEditErrors['asset.returned_at']
+                                            ? 'border-rose-400'
+                                            : 'border-rose-200 focus:border-rose-400'
+                                    "
+                                />
+
+                                <p
+                                    v-if="
+                                        ictAssetEditErrors.returned_at
+                                        || ictAssetEditErrors['asset.returned_at']
+                                    "
+                                    class="mt-2 text-xs font-bold text-rose-600"
+                                >
+                                    {{
+                                        ictAssetEditErrors.returned_at
+                                        || ictAssetEditErrors['asset.returned_at']
+                                    }}
+                                </p>
+                            </div>
+
+                            <div>
+                                <label
+                                    class="mb-2 block text-sm font-black text-rose-950"
+                                >
+                                    Return Remarks
+                                    <span
+                                        class="font-medium text-slate-400"
+                                    >
+                                        (Optional)
+                                    </span>
+                                </label>
+
+                                <textarea
+                                    v-model="ictAssetEditForm.return_remarks"
+                                    rows="3"
+                                    maxlength="1000"
+                                    placeholder="Condition upon return, reason, turnover notes, missing accessories, etc."
+                                    class="w-full resize-y rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm font-semibold text-rose-950 outline-none focus:border-rose-400 focus:ring-4 focus:ring-rose-100"
+                                ></textarea>
+
+                                <p
+                                    v-if="ictAssetEditErrors['asset.return_remarks']"
+                                    class="mt-2 text-xs font-bold text-rose-600"
+                                >
+                                    {{ ictAssetEditErrors['asset.return_remarks'] }}
+                                </p>
+                            </div>
+                        </div>
                     </div>
 
                     <div
@@ -14389,6 +16030,7 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
+/* Softer expanded rows without the old vertical blue stripe. */
 .inventory-comfort-theme
     .inventory-ledger-table
     tbody
@@ -14404,6 +16046,7 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
+/* Property-detail blocks stay distinct without a thick blue left line. */
 .inventory-comfort-theme .inventory-ledger-table .border-2.border-blue-200 {
     border-color: #adc4dc !important;
     background-color: #f3f7fb !important;
@@ -14411,6 +16054,7 @@ const generateInventoryReport = () => {
         0 8px 20px rgba(51, 65, 85, 0.08);
 }
 
+/* Soften blue pills while retaining readable contrast. */
 .inventory-comfort-theme .bg-blue-50 {
     background-color: #e7f0fa !important;
 }
@@ -14423,6 +16067,7 @@ const generateInventoryReport = () => {
     border-color: #a9c7e4 !important;
 }
 
+/* Keep non-interactive rows/cards visually neutral. Only controls look clickable. */
 .inventory-comfort-theme .cursor-default {
     cursor: default !important;
 }
