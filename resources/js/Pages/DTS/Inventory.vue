@@ -561,12 +561,6 @@ const loadCustomUnits = () => {
                         normalizeCustomUnitValue
                     )
                     .filter(Boolean)
-                    .filter(
-                        (value) =>
-                            !ICT_HIDDEN_UNIT_VALUES.has(
-                                value
-                            )
-                    )
                 : [],
         }
     } catch (error) {
@@ -2112,59 +2106,110 @@ const ictLifeSpanState = (asset) => {
         return null
     }
 
-    const endDate =
-        ictDateToLocalMidnight(
-            asset?.life_span_ended
-        )
-
-    if (!endDate) {
-        return null
-    }
-
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-
-    const dayMs =
-        24 * 60 * 60 * 1000
-
-    const daysRemaining =
-        Math.ceil(
-            (
-                endDate.getTime()
-                - today.getTime()
-            ) / dayMs
-        )
-
-    const displayDate =
+    const normalizedLifeEnd =
         normalizeIctDateInput(
             asset?.life_span_ended
         )
 
-    if (daysRemaining <= 0) {
+    if (!normalizedLifeEnd) {
+        return null
+    }
+
+    const lifeSpanYear =
+        Number(
+            normalizedLifeEnd.slice(0, 4)
+        )
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const currentYear =
+        today.getFullYear()
+
+    /*
+     * ABSOLUTE RULE:
+     * If Life Span Ended belongs to a FUTURE YEAR,
+     * there is NO red warning yet.
+     *
+     * Example while current year is 2026:
+     * 2027-01-01 -> NORMAL
+     * 2027-10-15 -> NORMAL
+     * 2027-12-31 -> NORMAL
+     */
+    if (lifeSpanYear > currentYear) {
+        return null
+    }
+
+    const lifeEnd =
+        ictDateToLocalMidnight(
+            normalizedLifeEnd
+        )
+
+    if (!lifeEnd) {
+        return null
+    }
+
+    /*
+     * Previous year, or exact date already reached:
+     * Life Span Ended.
+     */
+    if (
+        lifeSpanYear < currentYear
+        || lifeEnd.getTime()
+            <= today.getTime()
+    ) {
         return {
             level: 'ended',
             label: 'Life Span Ended',
             title:
-                `Life span ended on ${displayDate}. Review this ICT unit for return.`,
+                `Life Span Ended: ${normalizedLifeEnd}`,
         }
     }
 
-    if (daysRemaining <= 365) {
-        return {
-            level: 'near',
-            label: 'Near For Return',
-            title:
-                `${daysRemaining} day(s) remaining before life span ends on ${displayDate}.`,
-        }
+    /*
+     * We only reach this point when:
+     * Life Span Year === Current Year
+     * AND the exact end date has not arrived yet.
+     */
+    return {
+        level: 'near',
+        label: 'Near For Return',
+        title:
+            `Near For Return: Life Span Ended ${normalizedLifeEnd}`,
     }
-
-    return null
 }
 
 const ictAssetNeedsLifeSpanAttention = (asset) =>
     Boolean(ictLifeSpanState(asset))
 
 const ictLifeSpanRowClass = (asset) => {
+    const normalizedLifeEnd =
+        normalizeIctDateInput(
+            asset?.life_span_ended
+        )
+
+    if (normalizedLifeEnd) {
+        const lifeSpanYear =
+            Number(
+                normalizedLifeEnd.slice(
+                    0,
+                    4
+                )
+            )
+
+        const currentYear =
+            new Date().getFullYear()
+
+        /*
+         * HARD STOP:
+         * A future Life Span Ended year can never
+         * receive a red row class.
+         */
+        if (lifeSpanYear > currentYear) {
+            return 'bg-white hover:bg-blue-50/40'
+        }
+    }
+
     const warning =
         ictLifeSpanState(asset)
 
@@ -2681,9 +2726,26 @@ const reportLifeCycleLabel = (
     asset,
     referenceDate = ''
 ) => {
+    const normalizedLifeEnd =
+        normalizeIctDateInput(
+            asset?.life_span_ended
+        )
+
+    if (!normalizedLifeEnd) {
+        return 'No Life Span Ended date'
+    }
+
+    const lifeSpanYear =
+        Number(
+            normalizedLifeEnd.slice(
+                0,
+                4
+            )
+        )
+
     const lifeEnd =
         ictDateToLocalMidnight(
-            asset?.life_span_ended
+            normalizedLifeEnd
         )
 
     if (!lifeEnd) {
@@ -2699,6 +2761,9 @@ const reportLifeCycleLabel = (
             today.setHours(0, 0, 0, 0)
             return today
         })()
+
+    const referenceYear =
+        reference.getFullYear()
 
     const dayMs =
         24 * 60 * 60 * 1000
@@ -2727,15 +2792,23 @@ const reportLifeCycleLabel = (
         return `Returned ${days} day(s) before life span ended`
     }
 
+    /*
+     * Future life-span year remains Active, regardless
+     * even when the future date is less than one year away.
+     */
+    if (lifeSpanYear > referenceYear) {
+        return `Active · Life Span Ended ${normalizedLifeEnd}`
+    }
+
     if (days <= 0) {
         return 'Life Span Ended'
     }
 
-    if (days <= 365) {
+    if (lifeSpanYear === referenceYear) {
         return `Near For Return · ${days} day(s) remaining`
     }
 
-    return `Active · ${days} day(s) remaining`
+    return `Active · Life Span Ended ${normalizedLifeEnd}`
 }
 
 const reportItemSummaryForRows = (rows) => {
@@ -2811,6 +2884,7 @@ const printInventoryReport = ({
     rows = [],
     emptyMessage = 'No records found.',
     noGray = false,
+    hideReturnedSummary = false,
 }) => {
     if (!rows.length) {
         window.alert(emptyMessage)
@@ -2884,7 +2958,11 @@ const printInventoryReport = ({
                                 <th>Item Name</th>
                                 <th>Unit</th>
                                 <th class="number">Working</th>
-                                <th class="number">Returned</th>
+                                ${
+                                    hideReturnedSummary
+                                        ? ''
+                                        : '<th class="number">Returned</th>'
+                                }
                                 <th class="number">Near For Return</th>
                                 <th class="number">Life Span Ended</th>
                                 <th class="number">Total</th>
@@ -2898,7 +2976,11 @@ const printInventoryReport = ({
                                             <td>${reportHtmlEscape(entry.item)}</td>
                                             <td>${reportHtmlEscape(entry.unit)}</td>
                                             <td class="number">${reportHtmlEscape(entry.working)}</td>
-                                            <td class="number">${reportHtmlEscape(entry.returned)}</td>
+                                            ${
+                                                hideReturnedSummary
+                                                    ? ''
+                                                    : `<td class="number">${reportHtmlEscape(entry.returned)}</td>`
+                                            }
                                             <td class="number">${reportHtmlEscape(entry.near)}</td>
                                             <td class="number">${reportHtmlEscape(entry.ended)}</td>
                                             <td class="number"><strong>${reportHtmlEscape(entry.total)}</strong></td>
@@ -3537,21 +3619,24 @@ const generateReturnedReport = () => {
 }
 
 const mrReportRows = computed(() => {
-    if (mrFilter.value === 'all') {
-        return []
-    }
+    const isAllMr =
+        mrFilter.value === 'all'
 
     const selectedId =
-        String(
-            mrFilter.value || ''
-        ).trim()
+        isAllMr
+            ? ''
+            : String(
+                mrFilter.value || ''
+            ).trim()
 
     const selectedName =
-        mrPersonnelName(
-            selectedId
-        )
-            .trim()
-            .toLowerCase()
+        isAllMr
+            ? ''
+            : mrPersonnelName(
+                selectedId
+            )
+                .trim()
+                .toLowerCase()
 
     const term =
         String(search.value || '')
@@ -3580,6 +3665,18 @@ const mrReportRows = computed(() => {
             const asset
             of ictAssetDetails(item)
         ) {
+            /*
+             * MR Assigned Assets Report is for CURRENT assignments only.
+             * Returned properties belong exclusively to the Returned tab/report.
+             */
+            if (
+                normalizeIctAssetStatus(
+                    asset?.status
+                ) === 'returned'
+            ) {
+                continue
+            }
+
             const assetMrId =
                 String(
                     asset?.mr_personnel_id
@@ -3592,7 +3689,8 @@ const mrReportRows = computed(() => {
                     .toLowerCase()
 
             const matchesMr =
-                assetMrId === selectedId
+                isAllMr
+                || assetMrId === selectedId
                 || (
                     !assetMrId
                     && selectedName
@@ -3642,31 +3740,16 @@ const mrReportRows = computed(() => {
 })
 
 const generateMrAssignedReport = () => {
-    if (mrFilter.value === 'all') {
-        window.alert(
-            'Select an MR first before generating the MR Assigned Assets Report.'
-        )
-        return
-    }
-
     const sourceRows =
         mrReportRows.value
 
+    /*
+     * sourceRows already excludes Returned assets.
+     * Therefore Current Assigned and Total Property Records
+     * both represent active MR-assigned properties only.
+     */
     const working =
-        sourceRows.filter(
-            ({ asset }) =>
-                normalizeIctAssetStatus(
-                    asset.status
-                ) !== 'returned'
-        )
-
-    const returned =
-        sourceRows.filter(
-            ({ asset }) =>
-                normalizeIctAssetStatus(
-                    asset.status
-                ) === 'returned'
-        )
+        sourceRows
 
     const nearForReturn =
         working.filter(
@@ -3754,26 +3837,6 @@ const generateMrAssignedReport = () => {
 
                     status,
 
-                    date_returned:
-                        normalizeIctAssetStatus(
-                            asset.status
-                        ) === 'returned'
-                            ? reportDateLabel(
-                                asset.returned_at,
-                                'Not recorded (legacy)'
-                            )
-                            : '—',
-
-                    return_remarks:
-                        normalizeIctAssetStatus(
-                            asset.status
-                        ) === 'returned'
-                            ? (
-                                asset.return_remarks
-                                || '—'
-                            )
-                            : '—',
-
                     item_remarks:
                         String(
                             item.remarks || ''
@@ -3788,14 +3851,19 @@ const generateMrAssignedReport = () => {
             'MR Assigned Assets Report',
 
         noGray: true,
+        hideReturnedSummary: true,
 
 
         plainDetails: [
             {
                 label: 'MR Holder Name',
                 value:
-                    selectedMrName.value
-                    || 'Selected MR',
+                    mrFilter.value === 'all'
+                        ? 'All MR Holders'
+                        : (
+                            selectedMrName.value
+                            || 'Selected MR'
+                        ),
             },
             {
                 label: 'Inventory Year',
@@ -3870,7 +3938,9 @@ const generateMrAssignedReport = () => {
         rows,
 
         emptyMessage:
-            'No ICT property records are assigned to the selected MR under the current filters.',
+            mrFilter.value === 'all'
+                ? 'No active ICT property records are assigned to any MR under the current filters.'
+                : 'No active ICT property records are assigned to the selected MR under the current filters.',
     })
 }
 
@@ -4239,16 +4309,17 @@ const suppliesUnitOptions = [
     { value: 'BUNDLE', label: 'Bundle' },
 ]
 
-const ICT_HIDDEN_UNIT_VALUES = new Set([
-    'UNIT',
-    'PAX',
-    'LOT',
-])
-
 const ictUnitOptions = [
     { value: 'MONTH', label: 'Month (Subscription)' },
     { value: 'YEAR', label: 'Year (Subscription)' },
 ]
+
+const blockedIctUnitValues =
+    new Set([
+        'UNIT',
+        'PAX',
+        'LOT',
+    ])
 
 const unitOptionLabel = (
     value,
@@ -4294,13 +4365,6 @@ const inventoryUnitsForCategory = (
                         )
                 )
                 .filter(Boolean)
-                .filter(
-                    (value) =>
-                        category !== 'ict'
-                        || !ICT_HIDDEN_UNIT_VALUES.has(
-                            value
-                        )
-                )
         ),
     ]
 }
@@ -4334,7 +4398,7 @@ const mergedUnitOptions = (
         .filter(
             (value) =>
                 category !== 'ict'
-                || !ICT_HIDDEN_UNIT_VALUES.has(
+                || !blockedIctUnitValues.has(
                     value
                 )
         )
@@ -4435,17 +4499,9 @@ const addCustomUnitToCategory = (
         }
     }
 
-    if (value.length > 50) {
-        return {
-            ok: false,
-            error:
-                'Unit must not exceed 50 characters.',
-        }
-    }
-
     if (
         category === 'ict'
-        && ICT_HIDDEN_UNIT_VALUES.has(
+        && blockedIctUnitValues.has(
             value
         )
     ) {
@@ -4453,6 +4509,14 @@ const addCustomUnitToCategory = (
             ok: false,
             error:
                 'UNIT, PAX, and LOT are not available for ICT.',
+        }
+    }
+
+    if (value.length > 50) {
+        return {
+            ok: false,
+            error:
+                'Unit must not exceed 50 characters.',
         }
     }
 
@@ -10478,14 +10542,13 @@ const generateInventoryReport = () => {
                                 v-if="activeTab === 'ict'"
                                 type="button"
                                 :disabled="
-                                    mrFilter === 'all'
-                                    || !mrReportRows.length
+                                    !mrReportRows.length
                                 "
                                 class="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 text-xs font-black text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
                                 :title="
                                     mrFilter === 'all'
-                                        ? 'Select an MR first'
-                                        : 'Generate a detailed report of assets assigned to this MR'
+                                        ? 'Generate a detailed report of active assets across all MR holders'
+                                        : 'Generate a detailed report of active assets assigned to this MR'
                                 "
                                 @click="generateMrAssignedReport"
                             >
@@ -12894,9 +12957,7 @@ const generateInventoryReport = () => {
                                         v-if="activeTab === 'ict'"
                                         class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 sm:col-span-2"
                                     >
-                                        <p class="mb-3 text-[9px] font-black uppercase tracking-[0.10em] text-rose-700">
-                                            Asset Life Cycle
-                                        </p>
+                                       
 
                                         <div class="grid gap-3 sm:grid-cols-2">
                                             <div>
@@ -12949,7 +13010,7 @@ const generateInventoryReport = () => {
                                         </div>
 
                                         <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
-                                            Red warning starts automatically when 365 days or less remain before the Life Span Ended date.
+                                            Red warning starts on January 1 of the same calendar year as the Life Span Ended date.
                                         </p>
                                     </div>
 
@@ -14105,9 +14166,7 @@ const generateInventoryReport = () => {
                                         <div
                                             class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 sm:col-span-2"
                                         >
-                                            <p class="mb-3 text-[9px] font-black uppercase tracking-[0.10em] text-blue-600">
-                                                Asset Life Cycle
-                                            </p>
+                                            
 
                                             <div class="grid gap-3 sm:grid-cols-2">
                                                 <div>
@@ -14160,7 +14219,7 @@ const generateInventoryReport = () => {
                                             </div>
 
                                             <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
-                                                Near For Return warning starts within 365 days of the Life Span Ended date.
+                                                Near For Return warning starts on January 1 of the same calendar year as the Life Span Ended date.
                                             </p>
                                         </div>
 
@@ -14874,9 +14933,7 @@ const generateInventoryReport = () => {
                         v-if="individualPropertyEditIsIct"
                         class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 sm:col-span-2"
                     >
-                        <p class="mb-3 text-[10px] font-black uppercase tracking-[0.10em] text-rose-700">
-                            Asset Life Cycle
-                        </p>
+                       
 
                         <div class="grid gap-4 sm:grid-cols-2">
                             <div>
@@ -14942,9 +14999,7 @@ const generateInventoryReport = () => {
                             </div>
                         </div>
 
-                        <p class="mt-3 text-[10px] font-semibold leading-4 text-slate-400">
-                            These dates are kept in the property record but are not shown as table columns. The row turns red when 365 days or less remain.
-                        </p>
+                      
                     </div>
 
                     
