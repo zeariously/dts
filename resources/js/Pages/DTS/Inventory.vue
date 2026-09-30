@@ -3735,7 +3735,7 @@ const printInventoryReport = ({
 
                     <div class="brand-copy">
                         <h1 class="brand-title">
-                            DOST - SPD Inventory
+                            DOST - SPD 
                         </h1>
 
                         <p class="report-name">
@@ -3750,10 +3750,7 @@ const printInventoryReport = ({
                     </div>
                 </div>
 
-                <p class="generated">
-                    Generated: ${reportHtmlEscape(reportGeneratedAtLabel())}
-                </p>
-
+              
                 ${
                     filtersHtml
                         ? `<div class="filters">${filtersHtml}</div>`
@@ -3790,9 +3787,10 @@ const printInventoryReport = ({
                 </table>
             </section>
 
-            <p class="footer">
-                Report generated from the current Inventory records and active report filters.
-            </p>
+             <p class="generated">
+                    Generated: ${reportHtmlEscape(reportGeneratedAtLabel())}
+                </p>
+
         </body>
         </html>
     `)
@@ -4202,7 +4200,7 @@ const generateMrAssignedReport = () => {
 
     printInventoryReport({
         title:
-            'MR Assigned Assets Report',
+            'Inventory Monitoring Report',
 
         noGray: true,
         hideReturnedSummary: true,
@@ -4228,10 +4226,7 @@ const generateMrAssignedReport = () => {
                 label: 'Current Assigned',
                 value: currentAssigned.length,
             },
-            {
-                label: 'Total Property Records',
-                value: sourceRows.length,
-            },
+            
         ],
 
         itemSummary:
@@ -10397,7 +10392,7 @@ const generateInventoryReport = () => {
 
                 <div class="brand-copy">
                     <h1 class="brand-title">
-                        DOST - SPD Inventory
+                        DOST - SPD 
                     </h1>
 
                     <p class="report-name">
