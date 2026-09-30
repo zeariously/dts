@@ -27,6 +27,14 @@ const props = defineProps({
             last_page: 1,
         }),
     },
+
+    documentOptions: {
+        type: Object,
+        default: () => ({
+            doctypes: [],
+            offices: [],
+        }),
+    },
     roles: {
         type: Array,
         default: () => [],
@@ -97,6 +105,22 @@ const documentError = ref('')
 const selectedDocument = ref(null)
 const selectedDocumentSummary = ref(null)
 
+const showEditDocumentModal = ref(false)
+const editingDocument = ref(null)
+
+const editDocumentForm = useForm({
+    entrydate: '',
+    subject: '',
+    regarding: '',
+    classification: 'False',
+    IDdoctype: '',
+    IDfrom: '',
+    IDfor: '',
+})
+
+const adminGuideLanguage = ref('en')
+const adminGuideSearch = ref('')
+
 let userSearchTimer = null
 let documentSearchTimer = null
 
@@ -122,6 +146,7 @@ const tabs = [
     { value: 'role-management', label: 'User Roles', icon: '🛡️' },
     { value: 'activity-logs', label: 'Activity Logs', icon: '🧾' },
     { value: 'documents', label: 'All Documents', icon: '📄' },
+    { value: 'dts-guide', label: 'DTS Guide', icon: '📘' },
     { value: 'notifications', label: 'Notifications', icon: '🔔' },
 ]
 
@@ -136,6 +161,546 @@ const currentTabLabel = computed(() => {
 })
 
 const announcementRows = computed(() => props.announcements || [])
+
+const documentDoctypeOptions = computed(
+    () => props.documentOptions?.doctypes || []
+)
+
+const documentOfficeOptions = computed(
+    () => props.documentOptions?.offices || []
+)
+
+const adminGuideQuickQuestionsByLanguage = {
+    en: [
+        'How do I receive a document?',
+        'How do I return a document?',
+        'How do I add an inventory item?',
+        'How do I release ICT equipment?',
+    ],
+    tl: [
+        'Paano mag-receive ng dokumento?',
+        'Paano mag-return ng dokumento?',
+        'Paano mag-add ng inventory?',
+        'Paano mag-release ng ICT?',
+    ],
+}
+
+const adminGuideTopics = [
+    {
+        id: 'receive-document',
+        keywords: [
+            'receive document',
+            'receive ng document',
+            'receive ng dokumento',
+            'mag receive',
+            'mag-receive',
+            'receiving',
+            'for receiving',
+            'how do i receive',
+            'how to receive',
+            'paano mag receive',
+            'paano mag-receive',
+            'tanggapin document',
+            'tanggap document',
+            'tanggapin dokumento',
+        ],
+        title: {
+            en: 'Receive a Document',
+            tl: 'Paano Tumanggap ng Dokumento',
+        },
+        steps: {
+            en: [
+                'Open the For Receiving or Incoming section.',
+                'Select the document you need to process.',
+                'Review the document details before receiving it.',
+                'Click Receive and confirm the action.',
+                'After receiving, the document moves to the Received list.',
+            ],
+            tl: [
+                'Buksan ang For Receiving o Incoming section.',
+                'Piliin ang dokumentong kailangan mong i-process.',
+                'Suriin muna ang detalye ng dokumento.',
+                'I-click ang Receive at i-confirm ang action.',
+                'Pagkatapos ma-receive, mapupunta ang dokumento sa Received list.',
+            ],
+        },
+        href: '/dts?section=collaboration&filter=for-receiving',
+        actionLabel: {
+            en: 'Open For Receiving',
+            tl: 'Buksan ang For Receiving',
+        },
+    },
+    {
+        id: 'address-document',
+        keywords: [
+            'address document',
+            'addressed',
+            'mag address',
+            'mag-address',
+            'first action',
+            'final action',
+            'for action',
+            'how to address',
+            'paano i address',
+            'paano mag address',
+        ],
+        title: {
+            en: 'Address a Document',
+            tl: 'Paano Mag-Address ng Dokumento',
+        },
+        steps: {
+            en: [
+                'Open the document that is already Received or ready for action.',
+                'Choose Address from the available document actions.',
+                'Select First Action and/or Final Action when applicable.',
+                'Enter the required remarks.',
+                'Save the action. The document will appear under Addressed after the action is completed.',
+            ],
+            tl: [
+                'Buksan ang dokumentong Received na o handa nang aksyunan.',
+                'Piliin ang Address mula sa document actions.',
+                'Piliin ang First Action at/o Final Action kung naaangkop.',
+                'Ilagay ang required remarks.',
+                'I-save ang action. Lalabas ang dokumento sa Addressed kapag nakumpleto ang action.',
+            ],
+        },
+        href: '/dts?section=collaboration&filter=received',
+        actionLabel: {
+            en: 'Open Received',
+            tl: 'Buksan ang Received',
+        },
+    },
+    {
+        id: 'return-document',
+        keywords: [
+            'return document',
+            'return to admin',
+            'returned',
+            'mag return',
+            'mag-return',
+            'ibalik document',
+            'ibalik dokumento',
+            'how to return',
+            'paano mag return',
+            'paano mag-return',
+        ],
+        title: {
+            en: 'Return a Document',
+            tl: 'Paano Mag-Return ng Dokumento',
+        },
+        steps: {
+            en: [
+                'Open the document you want to return.',
+                'Choose Return from the document actions.',
+                'Enter the required remarks explaining the return.',
+                'Confirm the action.',
+                'The returned document will appear in the Returned workflow until it is received again by the appropriate user.',
+            ],
+            tl: [
+                'Buksan ang dokumentong gusto mong i-return.',
+                'Piliin ang Return mula sa document actions.',
+                'Ilagay ang required remarks at dahilan ng pag-return.',
+                'I-confirm ang action.',
+                'Lalabas ang dokumento sa Returned workflow hanggang ma-receive ulit ito ng tamang user.',
+            ],
+        },
+        href: '/dts?section=collaboration&filter=returned',
+        actionLabel: {
+            en: 'Open Returned',
+            tl: 'Buksan ang Returned',
+        },
+    },
+    {
+        id: 'transfer-document',
+        keywords: [
+            'transfer document',
+            'mag transfer',
+            'mag-transfer',
+            'forward document',
+            'ilipat document',
+            'ilipat dokumento',
+            'how to transfer',
+            'paano mag transfer',
+            'paano mag-transfer',
+        ],
+        title: {
+            en: 'Transfer a Document',
+            tl: 'Paano Mag-Transfer ng Dokumento',
+        },
+        steps: {
+            en: [
+                'Open the document you want to transfer.',
+                'Choose Transfer from the document actions.',
+                'Complete the required destination or receiving information.',
+                'Enter the required remarks.',
+                'Confirm the transfer, then check the document history to verify the action.',
+            ],
+            tl: [
+                'Buksan ang dokumentong gusto mong i-transfer.',
+                'Piliin ang Transfer mula sa document actions.',
+                'Kumpletuhin ang required destination o receiving information.',
+                'Ilagay ang required remarks.',
+                'I-confirm ang transfer at tingnan ang document history para ma-verify ang action.',
+            ],
+        },
+        href: '/dts?section=incoming',
+        actionLabel: {
+            en: 'Open Incoming',
+            tl: 'Buksan ang Incoming',
+        },
+    },
+    {
+        id: 'inventory-add',
+        keywords: [
+            'add inventory',
+            'add item inventory',
+            'new inventory',
+            'add inventory item',
+            'mag add inventory',
+            'mag-add inventory',
+            'dagdag inventory',
+            'how to add inventory',
+            'paano mag add ng inventory',
+            'paano mag-add ng inventory',
+            'furniture inventory',
+            'ict inventory',
+            'supplies inventory',
+        ],
+        title: {
+            en: 'Add an Inventory Item',
+            tl: 'Paano Magdagdag ng Inventory Item',
+        },
+        steps: {
+            en: [
+                'Open Inventory from the sidebar.',
+                'Choose Supplies, ICT, or Other Items.',
+                'Click Add Item.',
+                'Complete the required item information for the selected category.',
+                'For property-tracked ICT or Furniture/Fixtures, complete the required Property Details.',
+                'Click Save when all required fields are complete.',
+            ],
+            tl: [
+                'Buksan ang Inventory mula sa sidebar.',
+                'Piliin ang Supplies, ICT, o Other Items.',
+                'I-click ang Add Item.',
+                'Kumpletuhin ang required item information para sa napiling category.',
+                'Para sa property-tracked ICT o Furniture/Fixtures, kumpletuhin ang required Property Details.',
+                'I-click ang Save kapag kumpleto na ang required fields.',
+            ],
+        },
+        href: '/dts/inventory',
+        actionLabel: {
+            en: 'Open Inventory',
+            tl: 'Buksan ang Inventory',
+        },
+    },
+    {
+        id: 'inventory-release',
+        keywords: [
+            'release inventory',
+            'release ict',
+            'release supplies',
+            'release furniture',
+            'release equipment',
+            'mag release inventory',
+            'mag-release inventory',
+            'how to release',
+            'paano mag release',
+            'paano mag-release',
+            'property number release',
+        ],
+        title: {
+            en: 'Release an Inventory Item',
+            tl: 'Paano Mag-Release ng Inventory Item',
+        },
+        steps: {
+            en: [
+                'Open Inventory and locate the item.',
+                'Choose the Release action for that item.',
+                'Enter the quantity or duration required by the item type.',
+                'For property-tracked ICT or Furniture/Fixtures, select the Property Number being released and enter the destination/current user.',
+                'Add remarks when needed, then confirm the release.',
+                'Check History if you need to review the recorded transaction.',
+            ],
+            tl: [
+                'Buksan ang Inventory at hanapin ang item.',
+                'Piliin ang Release action para sa item.',
+                'Ilagay ang quantity o duration na kailangan ayon sa item type.',
+                'Para sa property-tracked ICT o Furniture/Fixtures, piliin ang Property Number na ire-release at ilagay ang destination/current user.',
+                'Maglagay ng remarks kung kailangan, pagkatapos ay i-confirm ang release.',
+                'Tingnan ang History kung kailangan mong i-review ang recorded transaction.',
+            ],
+        },
+        href: '/dts/inventory',
+        actionLabel: {
+            en: 'Open Inventory',
+            tl: 'Buksan ang Inventory',
+        },
+    },
+    {
+        id: 'reports',
+        keywords: [
+            'report',
+            'reports',
+            'generate report',
+            'print report',
+            'how to report',
+            'paano mag report',
+            'paano mag-report',
+            'report by date',
+        ],
+        title: {
+            en: 'Generate or View Reports',
+            tl: 'Paano Tingnan o Gumawa ng Report',
+        },
+        steps: {
+            en: [
+                'Open Reports from the sidebar.',
+                'Choose the report type or filters you need.',
+                'Use the available search and date filters to narrow the records.',
+                'Review the displayed results.',
+                'Use the print option when you need a printable copy.',
+            ],
+            tl: [
+                'Buksan ang Reports mula sa sidebar.',
+                'Piliin ang report type o filters na kailangan mo.',
+                'Gamitin ang search at date filters para paliitin ang listahan ng records.',
+                'Suriin ang displayed results.',
+                'Gamitin ang print option kung kailangan mo ng printable copy.',
+            ],
+        },
+        href: '/dts?section=reports&type=by-date',
+        actionLabel: {
+            en: 'Open Reports',
+            tl: 'Buksan ang Reports',
+        },
+    },
+    {
+        id: 'library',
+        keywords: [
+            'library',
+            'personnel library',
+            'office library',
+            'doc type',
+            'document type',
+            'attachment library',
+            'how to use library',
+            'paano library',
+        ],
+        title: {
+            en: 'Use the DTS Library',
+            tl: 'Paano Gamitin ang DTS Library',
+        },
+        steps: {
+            en: [
+                'Open Library from the sidebar.',
+                'Choose the library section you need, such as Personnel, Office, Doc Type, or Attachment.',
+                'Use search and pagination to locate an entry.',
+                'Available actions depend on the selected library section and your access rights.',
+            ],
+            tl: [
+                'Buksan ang Library mula sa sidebar.',
+                'Piliin ang kailangan mong section gaya ng Personnel, Office, Doc Type, o Attachment.',
+                'Gamitin ang search at pagination para mahanap ang entry.',
+                'Ang available actions ay nakadepende sa napiling library section at access rights mo.',
+            ],
+        },
+        href: '/dts/library',
+        actionLabel: {
+            en: 'Open Library',
+            tl: 'Buksan ang Library',
+        },
+    },
+    {
+        id: 'notifications',
+        keywords: [
+            'notification',
+            'notifications',
+            'bell',
+            'announcement',
+            'alerts',
+            'unread',
+            'how to check notification',
+            'paano notification',
+        ],
+        title: {
+            en: 'Check DTS Notifications',
+            tl: 'Paano Tingnan ang DTS Notifications',
+        },
+        steps: {
+            en: [
+                'Click the notification bell in the top bar.',
+                'Unread announcements and document alerts will appear in the notification panel.',
+                'For announcements, use Mark as read after reviewing them.',
+                'For document alerts, click View Details to open the related document.',
+            ],
+            tl: [
+                'I-click ang notification bell sa top bar.',
+                'Lalabas sa notification panel ang unread announcements at document alerts.',
+                'Para sa announcements, gamitin ang Mark as read pagkatapos basahin.',
+                'Para sa document alerts, i-click ang View Details para buksan ang kaugnay na dokumento.',
+            ],
+        },
+        href: '/dts',
+        actionLabel: {
+            en: 'Open Dashboard',
+            tl: 'Buksan ang Dashboard',
+        },
+    },
+    {
+        id: 'all-documents',
+        keywords: [
+            'all documents',
+            'lahat ng documents',
+            'lahat ng document',
+            'lahat ng dokumento',
+            'view all document',
+            'search document',
+            'find document',
+        ],
+        title: {
+            en: 'View All Documents',
+            tl: 'Paano Tingnan ang Lahat ng Dokumento',
+        },
+        steps: {
+            en: [
+                'Open All Documents from the sidebar if your role has access.',
+                'Use the available search or filters to locate the document.',
+                'Open a record to review its details and history.',
+                'Actions available on the details page still depend on your role and the document workflow.',
+            ],
+            tl: [
+                'Buksan ang All Documents mula sa sidebar kung may access ang role mo.',
+                'Gamitin ang available search o filters para mahanap ang dokumento.',
+                'Buksan ang record para makita ang details at history nito.',
+                'Ang available actions sa details page ay nakadepende pa rin sa role mo at document workflow.',
+            ],
+        },
+        href: '/dts?section=all-documents',
+        actionLabel: {
+            en: 'Open All Documents',
+            tl: 'Buksan ang All Documents',
+        },
+    },
+    {
+        id: 'monitoring-dashboard',
+        keywords: [
+            'monitoring dashboard',
+            'monitoring',
+            'admin dashboard',
+            'dashboard monitoring',
+            'how to open monitoring',
+            'paano monitoring',
+        ],
+        title: {
+            en: 'Open the Monitoring Dashboard',
+            tl: 'Paano Buksan ang Monitoring Dashboard',
+        },
+        steps: {
+            en: [
+                'Open the account menu in the top-right corner.',
+                'If your account has Monitoring access, choose Admin Dashboard.',
+                'Use the monitoring cards and lists to review the current document workflow status.',
+            ],
+            tl: [
+                'Buksan ang account menu sa kanang itaas.',
+                'Kung may Monitoring access ang account mo, piliin ang Admin Dashboard.',
+                'Gamitin ang monitoring cards at lists para makita ang kasalukuyang document workflow status.',
+            ],
+        },
+        href: '/dts/monitoring-dashboard',
+        actionLabel: {
+            en: 'Open Monitoring Dashboard',
+            tl: 'Buksan ang Monitoring Dashboard',
+        },
+    },
+    {
+        id: 'status-addressed',
+        keywords: [
+            'what is addressed',
+            'what does addressed mean',
+            'ano addressed',
+            'meaning addressed',
+            'ibig sabihin addressed',
+            'addressed status',
+        ],
+        title: {
+            en: 'What does Addressed mean?',
+            tl: 'Ano ang ibig sabihin ng Addressed?',
+        },
+        steps: {
+            en: [
+                'Addressed means the required document action has already been recorded.',
+                'The document is no longer waiting in the Returned or pending-action workflow once its addressing action is completed.',
+                'Open the document details or history if you need to review the exact action and remarks.',
+            ],
+            tl: [
+                'Ang Addressed ay nangangahulugang na-record na ang kinakailangang action para sa dokumento.',
+                'Hindi na naghihintay ang dokumento sa Returned o pending-action workflow kapag kumpleto na ang addressing action.',
+                'Buksan ang document details o history kung kailangan mong makita ang eksaktong action at remarks.',
+            ],
+        },
+        href: '/dts?section=collaboration&filter=addressed',
+        actionLabel: {
+            en: 'Open Addressed',
+            tl: 'Buksan ang Addressed',
+        },
+    },
+]
+
+const adminGuideQuickQuestions = computed(() =>
+    adminGuideQuickQuestionsByLanguage[
+        adminGuideLanguage.value
+    ] || adminGuideQuickQuestionsByLanguage.en
+)
+
+const adminGuideRows = computed(() => {
+    const language =
+        adminGuideLanguage.value === 'tl'
+            ? 'tl'
+            : 'en'
+
+    const term =
+        String(adminGuideSearch.value || '')
+            .trim()
+            .toLowerCase()
+
+    return adminGuideTopics.filter((topic) => {
+        if (!term) {
+            return true
+        }
+
+        const title =
+            String(
+                topic?.title?.[language]
+                || topic?.title?.en
+                || ''
+            )
+
+        const steps =
+            Array.isArray(topic?.steps?.[language])
+                ? topic.steps[language]
+                : (
+                    Array.isArray(topic?.steps?.en)
+                        ? topic.steps.en
+                        : []
+                )
+
+        const keywords =
+            Array.isArray(topic?.keywords)
+                ? topic.keywords
+                : []
+
+        return [
+            title,
+            ...steps,
+            ...keywords,
+        ]
+            .join(' ')
+            .toLowerCase()
+            .includes(term)
+    })
+})
 
 const displayDocument = computed(() => {
     return selectedDocument.value || selectedDocumentSummary.value || {}
@@ -370,6 +935,117 @@ const closeDocumentModal = () => {
     selectedDocumentSummary.value = null
     documentError.value = ''
     documentModalTab.value = 'details'
+}
+
+const normalizeDocumentDateInput = (value) => {
+    const raw =
+        String(value || '').trim()
+
+    const match =
+        raw.match(/^\d{4}-\d{2}-\d{2}/)
+
+    return match?.[0] || ''
+}
+
+const openEditDocumentModal = (document) => {
+    if (!document?.IDdoc) return
+
+    editingDocument.value = document
+
+    editDocumentForm.entrydate =
+        normalizeDocumentDateInput(
+            document.entrydate
+        )
+
+    editDocumentForm.subject =
+        String(document.subject || '')
+
+    editDocumentForm.regarding =
+        String(document.regarding || '')
+
+    editDocumentForm.classification =
+        String(
+            document.classification ?? 'False'
+        )
+
+    editDocumentForm.IDdoctype =
+        document.IDdoctype !== null
+        && document.IDdoctype !== undefined
+            ? String(document.IDdoctype)
+            : ''
+
+    editDocumentForm.IDfrom =
+        document.IDfrom !== null
+        && document.IDfrom !== undefined
+            ? String(document.IDfrom)
+            : ''
+
+    editDocumentForm.IDfor =
+        document.IDfor !== null
+        && document.IDfor !== undefined
+            ? String(document.IDfor)
+            : ''
+
+    editDocumentForm.clearErrors()
+    showEditDocumentModal.value = true
+}
+
+const closeEditDocumentModal = () => {
+    if (editDocumentForm.processing) return
+
+    showEditDocumentModal.value = false
+    editingDocument.value = null
+    editDocumentForm.reset()
+    editDocumentForm.clearErrors()
+}
+
+const submitEditDocument = () => {
+    if (!editingDocument.value?.IDdoc) {
+        return
+    }
+
+    editDocumentForm.patch(
+        `/admin/documents/${editingDocument.value.IDdoc}`,
+        {
+            preserveScroll: true,
+
+            onSuccess: () => {
+                showEditDocumentModal.value = false
+                editingDocument.value = null
+                editDocumentForm.reset()
+                editDocumentForm.clearErrors()
+            },
+        }
+    )
+}
+
+const deleteAdminDocument = (document) => {
+    if (!document?.IDdoc) return
+
+    const confirmed = window.confirm(
+        `Permanently delete DTS - #${document.IDdoc}?\n\n`
+        + 'This will also delete its distributions, transactions, '
+        + 'remarks, assignments, and uploaded attachment records. '
+        + 'This action cannot be undone.'
+    )
+
+    if (!confirmed) return
+
+    router.delete(
+        `/admin/documents/${document.IDdoc}`,
+        {
+            preserveScroll: true,
+
+            onSuccess: () => {
+                if (
+                    selectedDocumentSummary.value?.IDdoc
+                    === document.IDdoc
+                ) {
+                    closeDocumentModal()
+                }
+            },
+        }
+    )
 }
 
 const formatDateTime = (value) => {
@@ -670,13 +1346,16 @@ const historyBadgeClass = (type) => {
                                 : activeTab === 'activity-logs'
                                     ? 'Review recorded user and administrative activity.'
                                     : activeTab === 'documents'
-                                        ? 'View every DTS document without leaving the Admin Console.'
-                                        : 'Create and manage announcements for DTS users.'
+                                        ? 'View, edit, or permanently delete DTS documents from the Admin Console.'
+                                        : activeTab === 'dts-guide'
+                                            ? 'Review the questions and guided answers currently available in the DTS Guide.'
+                                            : 'Create and manage announcements for DTS users.'
                         }}
                     </p>
                 </div>
 
                 <button
+                    v-if="activeTab === 'role-management'"
                     type="button"
                     class="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-700 md:w-auto"
                     @click="openAddUserModal"
@@ -750,7 +1429,7 @@ const historyBadgeClass = (type) => {
                         <div>
                             <h3 class="text-xl font-black">All DTS Documents</h3>
                             <p class="mt-1 text-sm font-medium text-white/80">
-                                The View button opens document details and action history in a modal.
+                                Admins can view, edit basic document details, or permanently delete a DTS record.
                             </p>
                         </div>
 
@@ -818,14 +1497,32 @@ const historyBadgeClass = (type) => {
                                     </span>
                                 </td>
 
-                                <td class="px-5 py-5 text-center">
-                                    <button
-                                        type="button"
-                                        class="rounded-2xl bg-slate-950 px-5 py-3 text-xs font-black text-white hover:bg-indigo-700"
-                                        @click="openDocumentModal(document)"
-                                    >
-                                        View
-                                    </button>
+                                <td class="px-5 py-5">
+                                    <div class="flex flex-wrap justify-center gap-2">
+                                        <button
+                                            type="button"
+                                            class="rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black text-white transition hover:bg-indigo-700"
+                                            @click="openDocumentModal(document)"
+                                        >
+                                            View
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-100"
+                                            @click="openEditDocumentModal(document)"
+                                        >
+                                            Edit
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-black text-rose-700 transition hover:bg-rose-100"
+                                            @click="deleteAdminDocument(document)"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
                                 </td>
                                 
                                 
@@ -868,6 +1565,154 @@ const historyBadgeClass = (type) => {
                             @click="goToPage(link.url)"
                             v-html="link.label"
                         ></button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- DTS Guide Questions -->
+            <section
+                v-else-if="activeTab === 'dts-guide'"
+                class="space-y-6"
+            >
+                <div class="overflow-hidden rounded-3xl border border-slate-200 bg-white">
+                    <div class="bg-gradient-to-r from-blue-700 to-cyan-600 px-6 py-5 text-white">
+                        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                                    DTS Guide Knowledge Base
+                                </p>
+
+                                <h3 class="mt-2 text-2xl font-black">
+                                    Guide Questions & Answers
+                                </h3>
+
+                                <p class="mt-1 max-w-3xl text-sm font-semibold text-white/80">
+                                    These are the same guide topics used by the DTS Guide.
+                                </p>
+                            </div>
+
+                            <div class="flex rounded-2xl bg-white/10 p-1">
+                                <button
+                                    type="button"
+                                    class="rounded-xl px-4 py-2 text-xs font-black transition"
+                                    :class="adminGuideLanguage === 'en'
+                                        ? 'bg-white text-blue-700'
+                                        : 'text-white hover:bg-white/10'"
+                                    @click="adminGuideLanguage = 'en'"
+                                >
+                                    English
+                                </button>
+
+                                <button
+                                    type="button"
+                                    class="rounded-xl px-4 py-2 text-xs font-black transition"
+                                    :class="adminGuideLanguage === 'tl'
+                                        ? 'bg-white text-blue-700'
+                                        : 'text-white hover:bg-white/10'"
+                                    @click="adminGuideLanguage = 'tl'"
+                                >
+                                    Tagalog
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-5 p-5 sm:p-6">
+                        <div class="relative">
+                            <span class="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+                                🔍
+                            </span>
+
+                            <input
+                                v-model="adminGuideSearch"
+                                type="text"
+                                placeholder="Search DTS Guide questions, answers, or keywords..."
+                                class="h-13 w-full rounded-2xl border border-slate-200 bg-white py-3.5 pl-12 pr-4 text-sm font-semibold text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                            />
+                        </div>
+
+                        <div>
+                            <p class="text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                                Quick Questions
+                            </p>
+
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <span
+                                    v-for="question in adminGuideQuickQuestions"
+                                    :key="question"
+                                    class="rounded-full border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-black text-blue-700"
+                                >
+                                    {{ question }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                            <article
+                                v-for="topic in adminGuideRows"
+                                :key="topic.id"
+                                class="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"
+                            >
+                                <div class="border-b border-slate-100 bg-slate-50 px-5 py-4">
+                                    <p class="text-[10px] font-black uppercase tracking-[0.18em] text-blue-500">
+                                        {{ topic.id }}
+                                    </p>
+
+                                    <h4 class="mt-1 text-lg font-black text-slate-950">
+                                        {{
+                                            topic.title?.[adminGuideLanguage]
+                                            || topic.title?.en
+                                            || 'DTS Guide Topic'
+                                        }}
+                                    </h4>
+                                </div>
+
+                                <div class="p-5">
+                                    <ol class="space-y-3">
+                                        <li
+                                            v-for="(step, index) in (
+                                                topic.steps?.[adminGuideLanguage]
+                                                || topic.steps?.en
+                                                || []
+                                            )"
+                                            :key="`${topic.id}-${index}`"
+                                            class="flex gap-3 text-sm font-semibold leading-6 text-slate-700"
+                                        >
+                                            <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-black text-blue-700">
+                                                {{ index + 1 }}
+                                            </span>
+
+                                            <span>{{ step }}</span>
+                                        </li>
+                                    </ol>
+
+                                    <a
+                                        v-if="topic.href"
+                                        :href="topic.href"
+                                        class="mt-5 inline-flex rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-100"
+                                    >
+                                        {{
+                                            topic.actionLabel?.[adminGuideLanguage]
+                                            || topic.actionLabel?.en
+                                            || 'Open DTS Page'
+                                        }}
+                                    </a>
+                                </div>
+                            </article>
+                        </div>
+
+                        <div
+                            v-if="adminGuideRows.length === 0"
+                            class="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-14 text-center"
+                        >
+                            <p class="text-4xl">📘</p>
+                            <p class="mt-4 text-lg font-black text-slate-800">
+                                No DTS Guide topic found
+                            </p>
+                            <p class="mt-2 text-sm font-semibold text-slate-500">
+                                Try another keyword.
+                            </p>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -1462,6 +2307,240 @@ const historyBadgeClass = (type) => {
         </div>
 
         <!-- Document Details Modal -->
+        <!-- Edit DTS Document Modal -->
+        <div
+            v-if="showEditDocumentModal"
+            class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/70 backdrop-blur-sm sm:items-center sm:px-4 sm:py-8"
+            @click.self="closeEditDocumentModal"
+        >
+            <div class="flex max-h-[100dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:max-h-[92vh] sm:rounded-[2rem]">
+                <header class="shrink-0 bg-gradient-to-r from-blue-700 to-indigo-700 px-5 py-5 text-white sm:px-7">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                                Admin Document Edit
+                            </p>
+
+                            <h2 class="mt-2 text-2xl font-black">
+                                DTS - #{{ editingDocument?.IDdoc }}
+                            </h2>
+
+                            <p class="mt-1 text-sm font-semibold text-white/75">
+                                Edit basic document information. Workflow history and assignment history are not rewritten here.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="rounded-xl bg-white/15 px-4 py-2.5 text-sm font-black text-white hover:bg-white/25"
+                            :disabled="editDocumentForm.processing"
+                            @click="closeEditDocumentModal"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </header>
+
+                <form
+                    class="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7"
+                    @submit.prevent="submitEditDocument"
+                >
+                    <div class="grid grid-cols-1 gap-5 md:grid-cols-2">
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Entry Date
+                            </label>
+
+                            <input
+                                v-model="editDocumentForm.entrydate"
+                                type="date"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.entrydate ? 'border-rose-400' : ''"
+                            />
+
+                            <p
+                                v-if="editDocumentForm.errors.entrydate"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.entrydate }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Classification
+                            </label>
+
+                            <select
+                                v-model="editDocumentForm.classification"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                            >
+                                <option value="False">Incoming</option>
+                                <option value="True">Outgoing</option>
+                            </select>
+
+                            <p
+                                v-if="editDocumentForm.errors.classification"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.classification }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Document Type
+                            </label>
+
+                            <select
+                                v-model="editDocumentForm.IDdoctype"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.IDdoctype ? 'border-rose-400' : ''"
+                            >
+                                <option value="" disabled>Select document type</option>
+
+                                <option
+                                    v-for="option in documentDoctypeOptions"
+                                    :key="`doctype-${option.id}`"
+                                    :value="String(option.id)"
+                                >
+                                    {{ option.name }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="editDocumentForm.errors.IDdoctype"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.IDdoctype }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                From Office
+                            </label>
+
+                            <select
+                                v-model="editDocumentForm.IDfrom"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.IDfrom ? 'border-rose-400' : ''"
+                            >
+                                <option value="" disabled>Select office</option>
+
+                                <option
+                                    v-for="option in documentOfficeOptions"
+                                    :key="`from-office-${option.id}`"
+                                    :value="String(option.id)"
+                                >
+                                    {{ option.name }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="editDocumentForm.errors.IDfrom"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.IDfrom }}
+                            </p>
+                        </div>
+
+                        <div>
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                To Office
+                            </label>
+
+                            <select
+                                v-model="editDocumentForm.IDfor"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-black text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.IDfor ? 'border-rose-400' : ''"
+                            >
+                                <option value="" disabled>Select office</option>
+
+                                <option
+                                    v-for="option in documentOfficeOptions"
+                                    :key="`to-office-${option.id}`"
+                                    :value="String(option.id)"
+                                >
+                                    {{ option.name }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="editDocumentForm.errors.IDfor"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.IDfor }}
+                            </p>
+                        </div>
+
+                        <div class="md:col-span-2">
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Subject
+                            </label>
+
+                            <input
+                                v-model.trim="editDocumentForm.subject"
+                                type="text"
+                                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.subject ? 'border-rose-400' : ''"
+                            />
+
+                            <p
+                                v-if="editDocumentForm.errors.subject"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.subject }}
+                            </p>
+                        </div>
+
+                        <div class="md:col-span-2">
+                            <label class="mb-2 block text-sm font-black text-slate-800">
+                                Regarding
+                            </label>
+
+                            <textarea
+                                v-model="editDocumentForm.regarding"
+                                rows="5"
+                                class="w-full resize-y rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-semibold leading-6 text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                                :class="editDocumentForm.errors.regarding ? 'border-rose-400' : ''"
+                            ></textarea>
+
+                            <p
+                                v-if="editDocumentForm.errors.regarding"
+                                class="mt-2 text-xs font-bold text-rose-600"
+                            >
+                                {{ editDocumentForm.errors.regarding }}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold leading-5 text-amber-800">
+                        Assigned To / workflow assignment is intentionally read-only here so Admin Edit does not rewrite distribution history.
+                    </div>
+
+                    <div class="mt-6 flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
+                        <button
+                            type="button"
+                            class="rounded-2xl border border-slate-200 bg-white px-6 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+                            :disabled="editDocumentForm.processing"
+                            @click="closeEditDocumentModal"
+                        >
+                            Cancel
+                        </button>
+
+                        <button
+                            type="submit"
+                            class="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            :disabled="editDocumentForm.processing"
+                        >
+                            {{ editDocumentForm.processing ? 'Saving...' : 'Save Changes' }}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <div
             v-if="showDocumentModal"
             class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/75 backdrop-blur-sm sm:items-center sm:px-4 sm:py-6"
@@ -1473,7 +2552,7 @@ const historyBadgeClass = (type) => {
                         <div>
                             <div class="flex flex-wrap items-center gap-2">
                                 <span class="rounded-full bg-white/10 px-3 py-1 text-xs font-black uppercase tracking-wider text-white/75">
-                                    Read-Only Admin View
+                                    Admin Document View
                                 </span>
 
                                 <span class="rounded-full bg-indigo-500/30 px-3 py-1 text-xs font-black text-indigo-100">
