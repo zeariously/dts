@@ -668,7 +668,9 @@ const fullEditForm = ref({
 
 const showAddIctUnitFields = ref(false)
 
-const newIctAssetForm = ref({
+const pendingNewIctAssets = ref([])
+
+const emptyNewIctAssetForm = () => ({
     description: '',
     accessories: '',
     property_number: '',
@@ -684,24 +686,306 @@ const newIctAssetForm = ref({
     mr: '',
 })
 
+const newIctAssetForm = ref(
+    emptyNewIctAssetForm()
+)
+
+const resetNewIctAssetFields = () => {
+    newIctAssetForm.value =
+        emptyNewIctAssetForm()
+}
+
 const resetNewIctAssetForm = () => {
-    newIctAssetForm.value = {
-        description: '',
-        accessories: '',
-        property_number: '',
-        current_user: '',
-        date_acquired: '',
-        life_span_ended: '',
-        status: 'working',
-        returned_at: '',
-        return_remarks: '',
-        returned_by: '',
-        returned_by_user_id: '',
-        mr_personnel_id: '',
-        mr: '',
+    resetNewIctAssetFields()
+    pendingNewIctAssets.value = []
+    showAddIctUnitFields.value = false
+}
+
+const newIctAssetDraftHasContent = computed(() => {
+    const asset =
+        newIctAssetForm.value || {}
+
+    return [
+        asset.description,
+        asset.accessories,
+        asset.property_number,
+        asset.current_user,
+        asset.date_acquired,
+        asset.life_span_ended,
+        asset.mr_personnel_id,
+        asset.mr,
+    ].some(
+        (value) =>
+            String(value ?? '').trim() !== ''
+    )
+})
+
+const buildNewIctAssetPayload = () => {
+    const unit =
+        String(
+            fullEditForm.value.unit || ''
+        )
+            .trim()
+            .toUpperCase()
+
+    const mrPersonnelId =
+        String(
+            newIctAssetForm.value
+                .mr_personnel_id || ''
+        ).trim()
+
+    return {
+        description:
+            String(
+                newIctAssetForm.value
+                    .description || ''
+            ).trim(),
+
+        accessories:
+            String(
+                newIctAssetForm.value
+                    .accessories || ''
+            ).trim()
+            || null,
+
+        property_number:
+            String(
+                newIctAssetForm.value
+                    .property_number || ''
+            ).trim(),
+
+        current_user:
+            String(
+                newIctAssetForm.value
+                    .current_user || ''
+            ).trim()
+            || null,
+
+        date_acquired:
+            normalizeIctDateInput(
+                newIctAssetForm.value
+                    .date_acquired
+            )
+            || null,
+
+        life_span_ended:
+            isIctOthersUnit(unit)
+                ? null
+                : (
+                    normalizeIctDateInput(
+                        newIctAssetForm.value
+                            .life_span_ended
+                    )
+                    || null
+                ),
+
+        status:
+            normalizeIctAssetStatus(
+                newIctAssetForm.value.status
+            )
+            || 'working',
+
+        mr_personnel_id:
+            mrPersonnelId
+                ? Number(mrPersonnelId)
+                : null,
+
+        mr:
+            mrPersonnelId
+                ? mrPersonnelName(
+                    mrPersonnelId
+                )
+                : null,
+    }
+}
+
+const validateNewIctAssetDraft = () => {
+    const errors = {}
+
+    const unit =
+        String(
+            fullEditForm.value.unit || ''
+        )
+            .trim()
+            .toUpperCase()
+
+    const description =
+        String(
+            newIctAssetForm.value
+                .description || ''
+        ).trim()
+
+    const propertyNumber =
+        String(
+            newIctAssetForm.value
+                .property_number || ''
+        ).trim()
+
+    const dateAcquired =
+        normalizeIctDateInput(
+            newIctAssetForm.value
+                .date_acquired
+        )
+
+    const lifeSpanEnded =
+        normalizeIctDateInput(
+            newIctAssetForm.value
+                .life_span_ended
+        )
+
+    const status =
+        normalizeIctAssetStatus(
+            newIctAssetForm.value.status
+        )
+
+    if (!description) {
+        errors[
+            'new_ict_asset.description'
+        ] = 'Description is required.'
     }
 
-    showAddIctUnitFields.value = false
+    if (!propertyNumber) {
+        errors[
+            'new_ict_asset.property_number'
+        ] = 'Property Number is required.'
+    }
+
+    if (!status) {
+        errors[
+            'new_ict_asset.status'
+        ] = 'Select Working or Returned.'
+    }
+
+    if (
+        newIctAssetForm.value.date_acquired
+        && !dateAcquired
+    ) {
+        errors[
+            'new_ict_asset.date_acquired'
+        ] = 'Enter a valid Date Acquired.'
+    }
+
+    if (
+        !isIctOthersUnit(unit)
+        && newIctAssetForm.value
+            .life_span_ended
+        && !lifeSpanEnded
+    ) {
+        errors[
+            'new_ict_asset.life_span_ended'
+        ] =
+            'Enter a valid Life Span Ended date.'
+    }
+
+    if (
+        !isIctOthersUnit(unit)
+        && !isValidIctDateRange(
+            dateAcquired,
+            lifeSpanEnded
+        )
+    ) {
+        errors[
+            'new_ict_asset.life_span_ended'
+        ] =
+            'Life Span Ended cannot be earlier than Date Acquired.'
+    }
+
+    if (propertyNumber) {
+        const propertyKey =
+            propertyNumber.toLowerCase()
+
+        const duplicateExisting =
+            ictAssetDetails(
+                fullEditingItem.value
+            ).some(
+                (asset) =>
+                    String(
+                        asset.property_number
+                        || ''
+                    )
+                        .trim()
+                        .toLowerCase()
+                    === propertyKey
+            )
+
+        const duplicatePending =
+            pendingNewIctAssets.value
+                .some(
+                    (asset) =>
+                        String(
+                            asset?.property_number
+                            || ''
+                        )
+                            .trim()
+                            .toLowerCase()
+                        === propertyKey
+                )
+
+        if (
+            duplicateExisting
+            || duplicatePending
+        ) {
+            errors[
+                'new_ict_asset.property_number'
+            ] =
+                'Property Number must be unique for this ICT item.'
+        }
+    }
+
+    return errors
+}
+
+const newIctAssetDraftReady = computed(() => {
+    const errors =
+        validateNewIctAssetDraft()
+
+    return (
+        newIctAssetDraftHasContent.value
+        && Object.keys(errors).length === 0
+    )
+})
+
+const clearNewIctAssetErrors = () => {
+    fullEditErrors.value =
+        Object.fromEntries(
+            Object.entries(
+                fullEditErrors.value || {}
+            ).filter(
+                ([key]) =>
+                    !key.startsWith(
+                        'new_ict_asset.'
+                    )
+            )
+        )
+}
+
+const queueAnotherIctUnit = () => {
+    const errors =
+        validateNewIctAssetDraft()
+
+    clearNewIctAssetErrors()
+
+    if (Object.keys(errors).length) {
+        fullEditErrors.value = {
+            ...fullEditErrors.value,
+            ...errors,
+        }
+        return
+    }
+
+    pendingNewIctAssets.value.push(
+        buildNewIctAssetPayload()
+    )
+
+    resetNewIctAssetFields()
+    showAddIctUnitFields.value = true
+}
+
+const removePendingIctUnit = (index) => {
+    pendingNewIctAssets.value.splice(
+        index,
+        1
+    )
 }
 
 const showIctAssetEditModal = ref(false)
@@ -2019,6 +2303,29 @@ const isIctMonthBased = (itemOrUnit) =>
 const isIctSubscription = (itemOrUnit) =>
     Boolean(ictDurationUnit(itemOrUnit))
 
+/*
+ * ICT custom Unit "OTHERS":
+ * Date Acquired applies, but Life Span Ended does not.
+ *
+ * This intentionally checks the saved/selected UNIT value, so it also
+ * works when "OTHERS" was created through the Add Unit/custom-unit UI.
+ */
+const isIctOthersUnit = (itemOrUnit) => {
+    const unit =
+        typeof itemOrUnit === 'string'
+            ? itemOrUnit
+            : itemOrUnit?.unit
+
+    const normalized =
+        String(unit || '')
+            .trim()
+            .toUpperCase()
+
+    return ['OTHER', 'OTHERS'].includes(
+        normalized
+    )
+}
+
 const ictAssetStatusOptions = [
     {
         value: 'working',
@@ -2097,7 +2404,16 @@ const ictDateToLocalMidnight = (value) => {
     return date
 }
 
-const ictLifeSpanState = (asset) => {
+const ictLifeSpanState = (
+    asset,
+    itemOrUnit = null
+) => {
+    if (
+        isIctOthersUnit(itemOrUnit)
+    ) {
+        return null
+    }
+
     if (
         normalizeIctAssetStatus(
             asset?.status
@@ -2179,10 +2495,24 @@ const ictLifeSpanState = (asset) => {
     }
 }
 
-const ictAssetNeedsLifeSpanAttention = (asset) =>
-    Boolean(ictLifeSpanState(asset))
+const ictAssetNeedsLifeSpanAttention = (
+    asset,
+    itemOrUnit = null
+) =>
+    Boolean(
+        ictLifeSpanState(
+            asset,
+            itemOrUnit
+        )
+    )
 
-const ictLifeSpanRowClass = (asset) => {
+const ictLifeSpanRowClass = (
+    asset,
+    itemOrUnit = null
+) => {
+    if (isIctOthersUnit(itemOrUnit)) {
+        return 'bg-white hover:bg-blue-50/40'
+    }
     const normalizedLifeEnd =
         normalizeIctDateInput(
             asset?.life_span_ended
@@ -2211,7 +2541,10 @@ const ictLifeSpanRowClass = (asset) => {
     }
 
     const warning =
-        ictLifeSpanState(asset)
+        ictLifeSpanState(
+            asset,
+            itemOrUnit
+        )
 
     if (!warning) {
         return 'bg-white hover:bg-blue-50/40'
@@ -2224,8 +2557,14 @@ const ictLifeSpanRowClass = (asset) => {
     return 'bg-rose-50/90 hover:bg-rose-100/70 ring-1 ring-inset ring-rose-200'
 }
 
-const ictLifeSpanBadgeClass = (asset) => {
-    return ictLifeSpanState(asset)?.level
+const ictLifeSpanBadgeClass = (
+    asset,
+    itemOrUnit = null
+) => {
+    return ictLifeSpanState(
+        asset,
+        itemOrUnit
+    )?.level
         === 'ended'
         ? 'border-rose-300 bg-rose-100 text-rose-800'
         : 'border-rose-200 bg-white text-rose-700'
@@ -2599,7 +2938,6 @@ const filteredReturnedAssetRows = computed(() => {
                 item.item,
                 item.unit,
                 item.inventory_year,
-                item.remarks,
                 asset.description,
                 asset.accessories,
                 asset.property_number,
@@ -2849,7 +3187,10 @@ const reportItemSummaryForRows = (rows) => {
             entry.working += 1
 
             const warning =
-                ictLifeSpanState(asset)
+                ictLifeSpanState(
+                    asset,
+                    item
+                )
 
             if (warning?.level === 'near') {
                 entry.near += 1
@@ -2885,6 +3226,7 @@ const printInventoryReport = ({
     emptyMessage = 'No records found.',
     noGray = false,
     hideReturnedSummary = false,
+    hideLifeCycleSummary = false,
 }) => {
     if (!rows.length) {
         window.alert(emptyMessage)
@@ -2963,8 +3305,14 @@ const printInventoryReport = ({
                                         ? ''
                                         : '<th class="number">Returned</th>'
                                 }
-                                <th class="number">Near For Return</th>
-                                <th class="number">Life Span Ended</th>
+                                ${
+                                    hideLifeCycleSummary
+                                        ? ''
+                                        : `
+                                            <th class="number">Near For Return</th>
+                                            <th class="number">Life Span Ended</th>
+                                        `
+                                }
                                 <th class="number">Total</th>
                             </tr>
                         </thead>
@@ -2981,8 +3329,14 @@ const printInventoryReport = ({
                                                     ? ''
                                                     : `<td class="number">${reportHtmlEscape(entry.returned)}</td>`
                                             }
-                                            <td class="number">${reportHtmlEscape(entry.near)}</td>
-                                            <td class="number">${reportHtmlEscape(entry.ended)}</td>
+                                            ${
+                                                hideLifeCycleSummary
+                                                    ? ''
+                                                    : `
+                                                        <td class="number">${reportHtmlEscape(entry.near)}</td>
+                                                        <td class="number">${reportHtmlEscape(entry.ended)}</td>
+                                                    `
+                                            }
                                             <td class="number"><strong>${reportHtmlEscape(entry.total)}</strong></td>
                                         </tr>
                                     `
@@ -3051,19 +3405,38 @@ const printInventoryReport = ({
                     padding-bottom: 10px;
                 }
 
-                .eyebrow {
-                    margin: 0 0 3px;
-                    color: #2563eb;
-                    font-size: 8px;
-                    font-weight: 800;
-                    letter-spacing: .12em;
-                    text-transform: uppercase;
+                .brand-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
                 }
 
-                h1 {
+                .brand-logo {
+                    width: 54px;
+                    height: 54px;
+                    flex: 0 0 54px;
+                    object-fit: contain;
+                }
+
+                .brand-copy {
+                    min-width: 0;
+                }
+
+                .brand-title {
                     margin: 0;
+                    color: #0f172a;
                     font-size: 20px;
-                    line-height: 1.15;
+                    font-weight: 800;
+                    line-height: 1.1;
+                }
+
+                .report-name {
+                    margin: 4px 0 0;
+                    color: #1d4ed8;
+                    font-size: 10px;
+                    font-weight: 800;
+                    letter-spacing: .04em;
+                    text-transform: uppercase;
                 }
 
                 .subtitle {
@@ -3222,7 +3595,7 @@ const printInventoryReport = ({
                     border-bottom: 2px solid #1d4ed8 !important;
                 }
 
-                .report-no-gray h1,
+                .report-no-gray .brand-title,
                 .report-no-gray .report-section h2,
                 .report-no-gray .plain-detail span,
                 .report-no-gray .plain-detail strong,
@@ -3233,8 +3606,8 @@ const printInventoryReport = ({
                     color: #0f172a !important;
                 }
 
-                .report-no-gray .eyebrow {
-                    color: #475569 !important;
+                .report-no-gray .report-name {
+                    color: #1d4ed8 !important;
                 }
 
                 .report-no-gray .plain-detail span {
@@ -3335,6 +3708,12 @@ const printInventoryReport = ({
                         display: none !important;
                     }
 
+                    .report-header,
+                    .brand-header {
+                        break-inside: avoid;
+                        page-break-inside: avoid;
+                    }
+
                     thead {
                         display: table-header-group;
                     }
@@ -3347,13 +3726,30 @@ const printInventoryReport = ({
         </head>
         <body class="${noGray ? 'report-no-gray' : ''}">
             <header class="report-header">
-                <p class="eyebrow">DOST · SPD Inventory Management System</p>
-                <h1>${reportHtmlEscape(title)}</h1>
-                ${
-                    subtitle
-                        ? `<p class="subtitle">${reportHtmlEscape(subtitle)}</p>`
-                        : ''
-                }
+                <div class="brand-header">
+                    <img
+                        src="/images/dost-logo.png"
+                        alt="DOST Logo"
+                        class="brand-logo"
+                    >
+
+                    <div class="brand-copy">
+                        <h1 class="brand-title">
+                            DOST - SPD Inventory
+                        </h1>
+
+                        <p class="report-name">
+                            ${reportHtmlEscape(title)}
+                        </p>
+
+                        ${
+                            subtitle
+                                ? `<p class="subtitle">${reportHtmlEscape(subtitle)}</p>`
+                                : ''
+                        }
+                    </div>
+                </div>
+
                 <p class="generated">
                     Generated: ${reportHtmlEscape(reportGeneratedAtLabel())}
                 </p>
@@ -3688,15 +4084,22 @@ const mrReportRows = computed(() => {
                     .trim()
                     .toLowerCase()
 
+            const hasMrAssignment =
+                assetMrId !== ''
+                || assetMrName !== ''
+
             const matchesMr =
                 isAllMr
-                || assetMrId === selectedId
-                || (
-                    !assetMrId
-                    && selectedName
-                    && assetMrName
-                        === selectedName
-                )
+                    ? hasMrAssignment
+                    : (
+                        assetMrId === selectedId
+                        || (
+                            !assetMrId
+                            && selectedName
+                            && assetMrName
+                                === selectedName
+                        )
+                    )
 
             if (!matchesMr) {
                 continue
@@ -3748,36 +4151,8 @@ const generateMrAssignedReport = () => {
      * Therefore Current Assigned and Total Property Records
      * both represent active MR-assigned properties only.
      */
-    const working =
+    const currentAssigned =
         sourceRows
-
-    const nearForReturn =
-        working.filter(
-            ({ asset }) =>
-                ictLifeSpanState(
-                    asset
-                )?.level === 'near'
-        ).length
-
-    const lifeSpanEnded =
-        working.filter(
-            ({ asset }) =>
-                ictLifeSpanState(
-                    asset
-                )?.level === 'ended'
-        ).length
-
-    const uniqueItems =
-        new Set(
-            sourceRows
-                .map(
-                    ({ item }) =>
-                        String(
-                            item?.item || ''
-                        ).trim()
-                )
-                .filter(Boolean)
-        ).size
 
     const rows =
         sourceRows.map(
@@ -3820,28 +4195,7 @@ const generateMrAssignedReport = () => {
                             asset.date_acquired
                         ),
 
-                    life_span_ended:
-                        reportDateLabel(
-                            asset.life_span_ended
-                        ),
-
-                    life_cycle:
-                        reportLifeCycleLabel(
-                            asset,
-                            normalizeIctAssetStatus(
-                                asset.status
-                            ) === 'returned'
-                                ? asset.returned_at
-                                : ''
-                        ),
-
                     status,
-
-                    item_remarks:
-                        String(
-                            item.remarks || ''
-                        ).trim()
-                        || '—',
                 }
             }
         )
@@ -3852,6 +4206,7 @@ const generateMrAssignedReport = () => {
 
         noGray: true,
         hideReturnedSummary: true,
+        hideLifeCycleSummary: true,
 
 
         plainDetails: [
@@ -3871,15 +4226,7 @@ const generateMrAssignedReport = () => {
             },
             {
                 label: 'Current Assigned',
-                value: working.length,
-            },
-            {
-                label: 'Near for Return',
-                value: nearForReturn,
-            },
-            {
-                label: 'Life Span Ended',
-                value: lifeSpanEnded,
+                value: currentAssigned.length,
             },
             {
                 label: 'Total Property Records',
@@ -3918,20 +4265,8 @@ const generateMrAssignedReport = () => {
                 label: 'Date Acquired',
             },
             {
-                key: 'life_span_ended',
-                label: 'Life Span Ended',
-            },
-            {
-                key: 'life_cycle',
-                label: 'Life Cycle',
-            },
-            {
                 key: 'status',
                 label: 'Status',
-            },
-            {
-                key: 'item_remarks',
-                label: 'Item Remarks',
             },
         ],
 
@@ -3990,7 +4325,8 @@ const validateIctAssetRows = (
     rows,
     errorBag,
     expectedCount,
-    category = 'ict'
+    category = 'ict',
+    unit = ''
 ) => {
     const target =
         ictEquipmentCount(
@@ -4093,6 +4429,7 @@ const validateIctAssetRows = (
 
         if (
             category === 'ict'
+            && !isIctOthersUnit(unit)
             && asset.life_span_ended
             && !lifeSpanEnded
         ) {
@@ -4104,6 +4441,7 @@ const validateIctAssetRows = (
 
         if (
             category === 'ict'
+            && !isIctOthersUnit(unit)
             && !isValidIctDateRange(
                 dateAcquired,
                 lifeSpanEnded
@@ -4181,6 +4519,10 @@ watch(
                                 asset.status
                             )
                             || 'working',
+                        life_span_ended:
+                            isIctOthersUnit(unit)
+                                ? ''
+                                : asset.life_span_ended,
                     })
                 )
                 : syncedRows
@@ -4226,6 +4568,10 @@ watch(
                                 asset.status
                             )
                             || 'working',
+                        life_span_ended:
+                            isIctOthersUnit(unit)
+                                ? ''
+                                : asset.life_span_ended,
                     })
                 )
                 : syncedRows
@@ -5046,7 +5392,8 @@ const addNewItem = () => {
             newItemForm.value.ict_assets,
             addItemErrors.value,
             currentlyAvailable,
-            category
+            category,
+            unit
         )
     }
 
@@ -5196,7 +5543,13 @@ const addNewItem = () => {
                 ? []
                 : normalizeIctAssets(
                     newItemForm.value.ict_assets
-                )
+                ).map((asset) => ({
+                    ...asset,
+                    life_span_ended:
+                        isIctOthersUnit(unit)
+                            ? ''
+                            : asset.life_span_ended,
+                }))
     } else {
         payload.location = null
         payload.unit = unit
@@ -7040,7 +7393,9 @@ const openIctAssetEditModal = (
         date_acquired:
             normalizedAsset.date_acquired,
         life_span_ended:
-            normalizedAsset.life_span_ended,
+            isIctOthersUnit(item)
+                ? ''
+                : normalizedAsset.life_span_ended,
         status:
             normalizeIctAssetStatus(
                 normalizedAsset.status
@@ -7130,6 +7485,15 @@ const individualPropertyEditIsIct = computed(
         === 'ict'
 )
 
+const individualPropertyEditUsesLifeSpan =
+    computed(
+        () =>
+            individualPropertyEditIsIct.value
+            && !isIctOthersUnit(
+                ictAssetEditingItem.value
+            )
+    )
+
 const closeIctAssetEditModal = () => {
     if (ictAssetEditProcessing.value) {
         return
@@ -7170,6 +7534,12 @@ const saveIctAssetEdit = () => {
 
     const isIctProperty =
         category === 'ict'
+
+    const usesLifeSpan =
+        isIctProperty
+        && !isIctOthersUnit(
+            ictAssetEditingItem.value
+        )
 
     if (
         !isIctProperty
@@ -7267,7 +7637,8 @@ const saveIctAssetEdit = () => {
         }
 
         if (
-            ictAssetEditForm.value.life_span_ended
+            usesLifeSpan
+            && ictAssetEditForm.value.life_span_ended
             && !lifeSpanEnded
         ) {
             ictAssetEditErrors.value.life_span_ended =
@@ -7275,7 +7646,8 @@ const saveIctAssetEdit = () => {
         }
 
         if (
-            !isValidIctDateRange(
+            usesLifeSpan
+            && !isValidIctDateRange(
                 dateAcquired,
                 lifeSpanEnded
             )
@@ -7353,7 +7725,9 @@ const saveIctAssetEdit = () => {
                 date_acquired:
                     dateAcquired || null,
                 life_span_ended:
-                    lifeSpanEnded || null,
+                    usesLifeSpan
+                        ? lifeSpanEnded || null
+                        : null,
                 status,
                 returned_at:
                     status === 'returned'
@@ -7681,110 +8055,14 @@ const saveFullEditItem = () => {
             !isIctSubscription(unit)
             && showAddIctUnitFields.value
         ) {
-            const newDescription =
-                String(
-                    newIctAssetForm.value
-                        .description || ''
-                ).trim()
+            const shouldValidateDraft =
+                newIctAssetDraftHasContent.value
+                || pendingNewIctAssets.value.length === 0
 
-            const newPropertyNumber =
-                String(
-                    newIctAssetForm.value
-                        .property_number || ''
-                ).trim()
-
-            const newDateAcquired =
-                normalizeIctDateInput(
-                    newIctAssetForm.value
-                        .date_acquired
-                )
-
-            const newLifeSpanEnded =
-                normalizeIctDateInput(
-                    newIctAssetForm.value
-                        .life_span_ended
-                )
-
-            const newStatus =
-                normalizeIctAssetStatus(
-                    newIctAssetForm.value.status
-                )
-
-            if (!newDescription) {
-                fullEditErrors.value[
-                    'new_ict_asset.description'
-                ] =
-                    'Description is required.'
-            }
-
-            if (!newPropertyNumber) {
-                fullEditErrors.value[
-                    'new_ict_asset.property_number'
-                ] =
-                    'Property Number is required.'
-            }
-
-            if (!newStatus) {
-                fullEditErrors.value[
-                    'new_ict_asset.status'
-                ] =
-                    'Select Working or Returned.'
-            }
-
-            if (
-                newIctAssetForm.value.date_acquired
-                && !newDateAcquired
-            ) {
-                fullEditErrors.value[
-                    'new_ict_asset.date_acquired'
-                ] =
-                    'Enter a valid Date Acquired.'
-            }
-
-            if (
-                newIctAssetForm.value.life_span_ended
-                && !newLifeSpanEnded
-            ) {
-                fullEditErrors.value[
-                    'new_ict_asset.life_span_ended'
-                ] =
-                    'Enter a valid Life Span Ended date.'
-            }
-
-            if (
-                !isValidIctDateRange(
-                    newDateAcquired,
-                    newLifeSpanEnded
-                )
-            ) {
-                fullEditErrors.value[
-                    'new_ict_asset.life_span_ended'
-                ] =
-                    'Life Span Ended cannot be earlier than Date Acquired.'
-            }
-
-            if (newPropertyNumber) {
-                const duplicate =
-                    ictAssetDetails(
-                        fullEditingItem.value
-                    ).some(
-                        (asset) =>
-                            String(
-                                asset.property_number
-                                || ''
-                            )
-                                .trim()
-                                .toLowerCase()
-                            ===
-                            newPropertyNumber
-                                .toLowerCase()
-                    )
-
-                if (duplicate) {
-                    fullEditErrors.value[
-                        'new_ict_asset.property_number'
-                    ] =
-                        'Property Number must be unique for this ICT item.'
+            if (shouldValidateDraft) {
+                fullEditErrors.value = {
+                    ...fullEditErrors.value,
+                    ...validateNewIctAssetDraft(),
                 }
             }
         }
@@ -7995,76 +8273,25 @@ const saveFullEditItem = () => {
             /*
              * Existing Property Details are edited one row at a time
              * from the accordion. The Item Edit modal can optionally
-             * add one new ICT unit at a time.
+             * add one or more new ICT units before the final Save.
              */
             if (showAddIctUnitFields.value) {
-                const mrPersonnelId =
-                    String(
-                        newIctAssetForm.value
-                            .mr_personnel_id || ''
-                    ).trim()
+                const assetsToAdd = [
+                    ...pendingNewIctAssets.value,
+                ]
 
-                payload.new_ict_asset = {
-                    description:
-                        String(
-                            newIctAssetForm.value
-                                .description || ''
-                        ).trim(),
+                if (
+                    newIctAssetDraftHasContent.value
+                    || assetsToAdd.length === 0
+                ) {
+                    assetsToAdd.push(
+                        buildNewIctAssetPayload()
+                    )
+                }
 
-                    accessories:
-                        String(
-                            newIctAssetForm.value
-                                .accessories || ''
-                        ).trim()
-                        || null,
-
-                    property_number:
-                        String(
-                            newIctAssetForm.value
-                                .property_number || ''
-                        ).trim(),
-
-                    current_user:
-                        String(
-                            newIctAssetForm.value
-                                .current_user || ''
-                        ).trim()
-                        || null,
-
-                    date_acquired:
-                        normalizeIctDateInput(
-                            newIctAssetForm.value
-                                .date_acquired
-                        )
-                        || null,
-
-                    life_span_ended:
-                        normalizeIctDateInput(
-                            newIctAssetForm.value
-                                .life_span_ended
-                        )
-                        || null,
-
-                    status:
-                        normalizeIctAssetStatus(
-                            newIctAssetForm.value
-                                .status
-                        )
-                        || 'working',
-
-                    mr_personnel_id:
-                        mrPersonnelId
-                            ? Number(
-                                mrPersonnelId
-                            )
-                            : null,
-
-                    mr:
-                        mrPersonnelId
-                            ? mrPersonnelName(
-                                mrPersonnelId
-                            )
-                            : null,
+                if (assetsToAdd.length) {
+                    payload.new_ict_assets =
+                        assetsToAdd
                 }
             }
         }
@@ -9860,26 +10087,44 @@ const generateInventoryReport = () => {
             margin-bottom: 14px;
         }
 
-        .agency {
+        .brand-header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .brand-logo {
+            width: 64px;
+            height: 64px;
+            flex: 0 0 64px;
+            object-fit: contain;
+        }
+
+        .brand-copy {
+            min-width: 0;
+        }
+
+        .brand-title {
             margin: 0;
-            color: #475569;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
+            color: #0f172a;
+            font-size: 22px;
+            font-weight: 800;
+            line-height: 1.1;
+        }
+
+        .report-name {
+            margin: 5px 0 0;
+            color: #1d4ed8;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.05em;
             text-transform: uppercase;
         }
 
-        h1 {
-            margin: 5px 0 0;
-            font-size: 22px;
-            line-height: 1.15;
-            color: #0f172a;
-        }
-
         .subtitle {
-            margin: 5px 0 0;
+            margin: 4px 0 0;
             color: #475569;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
         }
 
@@ -10097,6 +10342,13 @@ const generateInventoryReport = () => {
                 max-width: none;
             }
 
+            .header,
+            .brand-header,
+            .report-header {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
             thead {
                 display: table-header-group;
             }
@@ -10136,17 +10388,27 @@ const generateInventoryReport = () => {
         </div>
 
         <header class="header">
-            <p class="agency">
-                Department of Science and Technology · Document Tracking System
-            </p>
+            <div class="brand-header">
+                <img
+                    src="/images/dost-logo.png"
+                    alt="DOST Logo"
+                    class="brand-logo"
+                >
 
-            <h1>
-                Inventory Monitoring Report
-            </h1>
+                <div class="brand-copy">
+                    <h1 class="brand-title">
+                        DOST - SPD Inventory
+                    </h1>
 
-            <p class="subtitle">
-                ${escapeReportHtml(categoryLabel)}
-            </p>
+                    <p class="report-name">
+                        Inventory Monitoring Report
+                    </p>
+
+                    <p class="subtitle">
+                        ${escapeReportHtml(categoryLabel)}
+                    </p>
+                </div>
+            </div>
         </header>
 
         ${reportFiltersHtml}
@@ -11111,12 +11373,6 @@ const generateInventoryReport = () => {
                                 >
                                     Returned ICT Properties
                                 </h3>
-
-                                <p
-                                    class="mt-1 text-[10px] font-semibold leading-5 text-rose-700/80"
-                                >
-                                    ICT units automatically appear here when their Status is changed to Returned.
-                                </p>
                             </div>
 
                             <span
@@ -11562,9 +11818,9 @@ const generateInventoryReport = () => {
                                                             v-for="(asset, assetIndex) in filteredIctAssetDetails(item)"
                                                             :key="`ict-asset-row-${item.id}-${assetIndex}`"
                                                             class="transition"
-                                                            :class="ictLifeSpanRowClass(asset)"
+                                                            :class="ictLifeSpanRowClass(asset, item)"
                                                             :title="
-                                                                ictLifeSpanState(asset)?.title
+                                                                ictLifeSpanState(asset, item)?.title
                                                                 || undefined
                                                             "
                                                         >
@@ -11583,10 +11839,10 @@ const generateInventoryReport = () => {
                                                                     </span>
 
                                                                     <span
-                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset)"
+                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset, item)"
                                                                         class="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full border px-1 text-[10px] font-black"
-                                                                        :class="ictLifeSpanBadgeClass(asset)"
-                                                                        :title="ictLifeSpanState(asset)?.title"
+                                                                        :class="ictLifeSpanBadgeClass(asset, item)"
+                                                                        :title="ictLifeSpanState(asset, item)?.title"
                                                                         aria-label="Life span warning"
                                                                     >
                                                                         ⚠
@@ -11608,13 +11864,13 @@ const generateInventoryReport = () => {
                                                                     </span>
 
                                                                     <span
-                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset)"
+                                                                        v-if="ictAssetNeedsLifeSpanAttention(asset, item)"
                                                                         class="inline-flex rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-[0.05em]"
-                                                                        :class="ictLifeSpanBadgeClass(asset)"
-                                                                        :title="ictLifeSpanState(asset)?.title"
+                                                                        :class="ictLifeSpanBadgeClass(asset, item)"
+                                                                        :title="ictLifeSpanState(asset, item)?.title"
                                                                     >
                                                                         ⚠
-                                                                        {{ ictLifeSpanState(asset)?.label }}
+                                                                        {{ ictLifeSpanState(asset, item)?.label }}
                                                                     </span>
                                                                 </div>
                                                             </td>
@@ -12769,7 +13025,13 @@ const generateInventoryReport = () => {
                                     <p class="mt-1 text-xs font-semibold text-slate-500">
                                         {{
                                             activeTab === 'ict'
-                                                ? 'Each ICT unit tracks Description, Accessories, Property Number, Current User, Life Span Ended, Status, and MR.'
+                                                ? (
+                                                    isIctOthersUnit(
+                                                        newItemForm.unit
+                                                    )
+                                                        ? 'For OTHERS, each ICT unit tracks Date Acquired only for its life-cycle date. Life Span Ended does not apply.'
+                                                        : 'Each ICT unit tracks Description, Accessories, Property Number, Current User, Date Acquired, Life Span Ended, Status, and MR.'
+                                                )
                                                 : (
                                                     activeTab === 'other'
                                                     && addOtherCategoryIsAssetTracked
@@ -12959,7 +13221,16 @@ const generateInventoryReport = () => {
                                     >
                                        
 
-                                        <div class="grid gap-3 sm:grid-cols-2">
+                                        <div
+                                            class="grid gap-3"
+                                            :class="
+                                                isIctOthersUnit(
+                                                    newItemForm.unit
+                                                )
+                                                    ? 'grid-cols-1'
+                                                    : 'sm:grid-cols-2'
+                                            "
+                                        >
                                             <div>
                                                 <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                     Date Acquired
@@ -12984,7 +13255,13 @@ const generateInventoryReport = () => {
                                                 </p>
                                             </div>
 
-                                            <div>
+                                            <div
+                                                v-if="
+                                                    !isIctOthersUnit(
+                                                        newItemForm.unit
+                                                    )
+                                                "
+                                            >
                                                 <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                     Life Span Ended
                                                 </label>
@@ -13009,7 +13286,14 @@ const generateInventoryReport = () => {
                                             </div>
                                         </div>
 
-                                        <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
+                                        <p
+                                            v-if="
+                                                !isIctOthersUnit(
+                                                    newItemForm.unit
+                                                )
+                                            "
+                                            class="mt-2 text-[9px] font-semibold leading-4 text-slate-400"
+                                        >
                                             Red warning starts on January 1 of the same calendar year as the Life Span Ended date.
                                         </p>
                                     </div>
@@ -13975,7 +14259,7 @@ const generateInventoryReport = () => {
                                         <p
                                             class="mt-2 text-[10px] font-semibold leading-4 text-slate-500"
                                         >
-                                            Count updates automatically when a new ICT unit is added.
+                                            Count updates automatically based on how many ICT units are added.
                                         </p>
                                     </div>
 
@@ -14022,7 +14306,7 @@ const generateInventoryReport = () => {
                                         <p
                                             class="mt-1 text-[10px] font-semibold leading-5 text-emerald-700"
                                         >
-                                            Complete the details below. Saving this item will automatically add 1 to the Current Count.
+                                            Complete the details below. After the required fields are filled, you can add another ICT unit before the final Save.
                                         </p>
                                     </div>
 
@@ -14166,9 +14450,18 @@ const generateInventoryReport = () => {
                                         <div
                                             class="rounded-xl border border-rose-200 bg-rose-50/60 p-3 sm:col-span-2"
                                         >
-                                            
+                                           
 
-                                            <div class="grid gap-3 sm:grid-cols-2">
+                                            <div
+                                                class="grid gap-3"
+                                                :class="
+                                                    isIctOthersUnit(
+                                                        fullEditForm.unit
+                                                    )
+                                                        ? 'grid-cols-1'
+                                                        : 'sm:grid-cols-2'
+                                                "
+                                            >
                                                 <div>
                                                     <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                         Date Acquired
@@ -14193,7 +14486,13 @@ const generateInventoryReport = () => {
                                                     </p>
                                                 </div>
 
-                                                <div>
+                                                <div
+                                                    v-if="
+                                                        !isIctOthersUnit(
+                                                            fullEditForm.unit
+                                                        )
+                                                    "
+                                                >
                                                     <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                         Life Span Ended
                                                     </label>
@@ -14218,7 +14517,14 @@ const generateInventoryReport = () => {
                                                 </div>
                                             </div>
 
-                                            <p class="mt-2 text-[9px] font-semibold leading-4 text-slate-400">
+                                            <p
+                                                v-if="
+                                                    !isIctOthersUnit(
+                                                        fullEditForm.unit
+                                                    )
+                                                "
+                                                class="mt-2 text-[9px] font-semibold leading-4 text-slate-400"
+                                            >
                                                 Near For Return warning starts on January 1 of the same calendar year as the Life Span Ended date.
                                             </p>
                                         </div>
@@ -14257,6 +14563,80 @@ const generateInventoryReport = () => {
                                                 </option>
                                             </select>
                                         </div>
+                                    </div>
+
+                                    <div
+                                        v-if="pendingNewIctAssets.length"
+                                        class="mt-4 rounded-xl border border-blue-200 bg-blue-50/50 p-3"
+                                    >
+                                        <div
+                                            class="mb-2 flex items-center justify-between gap-3"
+                                        >
+                                            <p
+                                                class="text-[10px] font-black uppercase tracking-[0.08em] text-blue-700"
+                                            >
+                                                Pending ICT Units
+                                            </p>
+
+                                            <span
+                                                class="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-black text-white"
+                                            >
+                                                {{ pendingNewIctAssets.length }}
+                                            </span>
+                                        </div>
+
+                                        <div class="space-y-2">
+                                            <div
+                                                v-for="(asset, index) in pendingNewIctAssets"
+                                                :key="`pending-ict-${index}-${asset.property_number}`"
+                                                class="flex items-center justify-between gap-3 rounded-lg border border-blue-100 bg-white px-3 py-2"
+                                            >
+                                                <div class="min-w-0">
+                                                    <p
+                                                        class="truncate text-xs font-black text-slate-900"
+                                                    >
+                                                        {{ asset.description }}
+                                                    </p>
+
+                                                    <p
+                                                        class="mt-0.5 truncate text-[10px] font-semibold text-slate-500"
+                                                    >
+                                                        {{ asset.property_number }}
+                                                    </p>
+                                                </div>
+
+                                                <button
+                                                    type="button"
+                                                    class="shrink-0 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-[10px] font-black text-rose-600 transition hover:bg-rose-50"
+                                                    @click="
+                                                        removePendingIctUnit(
+                                                            index
+                                                        )
+                                                    "
+                                                >
+                                                    Remove
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div
+                                        v-if="newIctAssetDraftReady"
+                                        class="mt-4 flex justify-end"
+                                    >
+                                        <button
+                                            type="button"
+                                            class="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 text-xs font-black text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-4 focus:ring-blue-100"
+                                            @click="queueAnotherIctUnit"
+                                        >
+                                            <span
+                                                class="text-base leading-none"
+                                                aria-hidden="true"
+                                            >
+                                                +
+                                            </span>
+                                            Add Another ICT Unit
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -14933,9 +15313,15 @@ const generateInventoryReport = () => {
                         v-if="individualPropertyEditIsIct"
                         class="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 sm:col-span-2"
                     >
-                       
 
-                        <div class="grid gap-4 sm:grid-cols-2">
+                        <div
+                            class="grid gap-4"
+                            :class="
+                                individualPropertyEditUsesLifeSpan
+                                    ? 'sm:grid-cols-2'
+                                    : 'grid-cols-1'
+                            "
+                        >
                             <div>
                                 <label class="mb-2 block text-sm font-black text-rose-950">
                                     Date Acquired
@@ -14967,7 +15353,11 @@ const generateInventoryReport = () => {
                                 </p>
                             </div>
 
-                            <div>
+                            <div
+                                v-if="
+                                    individualPropertyEditUsesLifeSpan
+                                "
+                            >
                                 <label class="mb-2 block text-sm font-black text-rose-950">
                                     Life Span Ended
                                 </label>
@@ -15333,8 +15723,7 @@ const generateInventoryReport = () => {
                                         releaseRemainingQuantity <= 3
                                             ? 'text-rose-600'
                                             : 'text-emerald-700'
-                                    "
-                                >
+                                    ">
                                     {{
                                         releaseRemainingQuantity
                                     }}
@@ -15983,7 +16372,6 @@ const generateInventoryReport = () => {
     color: #172033;
 }
 
-/* Main cards and neutral buttons are no longer pure white. */
 .inventory-comfort-theme .bg-white {
     background-color: #f7f9fc !important;
 }
@@ -15992,7 +16380,6 @@ const generateInventoryReport = () => {
     background-color: #edf2f7 !important;
 }
 
-/* Slightly stronger borders make cards, rows, and controls easier to separate. */
 .inventory-comfort-theme .border-slate-100 {
     border-color: #d4dde7 !important;
 }
@@ -16005,7 +16392,6 @@ const generateInventoryReport = () => {
     border-color: #d4dde7 !important;
 }
 
-/* Improve secondary-text contrast for older eyes. */
 .inventory-comfort-theme .text-slate-300 {
     color: #7b8ba0 !important;
 }
@@ -16022,7 +16408,6 @@ const generateInventoryReport = () => {
     color: #334a62 !important;
 }
 
-/* Controls use a soft gray-blue fill instead of bright white. */
 .inventory-comfort-theme
     input:not([type="checkbox"]):not([type="radio"]),
 .inventory-comfort-theme select,
@@ -16038,7 +16423,6 @@ const generateInventoryReport = () => {
     color: #64748b !important;
 }
 
-/* Stronger keyboard/focus visibility. */
 .inventory-comfort-theme input:focus,
 .inventory-comfort-theme select:focus,
 .inventory-comfort-theme textarea:focus,
@@ -16047,7 +16431,6 @@ const generateInventoryReport = () => {
     outline-offset: 2px;
 }
 
-/* Ledger area gets a calm neutral background. */
 .inventory-comfort-theme .inventory-ledger-surface {
     background-color: #f5f8fb !important;
     border-color: #b8c6d4 !important;
@@ -16055,7 +16438,6 @@ const generateInventoryReport = () => {
         0 10px 28px rgba(51, 65, 85, 0.08);
 }
 
-/* Keep headers blue, but use a deeper less-glary blue. */
 .inventory-comfort-theme .inventory-ledger-table thead {
     background-color: #35679b !important;
 }
@@ -16066,7 +16448,6 @@ const generateInventoryReport = () => {
     color: #ffffff !important;
 }
 
-/* Main data rows use soft blue-gray rather than pure white. */
 .inventory-comfort-theme .inventory-ledger-table tbody > tr {
     border-color: #d4dde7;
 }
@@ -16085,7 +16466,6 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
-/* Softer expanded rows without the old vertical blue stripe. */
 .inventory-comfort-theme
     .inventory-ledger-table
     tbody
@@ -16101,15 +16481,13 @@ const generateInventoryReport = () => {
     background-color: #e8f1fb !important;
 }
 
-/* Property-detail blocks stay distinct without a thick blue left line. */
 .inventory-comfort-theme .inventory-ledger-table .border-2.border-blue-200 {
     border-color: #adc4dc !important;
     background-color: #f3f7fb !important;
     box-shadow:
         0 8px 20px rgba(51, 65, 85, 0.08);
-}
+}   
 
-/* Soften blue pills while retaining readable contrast. */
 .inventory-comfort-theme .bg-blue-50 {
     background-color: #e7f0fa !important;
 }
@@ -16122,7 +16500,6 @@ const generateInventoryReport = () => {
     border-color: #a9c7e4 !important;
 }
 
-/* Keep non-interactive rows/cards visually neutral. Only controls look clickable. */
 .inventory-comfort-theme .cursor-default {
     cursor: default !important;
 }

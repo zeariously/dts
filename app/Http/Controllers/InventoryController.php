@@ -82,6 +82,47 @@ class InventoryController extends Controller
             $request
         );
 
+        /*
+         * ICT OTHER / OTHERS uses Date Acquired only.
+         * Life Span Ended must never be stored for this unit.
+         */
+        $incomingCategory =
+            strtolower(
+                trim(
+                    (string) $request->input(
+                        'category',
+                        ''
+                    )
+                )
+            );
+
+        $incomingUnit =
+            strtoupper(
+                trim(
+                    (string) $request->input(
+                        'unit',
+                        ''
+                    )
+                )
+            );
+
+        if (
+            $incomingCategory === 'ict'
+            && $this->isIctOthersUnit(
+                $incomingUnit
+            )
+        ) {
+            $request->merge([
+                'ict_assets' =>
+                    $this->clearIctLifeSpanEnded(
+                        $request->input(
+                            'ict_assets',
+                            []
+                        )
+                    ),
+            ]);
+        }
+
         $validated = $request->validate([
             'category' => 'required|in:supplies,ict,furniture,fixtures,emergency_kits,token_giveaways',
             'item' => 'required|string|max:255',
@@ -104,6 +145,10 @@ class InventoryController extends Controller
             'ict_assets.*.date_acquired' => 'nullable|date_format:Y-m-d',
             'ict_assets.*.life_span_ended' => 'nullable|date_format:Y-m-d',
             'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
+            'ict_assets.*.returned_at' => 'nullable|date',
+            'ict_assets.*.return_remarks' => 'nullable|string|max:1000',
+            'ict_assets.*.returned_by' => 'nullable|string|max:255',
+            'ict_assets.*.returned_by_user_id' => 'nullable',
             'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
             'ict_assets.*.mr' => 'nullable|string|max:255',
             'quarters' =>
@@ -240,6 +285,20 @@ class InventoryController extends Controller
                             true,
                             true
                         );
+
+                if (
+                    $this->isIctOthersUnit(
+                        $validated['unit']
+                    )
+                    && is_array(
+                        $validated['ict_assets']
+                    )
+                ) {
+                    $validated['ict_assets'] =
+                        $this->clearIctLifeSpanEnded(
+                            $validated['ict_assets']
+                        );
+                }
             }
         }
 
@@ -266,6 +325,122 @@ class InventoryController extends Controller
         $this->authorizeInventoryManagement(
             $request
         );
+
+        /*
+         * ICT OTHER / OTHERS uses Date Acquired only.
+         * Clear Life Span Ended before validation so stale/browser-submitted
+         * values cannot be saved.
+         */
+        $incomingCategory =
+            strtolower(
+                trim(
+                    (string) (
+                        $request->input(
+                            'category'
+                        )
+                        ?? $inventoryItem->category
+                        ?? ''
+                    )
+                )
+            );
+
+        $incomingUnit =
+            strtoupper(
+                trim(
+                    (string) (
+                        $request->input(
+                            'unit'
+                        )
+                        ?? $inventoryItem->unit
+                        ?? ''
+                    )
+                )
+            );
+
+        if (
+            $incomingCategory === 'ict'
+            && $this->isIctOthersUnit(
+                $incomingUnit
+            )
+        ) {
+            $merge = [];
+
+            if (
+                $request->has(
+                    'ict_assets'
+                )
+            ) {
+                $merge['ict_assets'] =
+                    $this->clearIctLifeSpanEnded(
+                        $request->input(
+                            'ict_assets',
+                            []
+                        )
+                    );
+            }
+
+            if (
+                is_array(
+                    $request->input(
+                        'new_ict_asset'
+                    )
+                )
+            ) {
+                $newIctAsset =
+                    $request->input(
+                        'new_ict_asset'
+                    );
+
+                $newIctAsset[
+                    'life_span_ended'
+                ] = null;
+
+                $merge['new_ict_asset'] =
+                    $newIctAsset;
+            }
+
+            if (
+                is_array(
+                    $request->input(
+                        'new_ict_assets'
+                    )
+                )
+            ) {
+                $merge['new_ict_assets'] =
+                    $this->clearIctLifeSpanEnded(
+                        $request->input(
+                            'new_ict_assets',
+                            []
+                        )
+                    );
+            }
+
+            if (
+                is_array(
+                    $request->input(
+                        'asset'
+                    )
+                )
+            ) {
+                $asset =
+                    $request->input(
+                        'asset'
+                    );
+
+                $asset[
+                    'life_span_ended'
+                ] = null;
+
+                $merge['asset'] =
+                    $asset;
+            }
+
+            if (!empty($merge)) {
+                $request->merge(
+                    $merge
+                );
+            }
+        }
 
         $validated = $request->validate([
             'release_quantity' =>
@@ -357,6 +532,43 @@ class InventoryController extends Controller
             'new_ict_asset.mr' =>
                 'nullable|string|max:255',
 
+            /*
+             * Batch ICT unit creation from the Edit modal.
+             * The single new_ict_asset rules above remain for backwards compatibility.
+             */
+            'new_ict_assets' =>
+                'sometimes|nullable|array',
+
+            'new_ict_assets.*' =>
+                'array',
+
+            'new_ict_assets.*.description' =>
+                'nullable|string|max:255',
+
+            'new_ict_assets.*.accessories' =>
+                'nullable|string|max:500',
+
+            'new_ict_assets.*.property_number' =>
+                'nullable|string|max:100',
+
+            'new_ict_assets.*.current_user' =>
+                'nullable|string|max:255',
+
+            'new_ict_assets.*.date_acquired' =>
+                'nullable|date_format:Y-m-d',
+
+            'new_ict_assets.*.life_span_ended' =>
+                'nullable|date_format:Y-m-d',
+
+            'new_ict_assets.*.status' =>
+                'nullable|in:working,returned,for_return',
+
+            'new_ict_assets.*.mr_personnel_id' =>
+                'nullable|integer|exists:lu_personnel,ID',
+
+            'new_ict_assets.*.mr' =>
+                'nullable|string|max:255',
+
             'asset_index' =>
                 'sometimes|nullable|integer|min:0',
 
@@ -384,6 +596,12 @@ class InventoryController extends Controller
             'asset.status' =>
                 'nullable|in:working,returned,for_return',
 
+            'asset.returned_at' =>
+                'nullable|date',
+
+            'asset.return_remarks' =>
+                'nullable|string|max:1000',
+
             'asset.mr_personnel_id' =>
                 'nullable|integer|exists:lu_personnel,ID',
 
@@ -399,6 +617,10 @@ class InventoryController extends Controller
             'ict_assets.*.date_acquired' => 'nullable|date_format:Y-m-d',
             'ict_assets.*.life_span_ended' => 'nullable|date_format:Y-m-d',
             'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
+            'ict_assets.*.returned_at' => 'nullable|date',
+            'ict_assets.*.return_remarks' => 'nullable|string|max:1000',
+            'ict_assets.*.returned_by' => 'nullable|string|max:255',
+            'ict_assets.*.returned_by_user_id' => 'nullable',
             'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
             'ict_assets.*.mr' => 'nullable|string|max:255',
 
@@ -508,6 +730,20 @@ class InventoryController extends Controller
                     $validated['new_ict_asset']
                     ?? null
                 );
+
+            $hasNewIctAssets =
+                !$isRelease
+                && array_key_exists(
+                    'new_ict_assets',
+                    $validated
+                )
+                && is_array(
+                    $validated['new_ict_assets']
+                    ?? null
+                )
+                && count(
+                    $validated['new_ict_assets']
+                ) > 0;
 
             $hasAddOtherCount =
                 !$isRelease
@@ -1146,21 +1382,110 @@ class InventoryController extends Controller
                  * and Current User here. Preserve any legacy/unrelated keys.
                  */
                 if ($isPhysicalIct) {
+                    $existingAsset =
+                        is_array(
+                            $assets[$assetIndex]
+                            ?? null
+                        )
+                            ? $assets[$assetIndex]
+                            : [];
+
                     $normalizedAsset =
                         $submittedNormalizedAsset;
 
-                    if (
+                    $newStatus =
                         trim(
                             (string) (
                                 $normalizedAsset['status']
                                 ?? ''
                             )
-                        ) === ''
-                    ) {
+                        );
+
+                    if ($newStatus === '') {
                         throw ValidationException::withMessages([
                             'asset.status' =>
                                 'Select Working or Returned.',
                         ]);
+                    }
+
+                    $oldStatus =
+                        strtolower(
+                            trim(
+                                (string) (
+                                    $existingAsset['status']
+                                    ?? ''
+                                )
+                            )
+                        );
+
+                    if ($oldStatus === 'for_return') {
+                        $oldStatus = 'returned';
+                    }
+
+                    if ($newStatus === 'returned') {
+                        $submittedReturnedAt =
+                            $this->normalizedInventoryAssetDateTime(
+                                $submittedAsset['returned_at']
+                                ?? null
+                            );
+
+                        $existingReturnedAt =
+                            $this->normalizedInventoryAssetDateTime(
+                                $existingAsset['returned_at']
+                                ?? null
+                            );
+
+                        $normalizedAsset['returned_at'] =
+                            $submittedReturnedAt
+                            ?? $existingReturnedAt
+                            ?? now()->format('Y-m-d H:i:s');
+
+                        $normalizedAsset['return_remarks'] =
+                            trim(
+                                (string) (
+                                    $submittedAsset['return_remarks']
+                                    ?? $existingAsset['return_remarks']
+                                    ?? ''
+                                )
+                            );
+
+                        /*
+                         * When Status first becomes Returned, record who
+                         * performed the return. Later normalization/editing
+                         * preserves that person unless the asset becomes
+                         * Working again.
+                         */
+                        if ($oldStatus !== 'returned') {
+                            $normalizedAsset['returned_by'] =
+                                $userName;
+
+                            $normalizedAsset['returned_by_user_id'] =
+                                $userId;
+                        } else {
+                            $normalizedAsset['returned_by'] =
+                                trim(
+                                    (string) (
+                                        $existingAsset['returned_by']
+                                        ?? $userName
+                                    )
+                                );
+
+                            $normalizedAsset['returned_by_user_id'] =
+                                $existingAsset['returned_by_user_id']
+                                ?? $userId;
+                        }
+                    } else {
+                        $normalizedAsset['returned_at'] =
+                            null;
+
+                        $normalizedAsset['return_remarks'] =
+                            '';
+
+                        $normalizedAsset['returned_by'] =
+                            '';
+
+                        $normalizedAsset['returned_by_user_id'] =
+                            null;
                     }
                 } else {
                     $existingAsset =
@@ -1244,7 +1569,10 @@ class InventoryController extends Controller
                     $assets;
             }
 
-            if ($hasNewIctAsset) {
+            if (
+                $hasNewIctAsset
+                || $hasNewIctAssets
+            ) {
                 $targetCategory =
                     strtolower(
                         trim(
@@ -1274,35 +1602,23 @@ class InventoryController extends Controller
                     )
                 ) {
                     throw ValidationException::withMessages([
-                        'new_ict_asset' =>
+                        'new_ict_assets' =>
                             'New Property Details can be added only to physical ICT items.',
                     ]);
                 }
 
-                $submittedAsset =
-                    $validated['new_ict_asset'];
-
-                $normalizedAsset =
-                    $this->normalizedIctAssets(
-                        [$submittedAsset],
-                        1,
-                        true,
-                        true
-                    )[0];
-
-                if (
-                    trim(
-                        (string) (
-                            $normalizedAsset['status']
-                            ?? ''
+                $submittedAssets =
+                    $hasNewIctAssets
+                        ? array_values(
+                            $validated[
+                                'new_ict_assets'
+                            ]
                         )
-                    ) === ''
-                ) {
-                    throw ValidationException::withMessages([
-                        'new_ict_asset.status' =>
-                            'Select Working or Returned.',
-                    ]);
-                }
+                        : [
+                            $validated[
+                                'new_ict_asset'
+                            ],
+                        ];
 
                 $oldCount =
                     max(
@@ -1319,24 +1635,75 @@ class InventoryController extends Controller
                         $oldCount
                     );
 
-                $newPropertyNumber =
-                    mb_strtolower(
+                foreach (
+                    $submittedAssets
+                    as $batchIndex => $submittedAsset
+                ) {
+                    $errorPrefix =
+                        $hasNewIctAssets
+                            ? "new_ict_assets.{$batchIndex}"
+                            : 'new_ict_asset';
+
+                    $normalizedAsset =
+                        $this->normalizedIctAssets(
+                            [$submittedAsset],
+                            1,
+                            true,
+                            true
+                        )[0];
+
+                    if (
+                        $this->isIctOthersUnit(
+                            $targetUnit
+                        )
+                    ) {
+                        $normalizedAsset[
+                            'life_span_ended'
+                        ] = null;
+                    }
+
+                    if (
                         trim(
                             (string) (
-                                $normalizedAsset[
-                                    'property_number'
-                                ]
+                                $normalizedAsset['status']
                                 ?? ''
                             )
-                        )
-                    );
+                        ) === ''
+                    ) {
+                        throw ValidationException::withMessages([
+                            "{$errorPrefix}.status" =>
+                                'Select Working or Returned.',
+                        ]);
+                    }
 
-                foreach ($assets as $asset) {
-                    $existingPropertyNumber =
+                    if (
+                        trim(
+                            (string) (
+                                $normalizedAsset['status']
+                                ?? ''
+                            )
+                        ) === 'returned'
+                    ) {
+                        $normalizedAsset['returned_at'] =
+                            now()->format('Y-m-d H:i:s');
+
+                        $normalizedAsset['return_remarks'] =
+                            '';
+
+                        $normalizedAsset['returned_by'] =
+                            $userName;
+
+                        $normalizedAsset[
+                            'returned_by_user_id'
+                        ] =
+                            $userId;
+                    }
+
+                    $newPropertyNumber =
                         mb_strtolower(
                             trim(
                                 (string) (
-                                    $asset[
+                                    $normalizedAsset[
                                         'property_number'
                                     ]
                                     ?? ''
@@ -1344,23 +1711,40 @@ class InventoryController extends Controller
                             )
                         );
 
-                    if (
-                        $newPropertyNumber !== ''
-                        && $existingPropertyNumber
-                            === $newPropertyNumber
-                    ) {
-                        throw ValidationException::withMessages([
-                            'new_ict_asset.property_number' =>
-                                'Property Number must be unique for this ICT item.',
-                        ]);
+                    foreach ($assets as $asset) {
+                        $existingPropertyNumber =
+                            mb_strtolower(
+                                trim(
+                                    (string) (
+                                        $asset[
+                                            'property_number'
+                                        ]
+                                        ?? ''
+                                    )
+                                )
+                            );
+
+                        if (
+                            $newPropertyNumber !== ''
+                            && $existingPropertyNumber
+                                === $newPropertyNumber
+                        ) {
+                            throw ValidationException::withMessages([
+                                "{$errorPrefix}.property_number" =>
+                                    'Property Number must be unique for this ICT item.',
+                            ]);
+                        }
                     }
+
+                    $assets[] =
+                        $normalizedAsset;
                 }
 
-                $assets[] =
-                    $normalizedAsset;
-
                 $item->currently_available =
-                    $oldCount + 1;
+                    $oldCount
+                    + count(
+                        $submittedAssets
+                    );
 
                 $item->ict_assets =
                     $assets;
@@ -1963,6 +2347,21 @@ class InventoryController extends Controller
                             $item->ict_assets ?? [],
                             (int) $item->currently_available
                         );
+
+                if (
+                    $this->isIctOthersUnit(
+                        (string) $item->unit
+                    )
+                    && is_array(
+                        $item->ict_assets
+                    )
+                ) {
+                    $item->ict_assets =
+                        $this->clearIctLifeSpanEnded(
+                            $item->ict_assets
+                        );
+                }
+
                 $item->tracked_released =
                     (int) ($item->tracked_released ?? 0);
             } else {
@@ -3355,6 +3754,9 @@ class InventoryController extends Controller
                 'date_acquired' => 'Date Acquired',
                 'life_span_ended' => 'Life Span Ended',
                 'status' => 'Status',
+                'returned_at' => 'Date Returned',
+                'return_remarks' => 'Return Remarks',
+                'returned_by' => 'Returned By',
                 'mr' => 'MR',
             ];
 
@@ -3849,6 +4251,27 @@ class InventoryController extends Controller
         );
     }
 
+    /**
+     * Normalize Date Returned while preserving the exact return time.
+     */
+    private function normalizedInventoryAssetDateTime(
+        mixed $value
+    ): ?string {
+        $raw = trim((string) ($value ?? ''));
+        if ($raw === '') return null;
+
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $raw, $d)) {
+            $year=(int)$d[1]; $month=(int)$d[2]; $day=(int)$d[3];
+            if ($year < 1900 || $year > 2200 || !checkdate($month,$day,$year)) return null;
+            return sprintf('%04d-%02d-%02d', $year,$month,$day);
+        }
+
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/', $raw, $m)) return null;
+        $year=(int)$m[1]; $month=(int)$m[2]; $day=(int)$m[3]; $hour=(int)$m[4]; $minute=(int)$m[5]; $second=isset($m[6]) && $m[6] !== '' ? (int)$m[6] : 0;
+        if ($year < 1900 || $year > 2200 || !checkdate($month,$day,$year) || $hour > 23 || $minute > 59 || $second > 59) return null;
+        return sprintf('%04d-%02d-%02d %02d:%02d:%02d',$year,$month,$day,$hour,$minute,$second);
+    }
+
 
     /**
      * Normalize ICT Property Detail rows for storage while preserving
@@ -3965,6 +4388,39 @@ class InventoryController extends Controller
                 $status = 'working';
             }
 
+            $returnedAt =
+                $this->normalizedInventoryAssetDateTime(
+                    $asset['returned_at']
+                    ?? null
+                );
+
+            $returnRemarks =
+                trim(
+                    (string) (
+                        $asset['return_remarks']
+                        ?? ''
+                    )
+                );
+
+            $returnedBy =
+                trim(
+                    (string) (
+                        $asset['returned_by']
+                        ?? ''
+                    )
+                );
+
+            $returnedByUserId =
+                $asset['returned_by_user_id']
+                ?? null;
+
+            if ($status !== 'returned') {
+                $returnedAt = null;
+                $returnRemarks = '';
+                $returnedBy = '';
+                $returnedByUserId = null;
+            }
+
             $mrPersonnelId =
                 (int) (
                     $asset['mr_personnel_id']
@@ -4042,6 +4498,14 @@ class InventoryController extends Controller
                     $lifeSpanEnded,
                 'status' =>
                     $status,
+                'returned_at' =>
+                    $returnedAt,
+                'return_remarks' =>
+                    $returnRemarks,
+                'returned_by' =>
+                    $returnedBy,
+                'returned_by_user_id' =>
+                    $returnedByUserId,
                 'mr_personnel_id' =>
                     $mrPersonnelId,
                 'mr' =>
@@ -4164,6 +4628,39 @@ class InventoryController extends Controller
                     ? $status
                     : '';
 
+            $returnedAt =
+                $this->normalizedInventoryAssetDateTime(
+                    $asset['returned_at']
+                    ?? null
+                );
+
+            $returnRemarks =
+                trim(
+                    (string) (
+                        $asset['return_remarks']
+                        ?? ''
+                    )
+                );
+
+            $returnedBy =
+                trim(
+                    (string) (
+                        $asset['returned_by']
+                        ?? ''
+                    )
+                );
+
+            $returnedByUserId =
+                $asset['returned_by_user_id']
+                ?? null;
+
+            if ($status !== 'returned') {
+                $returnedAt = null;
+                $returnRemarks = '';
+                $returnedBy = '';
+                $returnedByUserId = null;
+            }
+
             $mrPersonnelId =
                 (int) (
                     $asset['mr_personnel_id']
@@ -4226,6 +4723,10 @@ class InventoryController extends Controller
                 && $dateAcquired === null
                 && $lifeSpanEnded === null
                 && $status === ''
+                && $returnedAt === null
+                && $returnRemarks === ''
+                && $returnedBy === ''
+                && $returnedByUserId === null
                 && !$mrPersonnelId
                 && $mr === ''
             ) {
@@ -4272,6 +4773,14 @@ class InventoryController extends Controller
                     $lifeSpanEnded,
                 'status' =>
                     $status,
+                'returned_at' =>
+                    $returnedAt,
+                'return_remarks' =>
+                    $returnRemarks,
+                'returned_by' =>
+                    $returnedBy,
+                'returned_by_user_id' =>
+                    $returnedByUserId,
                 'mr_personnel_id' =>
                     $mrPersonnelId,
                 'mr' =>
@@ -7239,6 +7748,54 @@ class InventoryController extends Controller
     }
 
 
+    /**
+     * ICT unit rule:
+     * OTHER / OTHERS keeps Date Acquired but does not use Life Span Ended.
+     */
+    private function isIctOthersUnit(
+        mixed $unit
+    ): bool {
+        return in_array(
+            strtoupper(
+                trim(
+                    (string) $unit
+                )
+            ),
+            [
+                'OTHER',
+                'OTHERS',
+            ],
+            true
+        );
+    }
+
+    /**
+     * Remove Life Span Ended from ICT OTHER / OTHERS property rows.
+     */
+    private function clearIctLifeSpanEnded(
+        mixed $assets
+    ): array {
+        if (!is_array($assets)) {
+            return [];
+        }
+
+        return array_map(
+            function ($asset) {
+                if (!is_array($asset)) {
+                    return $asset;
+                }
+
+                $asset[
+                    'life_span_ended'
+                ] = null;
+
+                return $asset;
+            },
+            array_values($assets)
+        );
+    }
+
+
     private function canManageInventory(
         $user
     ): bool {
@@ -7252,12 +7809,13 @@ class InventoryController extends Controller
             ?? $user->role_number
             ?? null;
 
-        return trim(
-            (string) $role
-        ) === '3';
+        return in_array(
+            trim((string) $role),
+            ['1', '3'],
+            true
+        );
     }
 
-   
     private function authorizeInventoryManagement(
         Request $request
     ): void {
@@ -7276,7 +7834,7 @@ class InventoryController extends Controller
     ) {
         $this->authorizeInventoryManagement(
             $request
-        );
+        );  
 
         
         $inventoryItem->histories()->delete();

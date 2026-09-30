@@ -827,6 +827,9 @@ const historyBadgeClass = (type) => {
                                         View
                                     </button>
                                 </td>
+                                
+                                
+                                
                             </tr>
 
                             <tr v-if="documentRows.length === 0">
