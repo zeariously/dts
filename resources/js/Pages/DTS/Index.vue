@@ -315,82 +315,345 @@ const remindAutomaticReminderIn15Minutes = () => {
 let automaticReminderAudioContext = null
 let automaticReminderSoundPending = false
 let automaticReminderSoundPlayedForCurrentOpen = false
+let automaticReminderVoicePending = false
+let automaticReminderVoicePlayedForCurrentOpen = false
+let automaticReminderVoiceTimer = null
 
 const getAutomaticReminderAudioContext = () => {
     if (typeof window === 'undefined') return null
 
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    const AudioContextClass =
+        window.AudioContext
+        || window.webkitAudioContext
 
     if (!AudioContextClass) return null
 
     if (!automaticReminderAudioContext) {
-        automaticReminderAudioContext = new AudioContextClass()
+        automaticReminderAudioContext =
+            new AudioContextClass()
     }
 
     return automaticReminderAudioContext
 }
 
+const clearAutomaticReminderVoiceTimer = () => {
+    if (
+        typeof window !== 'undefined'
+        && automaticReminderVoiceTimer
+    ) {
+        window.clearTimeout(
+            automaticReminderVoiceTimer
+        )
+
+        automaticReminderVoiceTimer = null
+    }
+}
+
+const automaticReminderVoiceMessage = () => {
+    const count =
+        Number(
+            automaticReminderCount.value
+            || 0
+        )
+
+    if (count === 1) {
+        return [
+            'DTS Reminder.',
+            'You have 1 document requiring your attention.',
+            'Please check your pending document.',
+        ].join(' ')
+    }
+
+    return [
+        'DTS Reminder.',
+        `You have ${count} documents requiring your attention.`,
+        'Please check your pending documents.',
+    ].join(' ')
+}
+
+const getPreferredReminderVoice = () => {
+    if (
+        typeof window === 'undefined'
+        || !('speechSynthesis' in window)
+    ) {
+        return null
+    }
+
+    const voices =
+        window.speechSynthesis.getVoices()
+        || []
+
+    if (!voices.length) {
+        return null
+    }
+
+    const preferredNames = [
+        'Microsoft Aria',
+        'Microsoft Jenny',
+        'Microsoft Zira',
+        'Google US English',
+    ]
+
+    for (const preferredName of preferredNames) {
+        const exactMatch = voices.find(
+            (voice) =>
+                String(
+                    voice?.name
+                    || ''
+                )
+                    .toLowerCase()
+                    .includes(
+                        preferredName
+                            .toLowerCase()
+                    )
+        )
+
+        if (exactMatch) {
+            return exactMatch
+        }
+    }
+
+    return (
+        voices.find((voice) =>
+            String(
+                voice?.lang
+                || ''
+            )
+                .toLowerCase()
+                .startsWith('en-us')
+        )
+        || voices.find((voice) =>
+            String(
+                voice?.lang
+                || ''
+            )
+                .toLowerCase()
+                .startsWith('en')
+        )
+        || voices[0]
+        || null
+    )
+}
+
+const speakAutomaticReminder = () => {
+    if (
+        automaticReminderVoicePlayedForCurrentOpen
+        || !showAutomaticReminderModal.value
+        || !hasAutomaticStatusReminders.value
+    ) {
+        return
+    }
+
+    if (
+        typeof window === 'undefined'
+        || !('speechSynthesis' in window)
+        || typeof SpeechSynthesisUtterance === 'undefined'
+    ) {
+        automaticReminderVoicePending = false
+        return
+    }
+
+    try {
+        window.speechSynthesis.cancel()
+
+        const speech =
+            new SpeechSynthesisUtterance(
+                automaticReminderVoiceMessage()
+            )
+
+        const preferredVoice =
+            getPreferredReminderVoice()
+
+        if (preferredVoice) {
+            speech.voice = preferredVoice
+        }
+
+        speech.lang =
+            preferredVoice?.lang
+            || 'en-US'
+
+        speech.rate = 0.9
+        speech.pitch = 1
+        speech.volume = 1
+
+        speech.onstart = () => {
+            automaticReminderVoicePlayedForCurrentOpen = true
+            automaticReminderVoicePending = false
+        }
+
+        speech.onerror = () => {
+            automaticReminderVoicePending = true
+        }
+
+        window.speechSynthesis.speak(
+            speech
+        )
+    } catch (error) {
+        automaticReminderVoicePending = true
+    }
+}
+
+const scheduleAutomaticReminderVoice = (
+    delay = 550
+) => {
+    if (typeof window === 'undefined') {
+        return
+    }
+
+    clearAutomaticReminderVoiceTimer()
+
+    automaticReminderVoicePending = true
+
+    automaticReminderVoiceTimer =
+        window.setTimeout(() => {
+            automaticReminderVoiceTimer = null
+            speakAutomaticReminder()
+        }, delay)
+}
+
 const playAutomaticReminderSound = async () => {
-    if (automaticReminderSoundPlayedForCurrentOpen) return
+    if (automaticReminderSoundPlayedForCurrentOpen) {
+        if (
+            !automaticReminderVoicePlayedForCurrentOpen
+        ) {
+            scheduleAutomaticReminderVoice(150)
+        }
 
-    const audioContext = getAutomaticReminderAudioContext()
+        return
+    }
 
-    if (!audioContext) return
+    const audioContext =
+        getAutomaticReminderAudioContext()
+
+    if (!audioContext) {
+        automaticReminderSoundPending = false
+        scheduleAutomaticReminderVoice(0)
+        return
+    }
 
     try {
         if (audioContext.state === 'suspended') {
             await audioContext.resume()
         }
 
-        const startAt = audioContext.currentTime + 0.03
-        const notes = [659.25, 783.99, 987.77]
+        const startAt =
+            audioContext.currentTime
+            + 0.03
 
-        notes.forEach((frequency, index) => {
-            const oscillator = audioContext.createOscillator()
-            const gain = audioContext.createGain()
-            const noteStart = startAt + (index * 0.16)
-            const noteEnd = noteStart + 0.13
+        const notes = [
+            659.25,
+            783.99,
+            987.77,
+        ]
 
-            oscillator.type = 'sine'
-            oscillator.frequency.setValueAtTime(frequency, noteStart)
+        notes.forEach(
+            (frequency, index) => {
+                const oscillator =
+                    audioContext
+                        .createOscillator()
 
-            gain.gain.setValueAtTime(0.0001, noteStart)
-            gain.gain.exponentialRampToValueAtTime(0.16, noteStart + 0.02)
-            gain.gain.exponentialRampToValueAtTime(0.0001, noteEnd)
+                const gain =
+                    audioContext
+                        .createGain()
 
-            oscillator.connect(gain)
-            gain.connect(audioContext.destination)
-            oscillator.start(noteStart)
-            oscillator.stop(noteEnd + 0.02)
-        })
+                const noteStart =
+                    startAt
+                    + (
+                        index
+                        * 0.16
+                    )
 
-        automaticReminderSoundPlayedForCurrentOpen = true
-        automaticReminderSoundPending = false
+                const noteEnd =
+                    noteStart
+                    + 0.13
+
+                oscillator.type = 'sine'
+
+                oscillator.frequency
+                    .setValueAtTime(
+                        frequency,
+                        noteStart
+                    )
+
+                gain.gain
+                    .setValueAtTime(
+                        0.0001,
+                        noteStart
+                    )
+
+                gain.gain
+                    .exponentialRampToValueAtTime(
+                        0.16,
+                        noteStart + 0.02
+                    )
+
+                gain.gain
+                    .exponentialRampToValueAtTime(
+                        0.0001,
+                        noteEnd
+                    )
+
+                oscillator.connect(gain)
+
+                gain.connect(
+                    audioContext.destination
+                )
+
+                oscillator.start(
+                    noteStart
+                )
+
+                oscillator.stop(
+                    noteEnd + 0.02
+                )
+            }
+        )
+
+        automaticReminderSoundPlayedForCurrentOpen =
+            true
+
+        automaticReminderSoundPending =
+            false
+
+        scheduleAutomaticReminderVoice(550)
     } catch (error) {
         automaticReminderSoundPending = true
+        automaticReminderVoicePending = true
     }
 }
 
 const unlockAutomaticReminderSound = async () => {
-    const audioContext = getAutomaticReminderAudioContext()
-
-    if (!audioContext) return
+    const audioContext =
+        getAutomaticReminderAudioContext()
 
     try {
-        if (audioContext.state === 'suspended') {
+        if (
+            audioContext
+            && audioContext.state === 'suspended'
+        ) {
             await audioContext.resume()
         }
 
         if (
-            automaticReminderSoundPending
-            && showAutomaticReminderModal.value
+            showAutomaticReminderModal.value
             && hasAutomaticStatusReminders.value
         ) {
-            await playAutomaticReminderSound()
+            if (
+                automaticReminderSoundPending
+                && !automaticReminderSoundPlayedForCurrentOpen
+            ) {
+                await playAutomaticReminderSound()
+            } else if (
+                automaticReminderVoicePending
+                && !automaticReminderVoicePlayedForCurrentOpen
+            ) {
+                speakAutomaticReminder()
+            }
         }
     } catch (error) {
     }
 }
+
 
 const automaticReminderItems = computed(() => {
     return props.automaticStatusReminders || []
@@ -442,19 +705,31 @@ const openAutomaticReminderModal = () => {
     const wasClosed = !showAutomaticReminderModal.value
 
     showAutomaticReminderModal.value = true
-
     if (wasClosed) {
         automaticReminderSoundPlayedForCurrentOpen = false
         automaticReminderSoundPending = true
+        automaticReminderVoicePlayedForCurrentOpen = false
+        automaticReminderVoicePending = true
+        clearAutomaticReminderVoiceTimer()
         playAutomaticReminderSound()
     }
 }
 
 const closeAutomaticReminderModal = () => {
-    
     showAutomaticReminderModal.value = false
     automaticReminderSoundPending = false
     automaticReminderSoundPlayedForCurrentOpen = false
+    automaticReminderVoicePending = false
+    automaticReminderVoicePlayedForCurrentOpen = false
+
+    clearAutomaticReminderVoiceTimer()
+
+    if (
+        typeof window !== 'undefined'
+        && 'speechSynthesis' in window
+    ) {
+        window.speechSynthesis.cancel()
+    }
 }
 
 const showTransferNotificationModal = ref(false)
@@ -523,14 +798,29 @@ onMounted(() => {
 onBeforeUnmount(() => {
     clearTimeout(automaticReportLoadTimer)
     clearAutomaticReminderSnoozeTimer()
+    clearAutomaticReminderVoiceTimer()
 
     if (typeof window !== 'undefined') {
-        window.removeEventListener('pointerdown', unlockAutomaticReminderSound)
-        window.removeEventListener('keydown', unlockAutomaticReminderSound)
+        window.removeEventListener(
+            'pointerdown',
+            unlockAutomaticReminderSound
+        )
+
+        window.removeEventListener(
+            'keydown',
+            unlockAutomaticReminderSound
+        )
+
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel()
+        }
     }
 
     if (automaticReminderAudioContext) {
-        automaticReminderAudioContext.close().catch(() => {})
+        automaticReminderAudioContext
+            .close()
+            .catch(() => {})
+
         automaticReminderAudioContext = null
     }
 })
@@ -2063,8 +2353,7 @@ const submitEntryDateUpdate = () => {
                             <button
                                 type="button"
                                 class="w-full rounded-xl bg-white/15 px-4 py-3 text-sm font-black text-white hover:bg-white/25 sm:w-auto sm:py-2"
-                                @click="closeAutomaticReminderModal"
-                            >
+                                @click="closeAutomaticReminderModal">
                                 Close
                             </button>
                         </div>
@@ -2072,9 +2361,7 @@ const submitEntryDateUpdate = () => {
 
                     <div class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
                         <div class="grid grid-cols-1 gap-3 min-[430px]:grid-cols-3">
-                       
                         </div>
-
                         <div class="mt-5 space-y-3 sm:max-h-[55vh] sm:overflow-y-auto sm:pr-1">
                             <article
                                 v-for="doc in automaticReminderItems"

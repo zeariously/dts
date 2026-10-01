@@ -26,6 +26,10 @@ const props = defineProps({
         type: Array,
         default: () => [],
     },
+    personnelOptions: {
+        type: Array,
+        default: () => [],
+    },
     filters: {
         type: Object,
         default: () => ({}),
@@ -102,6 +106,21 @@ const search = ref(props.filters.search || '')
 const status = ref(props.filters.status ?? '')
 const perPage = ref(props.filters.per_page || 15)
 const selectedYear = ref(props.filters.year || '')
+
+const currentQuery = new URLSearchParams(
+    page.url.includes('?')
+        ? page.url.split('?')[1]
+        : ''
+)
+
+const selectedPersonnel = ref(
+    String(
+        props.filters.personnel
+        || currentQuery.get('personnel')
+        || ''
+    )
+)
+
 const expandedPeople = ref({})
 
 let searchTimer = null
@@ -157,6 +176,37 @@ const documentRows = computed(() => {
     return Array.from(uniqueDocuments.values())
 })
 
+const documentPersonnelName = (document) => {
+    return String(
+        document?.assigned_personnel
+        || document?.to_personnel
+        || document?.receiver_personnel
+        || document?.personnel_name
+        || document?.staff_concern
+        || 'Unassigned'
+    ).trim() || 'Unassigned'
+}
+
+const personnelFilterOptions = computed(() => {
+    return (props.personnelOptions || [])
+        .map((person) => ({
+            id: String(person?.id || ''),
+            name: String(person?.name || '').trim(),
+            office_name: String(person?.office_name || '').trim(),
+        }))
+        .filter((person) => person.id !== '' && person.name !== '')
+})
+
+const selectedPersonnelName = computed(() => {
+    if (!selectedPersonnel.value) {
+        return ''
+    }
+
+    return personnelFilterOptions.value.find(
+        (person) => person.id === String(selectedPersonnel.value)
+    )?.name || 'Selected Personnel'
+})
+
 const forReceivingPersonnelSummary = computed(() => {
     if (status.value !== 'for-receiving') {
         return []
@@ -165,14 +215,8 @@ const forReceivingPersonnelSummary = computed(() => {
     const groupedPersonnel = new Map()
 
     documentRows.value.forEach((document) => {
-        const personnelName = String(
-            document?.assigned_personnel
-            || document?.to_personnel
-            || document?.receiver_personnel
-            || document?.personnel_name
-            || document?.staff_concern
-            || 'Unassigned'
-        ).trim() || 'Unassigned'
+        const personnelName =
+            documentPersonnelName(document)
 
         const key = personnelName.toLowerCase()
         const currentGroup = groupedPersonnel.get(key) || {
@@ -371,13 +415,8 @@ const monitoringDocumentStatus = (document) => {
 
 const displayedDocumentRows = computed(() => {
     /*
-     * Every selected card displays only its CURRENT workflow state.
-     *
-     * Returned is temporary:
-     * - pending return child       -> Returned
-     * - received by the admin      -> Received
-     * - transferred while unreceived -> For Receiving
-     * - Final Action saved         -> Addressed
+     * Personnel filtering is performed server-side by DtsController.
+     * This keeps pagination, card counts, and rows consistent.
      */
     if (status.value === 'addressed') {
         return actionTakenRows.value
@@ -540,6 +579,9 @@ const submitFilters = () => {
             status: status.value,
             per_page: perPage.value,
             year: selectedYear.value,
+            personnel:
+                selectedPersonnel.value
+                || undefined,
         },
         {
             preserveState: true,
@@ -555,6 +597,7 @@ const resetFilters = () => {
     status.value = ''
     perPage.value = 15
     selectedYear.value = ''
+    selectedPersonnel.value = ''
 
     router.get(
         '/dts/monitoring-dashboard',
@@ -1013,7 +1056,7 @@ const daysPendingClass = (days) => {
                     </div>
 
                     <div class="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                        <div class="lg:col-span-8">
+                        <div class="lg:col-span-5">
                             <label class="mb-2 block text-xs font-black uppercase tracking-[0.18em] text-slate-500">
                                 Search
                             </label>
@@ -1040,6 +1083,38 @@ const daysPendingClass = (days) => {
                                     ×
                                 </button>
                             </div>
+                        </div>
+
+                        <div class="lg:col-span-3">
+                            <label class="mb-2 block text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                                Personnel
+                            </label>
+
+                            <select
+                                v-model="selectedPersonnel"
+                                class="w-full rounded-2xl border border-blue-100 bg-blue-50/60 px-4 py-3.5 text-sm font-bold text-slate-800 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+                                @change="submitFilters"
+                            >
+                                <option value="">
+                                    All Personnel
+                                </option>
+
+                                <option
+                                    v-for="personnel in personnelFilterOptions"
+                                    :key="`personnel-filter-${personnel.id}`"
+                                    :value="personnel.id"
+                                >
+                                    {{ personnel.name }}
+                                    {{ personnel.office_name ? ` — ${personnel.office_name}` : '' }}
+                                </option>
+                            </select>
+
+                            <p
+                                v-if="selectedPersonnel"
+                                class="mt-2 text-[11px] font-bold text-blue-600"
+                            >
+                                Showing documents tagged to {{ selectedPersonnelName }}.
+                            </p>
                         </div>
 
                         <div class="lg:col-span-2">
@@ -1126,6 +1201,13 @@ const daysPendingClass = (days) => {
 
                             <span class="rounded-full bg-slate-50 px-4 py-2 text-sm font-black text-slate-600 ring-1 ring-slate-200">
                                 {{ activeStatusLabel }}
+                            </span>
+
+                            <span
+                                v-if="selectedPersonnel"
+                                class="rounded-full bg-indigo-50 px-4 py-2 text-sm font-black text-indigo-700 ring-1 ring-indigo-100"
+                            >
+                                👤 {{ selectedPersonnelName }}
                             </span>
                         </div>
                     </div>
@@ -1311,7 +1393,7 @@ const daysPendingClass = (days) => {
                                         </h3>
 
                                         <p class="mt-2 text-sm font-semibold text-slate-500">
-                                            Try adjusting your search, year, or entries filter.
+                                            Try adjusting your search, personnel, year, or entries filter.
                                         </p>
                                     </td>
                                 </tr>

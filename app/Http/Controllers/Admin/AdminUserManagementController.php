@@ -88,6 +88,9 @@ class AdminUserManagementController extends Controller
             'documentOptions' =>
                 $this->documentEditOptions(),
 
+            'guideTopicOverrides' =>
+                $this->buildGuideTopicOverrides(),
+
             'roles' => $roles->values(),
 
             'stats' => [
@@ -680,6 +683,525 @@ class AdminUserManagementController extends Controller
 
         return back()->with('success', 'Announcement deleted successfully.');
 
+    }
+
+
+    /**
+     * Read saved DTS Guide topic overrides.
+     * Available to authenticated DTS users so the layout can apply admin edits.
+     */
+    public function guideTopicOverrides()
+    {
+        return response()->json([
+            'data' =>
+                $this->buildGuideTopicOverrides(),
+        ]);
+    }
+
+
+    public function storeGuideTopic(
+        Request $request
+    ) {
+        $this->ensureAdmin();
+
+        if (
+            ! Schema::hasTable(
+                'dts_guide_topic_overrides'
+            )
+        ) {
+            return back()->with(
+                'error',
+                'DTS Guide storage is not ready. Run php artisan migrate first.'
+            );
+        }
+
+        $validated = $request->validate([
+            'title_en' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'title_tl' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'keywords' => [
+                'required',
+                'array',
+                'min:1',
+                'max:100',
+            ],
+            'keywords.*' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'steps_en' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+            'steps_en.*' => [
+                'required',
+                'string',
+                'max:2000',
+            ],
+            'steps_tl' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+            'steps_tl.*' => [
+                'required',
+                'string',
+                'max:2000',
+            ],
+            'href' => [
+                'nullable',
+                'string',
+                'max:1000',
+            ],
+            'action_label_en' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+            'action_label_tl' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+        ]);
+
+        $normalizeList = static function (
+            array $values
+        ): array {
+            return collect($values)
+                ->map(
+                    fn ($value) =>
+                        trim(
+                            (string) $value
+                        )
+                )
+                ->filter(
+                    fn ($value) =>
+                        $value !== ''
+                )
+                ->unique()
+                ->values()
+                ->all();
+        };
+
+        $titleEn =
+            trim(
+                $validated['title_en']
+            );
+
+        $titleTl =
+            trim(
+                $validated['title_tl']
+            );
+
+        /*
+         * Prefix custom topics with "custom-" so a newly added guide
+         * cannot accidentally replace one of the built-in guide topic IDs.
+         */
+        $slug =
+            strtolower($titleEn);
+
+        $slug =
+            preg_replace(
+                '/[^a-z0-9]+/i',
+                '-',
+                $slug
+            );
+
+        $slug =
+            trim(
+                (string) $slug,
+                '-'
+            );
+
+        if ($slug === '') {
+            $slug = 'guide-topic';
+        }
+
+        $slug =
+            substr(
+                $slug,
+                0,
+                82
+            );
+
+        $baseTopicId =
+            'custom-' . $slug;
+
+        $topicId =
+            $baseTopicId;
+
+        $suffix = 2;
+
+        while (
+            DB::table(
+                'dts_guide_topic_overrides'
+            )
+                ->where(
+                    'topic_id',
+                    $topicId
+                )
+                ->exists()
+        ) {
+            $topicId =
+                $baseTopicId
+                . '-'
+                . $suffix;
+
+            $suffix++;
+        }
+
+        $keywords =
+            $normalizeList([
+                ...$validated['keywords'],
+                $titleEn,
+                $titleTl,
+            ]);
+
+        $payload = [
+            'topic_id' =>
+                $topicId,
+
+            'title_en' =>
+                $titleEn,
+
+            'title_tl' =>
+                $titleTl,
+
+            'keywords' =>
+                json_encode(
+                    $keywords,
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'steps_en' =>
+                json_encode(
+                    $normalizeList(
+                        $validated['steps_en']
+                    ),
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'steps_tl' =>
+                json_encode(
+                    $normalizeList(
+                        $validated['steps_tl']
+                    ),
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'href' =>
+                trim(
+                    (string) (
+                        $validated['href']
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'action_label_en' =>
+                trim(
+                    (string) (
+                        $validated[
+                            'action_label_en'
+                        ]
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'action_label_tl' =>
+                trim(
+                    (string) (
+                        $validated[
+                            'action_label_tl'
+                        ]
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'updated_by' =>
+                $this->authUserId(),
+
+            'created_at' =>
+                now(),
+
+            'updated_at' =>
+                now(),
+        ];
+
+        DB::table(
+            'dts_guide_topic_overrides'
+        )->insert($payload);
+
+        if (Schema::hasTable('activity_logs')) {
+            ActivityLog::record(
+                'added DTS guide',
+                'Admin DTS Guide',
+                'Added DTS Guide topic: '
+                    . $topicId
+                    . '.',
+                'dts_guide_topic_overrides',
+                null,
+                [
+                    'topic_id' =>
+                        $topicId,
+                    'title_en' =>
+                        $titleEn,
+                    'title_tl' =>
+                        $titleTl,
+                ]
+            );
+        }
+
+        return back()->with(
+            'success',
+            'New DTS Guide added successfully.'
+        );
+    }
+
+
+    public function updateGuideTopic(
+        Request $request,
+        string $topicId
+    ) {
+        $this->ensureAdmin();
+
+        if (
+            ! Schema::hasTable(
+                'dts_guide_topic_overrides'
+            )
+        ) {
+            return back()->with(
+                'error',
+                'DTS Guide storage is not ready. Run php artisan migrate first.'
+            );
+        }
+
+        abort_unless(
+            preg_match(
+                '/^[a-z0-9][a-z0-9\-]{0,99}$/',
+                $topicId
+            ) === 1,
+            422,
+            'Invalid DTS Guide topic ID.'
+        );
+
+        $validated = $request->validate([
+            'title_en' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'title_tl' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'keywords' => [
+                'required',
+                'array',
+                'min:1',
+                'max:100',
+            ],
+            'keywords.*' => [
+                'required',
+                'string',
+                'max:255',
+            ],
+            'steps_en' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+            'steps_en.*' => [
+                'required',
+                'string',
+                'max:2000',
+            ],
+            'steps_tl' => [
+                'required',
+                'array',
+                'min:1',
+                'max:50',
+            ],
+            'steps_tl.*' => [
+                'required',
+                'string',
+                'max:2000',
+            ],
+            'href' => [
+                'nullable',
+                'string',
+                'max:1000',
+            ],
+            'action_label_en' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+            'action_label_tl' => [
+                'nullable',
+                'string',
+                'max:255',
+            ],
+        ]);
+
+        $normalizeList = static function (
+            array $values
+        ): array {
+            return collect($values)
+                ->map(
+                    fn ($value) =>
+                        trim(
+                            (string) $value
+                        )
+                )
+                ->filter(
+                    fn ($value) =>
+                        $value !== ''
+                )
+                ->values()
+                ->all();
+        };
+
+        $payload = [
+            'title_en' =>
+                trim($validated['title_en']),
+
+            'title_tl' =>
+                trim($validated['title_tl']),
+
+            'keywords' =>
+                json_encode(
+                    $normalizeList(
+                        $validated['keywords']
+                    ),
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'steps_en' =>
+                json_encode(
+                    $normalizeList(
+                        $validated['steps_en']
+                    ),
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'steps_tl' =>
+                json_encode(
+                    $normalizeList(
+                        $validated['steps_tl']
+                    ),
+                    JSON_UNESCAPED_UNICODE
+                    | JSON_UNESCAPED_SLASHES
+                ),
+
+            'href' =>
+                trim(
+                    (string) (
+                        $validated['href']
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'action_label_en' =>
+                trim(
+                    (string) (
+                        $validated[
+                            'action_label_en'
+                        ]
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'action_label_tl' =>
+                trim(
+                    (string) (
+                        $validated[
+                            'action_label_tl'
+                        ]
+                        ?? ''
+                    )
+                ) ?: null,
+
+            'updated_by' =>
+                $this->authUserId(),
+
+            'updated_at' =>
+                now(),
+        ];
+
+        $exists =
+            DB::table(
+                'dts_guide_topic_overrides'
+            )
+                ->where(
+                    'topic_id',
+                    $topicId
+                )
+                ->exists();
+
+        if ($exists) {
+            DB::table(
+                'dts_guide_topic_overrides'
+            )
+                ->where(
+                    'topic_id',
+                    $topicId
+                )
+                ->update($payload);
+        } else {
+            DB::table(
+                'dts_guide_topic_overrides'
+            )->insert([
+                'topic_id' =>
+                    $topicId,
+                ...$payload,
+                'created_at' =>
+                    now(),
+            ]);
+        }
+
+        if (Schema::hasTable('activity_logs')) {
+            ActivityLog::record(
+                'updated DTS guide',
+                'Admin DTS Guide',
+                'Updated DTS Guide topic: '
+                    . $topicId
+                    . '.',
+                'dts_guide_topic_overrides',
+                null,
+                [
+                    'topic_id' =>
+                        $topicId,
+                    'title_en' =>
+                        $payload['title_en'],
+                    'title_tl' =>
+                        $payload['title_tl'],
+                ]
+            );
+        }
+
+        return back()->with(
+            'success',
+            'DTS Guide topic updated successfully.'
+        );
     }
 
 
@@ -1869,6 +2391,107 @@ class AdminUserManagementController extends Controller
 
     }
 
+
+
+    private function buildGuideTopicOverrides(): array
+    {
+        if (
+            ! Schema::hasTable(
+                'dts_guide_topic_overrides'
+            )
+        ) {
+            return [];
+        }
+
+        $decodeList = static function (
+            mixed $value
+        ): array {
+            if (is_array($value)) {
+                return array_values($value);
+            }
+
+            if (
+                ! is_string($value)
+                || trim($value) === ''
+            ) {
+                return [];
+            }
+
+            $decoded =
+                json_decode(
+                    $value,
+                    true
+                );
+
+            return is_array($decoded)
+                ? array_values($decoded)
+                : [];
+        };
+
+        return DB::table(
+            'dts_guide_topic_overrides'
+        )
+            ->orderBy('topic_id')
+            ->get()
+            ->map(
+                function ($row) use (
+                    $decodeList
+                ) {
+                    return [
+                        'topic_id' =>
+                            (string) $row->topic_id,
+
+                        'title_en' =>
+                            (string) (
+                                $row->title_en
+                                ?? ''
+                            ),
+
+                        'title_tl' =>
+                            (string) (
+                                $row->title_tl
+                                ?? ''
+                            ),
+
+                        'keywords' =>
+                            $decodeList(
+                                $row->keywords
+                                ?? null
+                            ),
+
+                        'steps_en' =>
+                            $decodeList(
+                                $row->steps_en
+                                ?? null
+                            ),
+
+                        'steps_tl' =>
+                            $decodeList(
+                                $row->steps_tl
+                                ?? null
+                            ),
+
+                        'href' =>
+                            $row->href
+                            ?? null,
+
+                        'action_label_en' =>
+                            $row->action_label_en
+                            ?? null,
+
+                        'action_label_tl' =>
+                            $row->action_label_tl
+                            ?? null,
+
+                        'updated_at' =>
+                            $row->updated_at
+                            ?? null,
+                    ];
+                }
+            )
+            ->values()
+            ->all();
+    }
 
 
     private function ensureAdmin(): void

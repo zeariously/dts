@@ -4159,6 +4159,30 @@ public function monitoringDashboard(Request $request)
     $status = strtolower(trim((string) $request->input('status', '')));
     $perPage = max(1, min((int) $request->input('per_page', 15), 100));
 
+    /*
+     * Personnel filter:
+     * Monitoring Dashboard sends lu_personnel.ID.
+     * A legacy personnel name is also accepted and resolved to its ID.
+     */
+    $requestedPersonnel = trim((string) $request->input('personnel', ''));
+    $selectedPersonnelId = null;
+
+    if ($requestedPersonnel !== '') {
+        if (ctype_digit($requestedPersonnel) && (int) $requestedPersonnel > 0) {
+            $selectedPersonnelId = (int) $requestedPersonnel;
+        } elseif (Schema::hasTable('lu_personnel')) {
+            $resolvedPersonnelId = DB::table('lu_personnel')
+                ->whereRaw('LOWER(TRIM(name)) = ?', [
+                    strtolower($requestedPersonnel),
+                ])
+                ->value('ID');
+
+            if ($resolvedPersonnelId) {
+                $selectedPersonnelId = (int) $resolvedPersonnelId;
+            }
+        }
+    }
+
     $allowedStatuses = [
         '',
         'for-receiving',
@@ -4451,6 +4475,17 @@ public function monitoringDashboard(Request $request)
         return $query;
     };
 
+    $applyPersonnel = function ($query) use ($selectedPersonnelId) {
+        if ($selectedPersonnelId !== null) {
+            $query->whereRaw(
+                'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) = ?',
+                [$selectedPersonnelId]
+            );
+        }
+
+        return $query;
+    };
+
     $applyStatus = function ($query, string $statusKey) use (
         $workflowCompletionSql,
         $workflowNotCompletedSql,
@@ -4504,6 +4539,7 @@ public function monitoringDashboard(Request $request)
 
     $transactionsQuery = $buildBase();
     $applyYear($transactionsQuery);
+    $applyPersonnel($transactionsQuery);
 
     if ($search !== '') {
         $searchLike = '%' . $search . '%';
@@ -4601,8 +4637,29 @@ public function monitoringDashboard(Request $request)
         ->paginate($perPage)
         ->appends($request->query());
 
+    /*
+     * Personnel dropdown options are limited to personnel actually tagged
+     * to DTS workflows for the selected year.
+     */
+    $personnelOptionsBase = $buildBase();
+    $applyYear($personnelOptionsBase);
+
+    $personnelOptions = $personnelOptionsBase
+        ->whereNotNull('assignedPersonnel.ID')
+        ->whereNotNull('assignedPersonnel.name')
+        ->whereRaw("TRIM(assignedPersonnel.name) != ''")
+        ->select([
+            'assignedPersonnel.ID as id',
+            'assignedPersonnel.name as name',
+            'assignedOffice.officename as office_name',
+        ])
+        ->distinct()
+        ->orderBy('assignedPersonnel.name')
+        ->get();
+
     $statsBase = $buildBase();
     $applyYear($statsBase);
+    $applyPersonnel($statsBase);
 
     $countStatus = function (string $statusKey) use (
         $statsBase,
@@ -4636,6 +4693,7 @@ public function monitoringDashboard(Request $request)
 
     $pendingBase = $buildBase();
     $applyYear($pendingBase);
+    $applyPersonnel($pendingBase);
     $applyStatus($pendingBase, 'for-receiving');
 
     $peopleNoAction = (clone $pendingBase)
@@ -4811,6 +4869,7 @@ public function monitoringDashboard(Request $request)
             });
 
         $applyYear($actionTakenBase);
+        $applyPersonnel($actionTakenBase);
 
         if ($search !== '') {
             $searchLike = '%' . $search . '%';
@@ -4882,11 +4941,15 @@ public function monitoringDashboard(Request $request)
         'peopleNoAction' => $peopleNoAction,
         'actionTakenItems' => $actionTakenItems,
         'years' => $availableYears,
+        'personnelOptions' => $personnelOptions,
         'filters' => [
             'search' => $search,
             'status' => $status,
             'per_page' => $perPage,
             'year' => $selectedYear,
+            'personnel' => $selectedPersonnelId !== null
+                ? (string) $selectedPersonnelId
+                : '',
         ],
     ]);
 }
