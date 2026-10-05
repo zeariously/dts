@@ -43,6 +43,16 @@ const showPendingModal = ref(false)
 const showActionTakenModal = ref(false)
 const showForReceivingPersonnelSummary = ref(false)
 
+const showHistoryModal = ref(false)
+const historyLoading = ref(false)
+const historyError = ref('')
+const historyDocument = ref(null)
+const historyDocumentSummary = ref(null)
+
+const historyItems = computed(() => {
+    return historyDocument.value?.action_history || []
+})
+
 const authUser = computed(() => {
     return page.props.auth?.user || {}
 })
@@ -289,6 +299,9 @@ const actionTakenRows = computed(() => {
                 ...item,
                 IDdoc: item.IDdoc ?? item.document_no,
                 document_no: item.document_no ?? item.IDdoc,
+                workflow_status: 'Addressed',
+                workflow_stage: 'Final Action',
+                days_pending: null,
                 latest_action_label: actionItem.action_label,
                 latest_stage_label: actionItem.stage_label,
                 latest_remarks: actionItem.remarks,
@@ -347,15 +360,15 @@ const normalizeMonitoringStatus = (value) => {
 
 const monitoringDocumentStatus = (document) => {
     /*
-     * Current-cycle precedence:
+     * STRICT current-cycle precedence:
      * Final Action -> Addressed
      * Received current distribution -> Received
-     * Pending return child -> Returned
-     * Unreceived normal distribution -> For Receiving
+     * Verified pending return child -> Returned
+     * Other unreceived current distribution -> For Receiving
      *
-     * Received is intentionally checked before Returned. Therefore, even when
-     * a stale backend label still says Returned, a populated confirmdate moves
-     * the document to Received immediately.
+     * IMPORTANT:
+     * A backend string equal to "Returned" is NOT enough by itself anymore.
+     * The current row must carry real return-cycle evidence from its parent.
      */
     const backendStatus = normalizeMonitoringStatus(
         document?.workflow_status
@@ -374,11 +387,15 @@ const monitoringDocumentStatus = (document) => {
         return 'addressed'
     }
 
-    const confirmDate = String(document?.confirmdate ?? '').trim()
-    const hasConfirmDate =
-        confirmDate !== ''
-        && confirmDate !== '0000-00-00'
-        && confirmDate !== '0000-00-00 00:00:00'
+    const validDateValue = (value) => {
+        const normalized = String(value ?? '').trim()
+
+        return normalized !== ''
+            && normalized !== '0000-00-00'
+            && normalized !== '0000-00-00 00:00:00'
+    }
+
+    const hasConfirmDate = validDateValue(document?.confirmdate)
 
     if (hasConfirmDate) {
         return 'received'
@@ -391,12 +408,39 @@ const monitoringDocumentStatus = (document) => {
         ?? ''
     ).trim()
 
+    const explicitReturnCycle =
+        document?.is_current_return_cycle === true
+        || document?.is_current_return_cycle === 1
+        || document?.is_current_return_cycle === '1'
+
+    const parentReturnFlag = normalizeMonitoringStatus(
+        document?.parent_return_flag
+    )
+
+    const parentHasReturnFlag =
+        ['true', 'y', '1'].includes(parentReturnFlag)
+
+    const parentHasReturnDate =
+        validDateValue(document?.parent_return_date)
+
+    const parentWasReceived =
+        validDateValue(document?.parent_confirmdate)
+
+    const isSameParent =
+        parentId !== ''
+        && returnParentId !== ''
+        && parentId === returnParentId
+
     const isPendingReturnChild =
-        backendStatus === 'returned'
-        || (
-            parentId !== ''
-            && returnParentId !== ''
-            && parentId === returnParentId
+        !hasConfirmDate
+        && isSameParent
+        && (
+            explicitReturnCycle
+            || (
+                parentHasReturnFlag
+                && parentHasReturnDate
+                && parentWasReceived
+            )
         )
 
     if (isPendingReturnChild) {
@@ -404,13 +448,53 @@ const monitoringDocumentStatus = (document) => {
     }
 
     if (
-        String(document?.distdate ?? '').trim() !== ''
+        validDateValue(document?.distdate)
         || backendStatus === 'for receiving'
+        || backendStatus === 'returned'
     ) {
+        /*
+         * A stale Returned label without verified return-cycle evidence is
+         * treated as the current unreceived distribution: For Receiving.
+         */
         return 'for-receiving'
     }
 
     return backendStatus.replace(/\s+/g, '-')
+}
+
+const monitoringStageLabel = (document) => {
+    const backendStage = String(document?.workflow_stage || '').trim()
+
+    if (backendStage) {
+        return backendStage
+    }
+
+    const currentStatus = monitoringDocumentStatus(document)
+
+    if (currentStatus === 'addressed') {
+        return 'Final Action'
+    }
+
+    if (currentStatus === 'received') {
+        const hasFirstAction =
+            document?.has_current_cycle_first_action === true
+            || document?.has_current_cycle_first_action === 1
+            || document?.has_current_cycle_first_action === '1'
+
+        return hasFirstAction
+            ? 'First Action'
+            : 'No Action Yet'
+    }
+
+    if (currentStatus === 'for-receiving') {
+        return 'Awaiting Receipt'
+    }
+
+    if (currentStatus === 'returned') {
+        return 'Return Pending'
+    }
+
+    return ''
 }
 
 const displayedDocumentRows = computed(() => {
@@ -646,23 +730,204 @@ const goBackToDts = () => {
     router.visit('/dts')
 }
 
-const goToDocument = (document) => {
+const documentDetailsUrl = (document) => {
     const docId = document?.IDdoc
         ?? document?.document_no
         ?? document?.id
         ?? document
 
     if (!docId) {
+        return ''
+    }
+
+    const assignmentId = document?.assignment_id
+        ?? document?.distribution_assignment_id
+        ?? null
+
+    const params = new URLSearchParams()
+
+    if (
+        assignmentId !== null
+        && assignmentId !== undefined
+        && String(assignmentId).trim() !== ''
+    ) {
+        params.set('assignment_id', String(assignmentId))
+    }
+
+    const query = params.toString()
+
+    return `/dts/${docId}${query ? `?${query}` : ''}`
+}
+
+const goToDocument = (document) => {
+    const url = documentDetailsUrl(document)
+
+    if (!url) {
         return
     }
 
     showPendingModal.value = false
     showNotificationModal.value = false
     showActionTakenModal.value = false
+    showHistoryModal.value = false
 
-    router.visit(`/dts/${docId}`)
+    router.visit(url)
 }
 
+const openHistoryModal = async (document) => {
+    const url = documentDetailsUrl(document)
+
+    if (!url) {
+        return
+    }
+
+    historyDocumentSummary.value = document
+    historyDocument.value = null
+    historyError.value = ''
+    historyLoading.value = true
+    showHistoryModal.value = true
+
+    try {
+        const requestHeaders = {
+            Accept: 'text/html, application/xhtml+xml',
+            'X-Inertia': 'true',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
+
+        if (page.version) {
+            requestHeaders['X-Inertia-Version'] = page.version
+        }
+
+        const response = await fetch(url, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: requestHeaders,
+        })
+
+        if (response.status === 409) {
+            const refreshLocation = response.headers.get('X-Inertia-Location')
+            window.location.assign(refreshLocation || window.location.href)
+            return
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                `Unable to load action history (${response.status}).`
+            )
+        }
+
+        const inertiaResponse = await response.json()
+        const documentPayload = inertiaResponse?.props?.document
+
+        if (!documentPayload) {
+            throw new Error(
+                'The action history was not included in the server response.'
+            )
+        }
+
+        historyDocument.value = documentPayload
+    } catch (error) {
+        historyError.value =
+            error?.message
+            || 'Unable to load action history.'
+    } finally {
+        historyLoading.value = false
+    }
+}
+
+const closeHistoryModal = () => {
+    showHistoryModal.value = false
+    historyLoading.value = false
+    historyError.value = ''
+    historyDocument.value = null
+    historyDocumentSummary.value = null
+}
+
+const historyTypeClass = (type) => {
+    const value = String(type || '').toLowerCase()
+
+    if (value.includes('created')) {
+        return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    }
+
+    if (value.includes('received')) {
+        return 'border-green-200 bg-green-50 text-green-800'
+    }
+
+    if (value.includes('transfer') || value.includes('forward')) {
+        return 'border-blue-200 bg-blue-50 text-blue-800'
+    }
+
+    if (value.includes('address') || value.includes('action')) {
+        return 'border-cyan-200 bg-cyan-50 text-cyan-800'
+    }
+
+    if (value.includes('returned')) {
+        return 'border-red-200 bg-red-50 text-red-800'
+    }
+
+    if (value.includes('pulled')) {
+        return 'border-slate-200 bg-slate-50 text-slate-800'
+    }
+
+    if (value.includes('remark')) {
+        return 'border-amber-200 bg-amber-50 text-amber-800'
+    }
+
+    if (
+        value.includes('attached')
+        || value.includes('reattached')
+        || value.includes('file')
+    ) {
+        return 'border-purple-200 bg-purple-50 text-purple-800'
+    }
+
+    return 'border-blue-200 bg-blue-50 text-blue-800'
+}
+
+const historyDotClass = (type) => {
+    const value = String(type || '').toLowerCase()
+
+    if (value.includes('created')) return 'bg-emerald-600'
+    if (value.includes('received')) return 'bg-green-600'
+    if (value.includes('transfer') || value.includes('forward')) return 'bg-blue-600'
+    if (value.includes('address') || value.includes('action')) return 'bg-cyan-600'
+    if (value.includes('returned')) return 'bg-red-600'
+    if (value.includes('pulled')) return 'bg-slate-600'
+    if (value.includes('remark')) return 'bg-amber-500'
+
+    if (
+        value.includes('attached')
+        || value.includes('reattached')
+        || value.includes('file')
+    ) {
+        return 'bg-purple-600'
+    }
+
+    return 'bg-blue-600'
+}
+
+const historyTargetLabel = (item) => {
+    const value = String(item?.type || '').toLowerCase()
+
+    return value.includes('address')
+        || value.includes('action')
+            ? 'Addressed To:'
+            : 'Transferred To:'
+}
+
+const historyDateValue = (item) => {
+    return item?.date
+        || item?.created_at
+        || item?.updated_at
+        || null
+}
+
+const historyDisplayDocument = computed(() => {
+    return historyDocument.value
+        || historyDocumentSummary.value
+        || {}
+})
 
 const goToPage = (url) => {
     if (!url) {
@@ -1303,7 +1568,7 @@ const daysPendingClass = (days) => {
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-center">
-                                        Days Pending
+                                        {{ isAddressedView ? 'Final Action' : 'Days Pending' }}
                                     </th>
 
                                     <th class="whitespace-nowrap px-5 py-4 text-center">
@@ -1357,25 +1622,99 @@ const daysPendingClass = (days) => {
                                                                 : 'Current Status'
                                             }}
                                         </span>
+
+                                        <div
+                                            v-if="['received', 'addressed'].includes(monitoringDocumentStatus(document))"
+                                            class="mt-2"
+                                        >
+                                            <span
+                                                class="inline-flex rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em]"
+                                                :class="{
+                                                    'border-sky-200 bg-sky-50 text-sky-700': monitoringStageLabel(document) === 'First Action',
+                                                    'border-slate-200 bg-slate-50 text-slate-600': monitoringStageLabel(document) === 'No Action Yet',
+                                                    'border-indigo-200 bg-indigo-50 text-indigo-700': monitoringStageLabel(document) === 'Final Action',
+                                                }"
+                                            >
+                                                {{ monitoringStageLabel(document) }}
+                                            </span>
+                                        </div>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
-                                        <span
-                                            class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
-                                            :class="daysPendingClass(document.days_pending)"
-                                        >
-                                            {{ document.days_pending ?? 0 }} day(s)
-                                        </span>
+                                        <template v-if="monitoringDocumentStatus(document) === 'addressed'">
+                                            <span class="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-black text-indigo-700">
+                                                Final Action
+                                            </span>
+
+                                            <p
+                                                v-if="document.latest_action_label || document.selected_action"
+                                                class="mt-2 text-[11px] font-bold text-slate-600"
+                                            >
+                                                {{ document.latest_action_label || document.selected_action }}
+                                            </p>
+
+                                            <p
+                                                v-if="document.latest_action_at"
+                                                class="mt-1 text-[11px] font-bold text-slate-500"
+                                            >
+                                                {{ formatDate(document.latest_action_at) }}
+                                            </p>
+                                        </template>
+
+                                        <template v-else-if="monitoringDocumentStatus(document) === 'received'">
+                                            <span
+                                                class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
+                                                :class="daysPendingClass(document.days_pending)"
+                                            >
+                                                {{ document.days_pending ?? 0 }} day(s)
+                                            </span>
+
+                                        </template>
+
+                                        <template v-else-if="monitoringDocumentStatus(document) === 'for-receiving'">
+                                            <span
+                                                class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
+                                                :class="daysPendingClass(document.days_pending)"
+                                            >
+                                                {{ document.days_pending ?? 0 }} day(s)
+                                            </span>
+
+                                        </template>
+
+                                        <template v-else-if="monitoringDocumentStatus(document) === 'returned'">
+                                            <span class="inline-flex rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
+                                                Return Pending
+                                            </span>
+                                        </template>
+
+                                        <template v-else>
+                                            <span
+                                                class="inline-flex rounded-full border px-3 py-2 text-xs font-black"
+                                                :class="daysPendingClass(document.days_pending)"
+                                            >
+                                                {{ document.days_pending ?? 0 }} day(s)
+                                            </span>
+                                        </template>
                                     </td>
 
                                     <td class="whitespace-nowrap px-5 py-4 text-center align-top">
-                                        <button
-                                            type="button"
-                                            class="rounded-2xl bg-blue-600 px-5 py-2.5 text-xs font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700"
-                                            @click="goToDocument(document)"
-                                        >
-                                            View Details
-                                        </button>
+                                        <div class="flex items-center justify-center gap-2">
+                                            <button
+                                                type="button"
+                                                class="rounded-2xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-black text-blue-700 shadow-sm transition hover:bg-blue-50"
+                                                @click.stop="openHistoryModal(document)"
+                                            >
+                                                History
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                class="rounded-2xl bg-blue-600 px-5 py-2.5 text-xs font-black text-white shadow-md shadow-blue-100 transition hover:bg-blue-700"
+                                                @click="goToDocument(document)"
+                                            >
+                                                View Details
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
 
@@ -1585,6 +1924,14 @@ const daysPendingClass = (days) => {
                                 <div class="flex shrink-0 flex-col gap-2 sm:flex-row lg:flex-col">
                                     <button
                                         type="button"
+                                        class="rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-50"
+                                        @click.stop="openHistoryModal(item)"
+                                    >
+                                        History
+                                    </button>
+
+                                    <button
+                                        type="button"
                                         class="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white transition hover:bg-blue-700"
                                         @click="goToDocument(item)"
                                     >
@@ -1767,13 +2114,23 @@ const daysPendingClass = (days) => {
                                             Date Sent: {{ formatDate(doc.distdate) }}
                                         </p>
 
-                                        <button
-                                            type="button"
-                                            class="mt-4 inline-flex w-full items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition hover:bg-blue-700"
-                                            @click.stop="goToDocument(doc)"
-                                        >
-                                            View Details
-                                        </button>
+                                        <div class="mt-4 grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center justify-center rounded-2xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-black text-blue-700 shadow-sm transition hover:bg-blue-50"
+                                                @click.stop="openHistoryModal(doc)"
+                                            >
+                                                History
+                                            </button>
+
+                                            <button
+                                                type="button"
+                                                class="inline-flex items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-sm transition hover:bg-blue-700"
+                                                @click.stop="goToDocument(doc)"
+                                            >
+                                                View Details
+                                            </button>
+                                        </div>
                                     </article>
 
                                     <div
@@ -1808,6 +2165,170 @@ const daysPendingClass = (days) => {
                                 Everything looks clear for the selected filter.
                             </p>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Action History Modal -->
+        <div
+            v-if="showHistoryModal"
+            class="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 px-4 py-8"
+            @click.self="closeHistoryModal"
+        >
+            <div class="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+                <div class="border-b border-blue-100 bg-blue-600 px-6 py-5 text-white">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
+                                Audit Trail
+                            </p>
+
+                            <h2 class="mt-2 text-2xl font-black">
+                                Document Action History
+                            </h2>
+
+                            <p class="mt-1 text-sm font-semibold text-blue-100">
+                                Full tracking history for Document ID:
+                                {{ historyDisplayDocument.display_document_no || historyDisplayDocument.document_no || historyDisplayDocument.IDdoc || '-' }}
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            class="rounded-xl bg-white/15 px-4 py-2 text-sm font-black text-white hover:bg-white/25"
+                            @click="closeHistoryModal"
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+
+                <div class="max-h-[70vh] overflow-y-auto p-6">
+                    <div
+                        v-if="historyLoading"
+                        class="flex min-h-[300px] flex-col items-center justify-center text-center"
+                    >
+                        <div class="h-11 w-11 animate-spin rounded-full border-4 border-blue-100 border-t-blue-600"></div>
+
+                        <p class="mt-4 text-sm font-black text-slate-800">
+                            Loading action history...
+                        </p>
+                    </div>
+
+                    <div
+                        v-else-if="historyError"
+                        class="rounded-2xl border border-red-200 bg-red-50 p-8 text-center"
+                    >
+                        <p class="text-lg font-black text-red-800">
+                            Unable to load history
+                        </p>
+
+                        <p class="mt-2 text-sm font-semibold text-red-700">
+                            {{ historyError }}
+                        </p>
+                    </div>
+
+                    <div
+                        v-else-if="historyItems.length"
+                        class="relative space-y-4"
+                    >
+                        <div
+                            v-for="(item, index) in historyItems"
+                            :key="item.id || `${item.type}-${index}`"
+                            class="relative rounded-2xl border p-4"
+                            :class="historyTypeClass(item.type)"
+                        >
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <span
+                                            class="inline-flex h-3 w-3 rounded-full"
+                                            :class="historyDotClass(item.type)"
+                                        ></span>
+
+                                        <p class="text-base font-black text-slate-900">
+                                            {{ item.title || item.type || 'Activity' }}
+                                        </p>
+
+                                        <span class="rounded-full bg-white/80 px-3 py-1 text-xs font-black uppercase tracking-wide">
+                                            {{ item.type || 'Activity' }}
+                                        </span>
+                                    </div>
+
+                                    <p class="mt-2 text-sm font-semibold leading-6 text-slate-800">
+                                        {{ item.description || '-' }}
+                                    </p>
+
+                                    <div class="mt-3 grid grid-cols-1 gap-2 text-xs font-bold text-slate-700 md:grid-cols-3">
+                                        <p>
+                                            <span class="text-slate-900">Actor:</span>
+                                            {{ item.actor || '-' }}
+                                        </p>
+
+                                        <p>
+                                            <span class="text-slate-900">Office:</span>
+                                            {{ item.office || '-' }}
+                                        </p>
+
+                                        <p v-if="item.target_personnel">
+                                            <span class="text-slate-900">
+                                                {{ historyTargetLabel(item) }}
+                                            </span>
+                                            {{ item.target_personnel }}
+                                        </p>
+
+                                        <p>
+                                            <span class="text-slate-900">Date/Time:</span>
+                                            {{ formatDate(historyDateValue(item)) }}
+                                        </p>
+                                    </div>
+
+                                    <p
+                                        v-if="item.remarks"
+                                        class="mt-3 whitespace-pre-line rounded-xl bg-white/80 px-4 py-3 text-sm font-semibold leading-6 text-slate-800"
+                                    >
+                                        {{ item.remarks }}
+                                    </p>
+
+                                    <div
+                                        v-if="item.files && item.files.length"
+                                        class="mt-3 space-y-2"
+                                    >
+                                        <a
+                                            v-for="file in item.files"
+                                            :key="file.id"
+                                            :href="file.url"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            class="inline-flex w-full items-center justify-between gap-3 rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-bold text-blue-700 hover:bg-blue-50"
+                                        >
+                                            <span class="min-w-0 break-words">
+                                                {{ file.original_name || file.stored_name || 'View attached file' }}
+                                            </span>
+
+                                            <span class="shrink-0">
+                                                View File
+                                            </span>
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div
+                        v-else
+                        class="rounded-2xl border border-dashed border-blue-300 p-8 text-center"
+                    >
+                        <p class="text-lg font-black text-slate-900">
+                            No action history found
+                        </p>
+
+                        <p class="mt-2 text-sm font-semibold text-slate-600">
+                            No transfer, receive, remarks, or file actions have been recorded for this document yet.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -1892,14 +2413,26 @@ const daysPendingClass = (days) => {
                                     </p>
                                 </div>
 
-                                <button
+                                <div
                                     v-if="item.IDdoc"
-                                    type="button"
-                                    class="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white transition hover:bg-blue-700"
-                                    @click="goToDocument(item)"
+                                    class="flex shrink-0 gap-2 sm:flex-col"
                                 >
-                                    View Details
-                                </button>
+                                    <button
+                                        type="button"
+                                        class="rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-50"
+                                        @click.stop="openHistoryModal(item)"
+                                    >
+                                        History
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        class="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white transition hover:bg-blue-700"
+                                        @click="goToDocument(item)"
+                                    >
+                                        View Details
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>

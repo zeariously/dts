@@ -4343,10 +4343,71 @@ public function monitoringDashboard(Request $request)
         return $query;
     };
 
+
+    /*
+     * First Action is stored as action_saved.
+     * It does NOT move the workflow to Addressed; it only records that work
+     * has started while the document remains under Received.
+     */
+    $makeLatestFirstAction = function () use (
+        $makeLatestDistribution,
+        $hasRemarkAssignment
+    ) {
+        if (! Schema::hasTable('dts_document_remarks')) {
+            return DB::table('document')
+                ->whereRaw('1 = 0')
+                ->selectRaw(
+                    'IDdoc, NULL as assignment_id, NULL as latest_first_action_id'
+                );
+        }
+
+        $remarkAssignmentExpression = $hasRemarkAssignment
+            ? 'firstRemark.assignment_id'
+            : 'NULL';
+
+        $query = DB::table('dts_document_remarks as firstRemark')
+            ->joinSub(
+                $makeLatestDistribution(),
+                'firstCycle',
+                function ($join) use ($remarkAssignmentExpression) {
+                    $join->on('firstCycle.IDdoc', '=', 'firstRemark.IDdoc')
+                        ->whereRaw(
+                            'firstCycle.assignment_id <=> '
+                            . $remarkAssignmentExpression
+                        );
+                }
+            )
+            ->join(
+                'distribution as firstDist',
+                'firstDist.IDdist',
+                '=',
+                'firstCycle.latest_IDdist'
+            )
+            ->where('firstRemark.action_type', 'action_saved')
+            ->whereColumn(
+                'firstRemark.created_at',
+                '>=',
+                'firstDist.distdate'
+            )
+            ->select([
+                'firstRemark.IDdoc',
+                DB::raw($remarkAssignmentExpression . ' as assignment_id'),
+                DB::raw('MAX(firstRemark.id) as latest_first_action_id'),
+            ])
+            ->groupBy('firstRemark.IDdoc');
+
+        if ($hasRemarkAssignment) {
+            $query->groupBy('firstRemark.assignment_id');
+        }
+
+        return $query;
+    };
+
     $buildBase = function () use (
         $makeAssignmentSource,
         $makeLatestDistribution,
         $makeLatestFinalAction,
+        $makeLatestFirstAction,
         $hasDistributionAssignment
     ) {
         return DB::table('document as d')
@@ -4399,6 +4460,22 @@ public function monitoringDashboard(Request $request)
                 '=',
                 'latestFinalAction.latest_action_id'
             )
+            ->leftJoinSub(
+                $makeLatestFirstAction(),
+                'latestFirstAction',
+                function ($join) {
+                    $join->on('latestFirstAction.IDdoc', '=', 'd.IDdoc')
+                        ->whereRaw(
+                            'latestFirstAction.assignment_id <=> assignment.id'
+                        );
+                }
+            )
+            ->leftJoin(
+                'dts_document_remarks as firstAction',
+                'firstAction.id',
+                '=',
+                'latestFirstAction.latest_first_action_id'
+            )
             ->leftJoin(
                 'dts_action_types as finalActionType',
                 'finalActionType.id',
@@ -4439,12 +4516,27 @@ public function monitoringDashboard(Request $request)
         OR dist.YNpulled NOT IN ('True', 'true', 'Y', 'y', '1')
     )";
 
+    /*
+     * Returned must be a verified CURRENT return cycle.
+     * A stale parent flag or an old recycled IDdoc record is not enough.
+     */
     $pendingReturnSql = "(
         returnParent.IDdist IS NOT NULL
+        AND dist.IDparentdist IS NOT NULL
+        AND returnParent.confirmdate IS NOT NULL
+        AND returnParent.YNreturn IN ('True', 'true', 'Y', 'y', '1')
+        AND returnParent.returndate IS NOT NULL
         AND (
-            returnParent.YNreturn IN ('True', 'true', 'Y', 'y', '1')
-            OR returnParent.returndate IS NOT NULL
+            d.entrydate IS NULL
+            OR returnParent.distdate IS NULL
+            OR returnParent.distdate >= d.entrydate
         )
+        AND (
+            d.entrydate IS NULL
+            OR returnParent.returndate >= d.entrydate
+        )
+        AND dist.distdate IS NOT NULL
+        AND dist.distdate >= returnParent.returndate
         AND dist.confirmdate IS NULL
         AND {$notPulledSql}
     )";
@@ -4581,6 +4673,26 @@ public function monitoringDashboard(Request $request)
         ? 'CASE WHEN assignment.id IS NULL THEN d.completed_at ELSE NULL END'
         : 'CASE WHEN assignment.id IS NULL THEN d.datecleared ELSE NULL END';
 
+    /*
+     * Workflow Stage is separate from Workflow Status:
+     * - Received + no action_saved  = No Action Yet
+     * - Received + action_saved     = First Action
+     * - Addressed + action_taken    = Final Action
+     */
+    $workflowStageExpression = "CASE
+        WHEN finalAction.id IS NOT NULL
+            THEN 'Final Action'
+        WHEN firstAction.id IS NOT NULL
+            THEN 'First Action'
+        WHEN dist.confirmdate IS NOT NULL
+            THEN 'No Action Yet'
+        WHEN {$pendingReturnSql}
+            THEN 'Return Pending'
+        WHEN dist.distdate IS NOT NULL
+            THEN 'Awaiting Receipt'
+        ELSE 'Pending'
+    END";
+
     $transactions = $transactionsQuery
         ->select([
             'dist.IDdist',
@@ -4616,17 +4728,43 @@ public function monitoringDashboard(Request $request)
             DB::raw($actionLabelExpression . ' as latest_action_label'),
             'finalAction.created_at as latest_action_at',
             DB::raw($statusExpression . ' as workflow_status'),
+            DB::raw($workflowStageExpression . ' as workflow_stage'),
+            DB::raw(
+                'CASE WHEN firstAction.id IS NULL THEN 0 ELSE 1 END '
+                . 'as has_current_cycle_first_action'
+            ),
+            'firstAction.created_at as first_action_at',
             DB::raw(
                 'CASE WHEN finalAction.id IS NULL THEN 0 ELSE 1 END '
                 . 'as has_current_cycle_final_action'
             ),
             DB::raw("
                 CASE
-                    WHEN dist.confirmdate IS NULL
-                        AND dist.distdate IS NOT NULL
+                    /* Addressed / Final Action: resolved, no longer pending. */
+                    WHEN finalAction.id IS NOT NULL
+                        OR {$workflowCompletionSql}
+                    THEN 0
+
+                    /* Pulled out and Returned use their own workflow state. */
+                    WHEN dist.YNpulled IN ('True', 'true', 'Y', 'y', '1')
+                        OR {$pendingReturnSql}
+                    THEN 0
+
+                    /* Received (including First Action): count from receive date. */
+                    WHEN dist.confirmdate IS NOT NULL
+                    THEN GREATEST(
+                        DATEDIFF(NOW(), dist.confirmdate),
+                        0
+                    )
+
+                    /* For Receiving: count from sent/distribution date. */
+                    WHEN dist.distdate IS NOT NULL
                         AND {$notPulledSql}
-                        AND NOT {$pendingReturnSql}
-                    THEN DATEDIFF(NOW(), dist.distdate)
+                    THEN GREATEST(
+                        DATEDIFF(NOW(), dist.distdate),
+                        0
+                    )
+
                     ELSE 0
                 END as days_pending
             "),
