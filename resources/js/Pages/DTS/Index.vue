@@ -180,6 +180,19 @@ const firstErrorMessage = computed(() => {
 const showAutomaticReminderModal = ref(false)
 
 
+/*
+ * 7 days onward = critical reminder.
+ * Critical reminders cannot be snoozed / "Remind me later".
+ */
+const hasSevenDayOrOlderAutomaticReminder = computed(() => {
+    return (props.automaticStatusReminders || []).some((item) => {
+        const days = Number(item?.days_pending)
+
+        return Number.isFinite(days)
+            && Math.floor(days) >= 7
+    })
+})
+
 const AUTOMATIC_REMINDER_SNOOZE_MINUTES = 15
 const automaticReminderSnoozedUntil = ref(0)
 let automaticReminderSnoozeTimer = null
@@ -195,6 +208,10 @@ const automaticReminderSnoozeStorageKey = computed(() => {
 })
 
 const isAutomaticReminderSnoozed = () => {
+    if (hasSevenDayOrOlderAutomaticReminder.value) {
+        return false
+    }
+
     return Number(automaticReminderSnoozedUntil.value || 0) > Date.now()
 }
 
@@ -251,6 +268,11 @@ const scheduleAutomaticReminderAfterSnooze = () => {
 const loadAutomaticReminderSnooze = () => {
     if (typeof window === 'undefined') return
 
+    if (hasSevenDayOrOlderAutomaticReminder.value) {
+        clearAutomaticReminderSnooze()
+        return
+    }
+
     const currentSessionToken = currentReminderSessionToken.value
 
     
@@ -286,6 +308,11 @@ const loadAutomaticReminderSnooze = () => {
 }
 
 const remindAutomaticReminderIn15Minutes = () => {
+    if (hasSevenDayOrOlderAutomaticReminder.value) {
+        clearAutomaticReminderSnooze()
+        return
+    }
+
     if (typeof window === 'undefined') {
         closeAutomaticReminderModal()
         return
@@ -835,6 +862,12 @@ watch(
         }
 
        
+        if (hasSevenDayOrOlderAutomaticReminder.value) {
+            clearAutomaticReminderSnooze()
+            openAutomaticReminderModal()
+            return
+        }
+
         if (isAutomaticReminderSnoozed()) {
             showAutomaticReminderModal.value = false
             scheduleAutomaticReminderAfterSnooze()
@@ -2425,9 +2458,10 @@ const submitEntryDateUpdate = () => {
                             </article>
                         </div>
 
-                        <div class="mt-5 flex flex-col gap-3 border-t border-red-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
-                            
-
+                        <div
+                            v-if="!hasSevenDayOrOlderAutomaticReminder"
+                            class="mt-5 flex flex-col gap-3 border-t border-red-100 pt-5 sm:flex-row sm:items-center sm:justify-between"
+                        >
                             <button
                                 type="button"
                                 class="w-full rounded-xl border border-red-300 bg-white px-5 py-3 text-sm font-black text-red-700 hover:bg-red-50 sm:w-auto"
