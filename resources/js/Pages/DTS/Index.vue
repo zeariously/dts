@@ -5952,7 +5952,7 @@ const submitEntryDateUpdate = () => {
     }
 
     .no-print {
-        display: none !important;
+        display: none !important;       
     }
 
     .screen-report-table {

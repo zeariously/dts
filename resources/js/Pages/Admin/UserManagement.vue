@@ -1118,7 +1118,22 @@ const openDocumentModal = async (document) => {
             requestHeaders['X-Inertia-Version'] = inertiaPage.version
         }
 
-        const response = await fetch(`/dts/${documentId}`, {
+        /*
+         * Open the exact workflow/assignment that produced the status shown in
+         * Admin > All Documents. Without assignment_id, DTS may resolve another
+         * assignment for the same shared Document ID, causing Status = Returned
+         * while the displayed Action History has no Return event.
+         */
+        const assignmentId =
+            document?.assignment_id ?? null
+
+        const assignmentQuery =
+            assignmentId !== null
+            && assignmentId !== ''
+                ? `?assignment_id=${encodeURIComponent(assignmentId)}`
+                : ''
+
+        const response = await fetch(`/dts/${documentId}${assignmentQuery}`, {
             method: 'GET',
             credentials: 'same-origin',
             headers: requestHeaders,

@@ -2038,24 +2038,20 @@ const daysPendingClass = (days) => {
                                         <p class="text-base font-black text-slate-900">
                                             {{ person.personnel_name || 'Unassigned' }}
                                         </p>
-
                                         <p class="mt-1 text-xs font-semibold text-slate-500">
                                             Click to view documents waiting to be received.
                                         </p>
                                     </div>
                                 </div>
-
                                 <div class="grid grid-cols-2 gap-2 md:min-w-[320px]">
                                     <div class="rounded-2xl bg-blue-50 px-4 py-3 text-center ring-1 ring-blue-100">
                                         <p class="text-[11px] font-black uppercase tracking-wide text-blue-500">
                                             Pending
                                         </p>
-
                                         <p class="mt-1 text-xl font-black text-blue-800">
                                             {{ pendingCount(person) }}
                                         </p>
                                     </div>
-
                                     <div class="rounded-2xl bg-slate-50 px-4 py-3 text-center ring-1 ring-slate-200">
                                         <p class="text-[11px] font-black uppercase tracking-wide text-slate-400">
                                             Max Days
@@ -2398,8 +2394,7 @@ const daysPendingClass = (days) => {
 
                                         <span
                                             v-else
-                                            class="rounded-full bg-blue-600 px-3 py-1 text-xs font-black text-white"
-                                        >
+                                            class="rounded-full bg-blue-600 px-3 py-1 text-xs font-black text-white">
                                             For Receiving
                                         </span>
                                     </div>
@@ -2415,8 +2410,7 @@ const daysPendingClass = (days) => {
 
                                 <div
                                     v-if="item.IDdoc"
-                                    class="flex shrink-0 gap-2 sm:flex-col"
-                                >
+                                    class="flex shrink-0 gap-2 sm:flex-col">
                                     <button
                                         type="button"
                                         class="rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-xs font-black text-blue-700 transition hover:bg-blue-50"
