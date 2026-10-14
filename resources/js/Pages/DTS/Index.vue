@@ -1892,6 +1892,24 @@ const documentStatusLabel = (doc) => {
     return status
 }
 
+// Action status is separate from the document's receiving/workflow status.
+// First Action alone does not complete a document: it remains For Action
+// until a Final Action is saved or the document is closed/completed.
+const documentActionStatusLabel = (doc) => {
+    // The primary status remains Received. Show a second badge only while
+    // waiting for Final Action. A First Action does not remove For Action.
+    const primaryStatus = String(documentStatusLabel(doc) || '').trim().toLowerCase()
+    if (primaryStatus !== 'received') return ''
+
+    const hasReceipt = Boolean(doc?.confirmdate || doc?.date_received || doc?.received_date)
+    if (!hasReceipt) return ''
+
+    return 'For Action'
+}
+
+const documentActionStatusClass = () =>
+    'border-red-300 bg-red-100 text-red-800'
+
 const documentStatusClass = (doc) => {
     const status = String(documentStatusLabel(doc)).toLowerCase()
 
@@ -1921,7 +1939,7 @@ const documentStatusClass = (doc) => {
     }
 
     if (status.includes('pending')) {
-        return 'border-amber-300 bg-amber-100 text-amber-900'
+        return 'border-red-300 bg-red-100 text-red-800'
     }
 
     if (status.includes('return')) {
@@ -2037,7 +2055,7 @@ const reportDocumentStatusClass = (doc) => {
     }
 
     if (status.includes('pending')) {
-        return 'border-amber-300 bg-amber-100 text-amber-900'
+        return 'border-red-300 bg-red-100 text-red-800'
     }
 
     return 'border-slate-300 bg-slate-100 text-slate-700'
@@ -3451,6 +3469,13 @@ const submitEntryDateUpdate = () => {
                                 >
                                     {{ documentStatusLabel(doc) }}
                                 </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
                             </div>
                         </div>
 
@@ -3632,6 +3657,13 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
 
                                     <p
                                         v-if="shouldShowReturnedBy(doc)"
@@ -4357,6 +4389,13 @@ const submitEntryDateUpdate = () => {
                                 >
                                     {{ documentStatusLabel(doc) }}
                                 </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
                             </div>
                         </div>
 
@@ -4538,6 +4577,13 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
 
                                     <p
                                         v-if="shouldShowReturnedBy(doc)"
@@ -4701,6 +4747,13 @@ const submitEntryDateUpdate = () => {
                                     :class="documentStatusClass(doc)"
                                 >
                                     {{ documentStatusLabel(doc) }}
+                                </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
                                 </span>
                             </div>
                         </div>
@@ -4883,6 +4936,13 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
 
                                     <p
                                         v-if="shouldShowReturnedBy(doc)"
@@ -5053,6 +5113,13 @@ const submitEntryDateUpdate = () => {
                                     :class="documentStatusClass(doc)"
                                 >
                                     {{ documentStatusLabel(doc) }}
+                                </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
                                 </span>
                             </div>
                         </div>
@@ -5235,6 +5302,13 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
 
                                     <p
                                         v-if="shouldShowReturnedBy(doc)"
@@ -5650,6 +5724,13 @@ const submitEntryDateUpdate = () => {
                                     >
                                         {{ documentStatusLabel(doc) }}
                                     </span>
+                                <span
+                                    v-if="documentActionStatusLabel(doc)"
+                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
+                                    :class="documentActionStatusClass()"
+                                >
+                                    {{ documentActionStatusLabel(doc) }}
+                                </span>
 
                                     <p
                                         v-if="shouldShowReturnedBy(doc)"
