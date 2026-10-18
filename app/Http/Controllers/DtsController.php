@@ -4155,6 +4155,36 @@ public function monitoringDashboard(Request $request)
     abort_unless((int) ($user->rights ?? 0) === 4, 403);
 
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
+
+    /*
+     * DTS working days: Monday through Thursday only.
+     * Exclude the starting date and count working days through today.
+     * Friday, Saturday, and Sunday never increase Days Pending.
+     */
+    $workingDaysPendingSql = function (string $startDateExpression): string {
+        $startDate = "DATE({$startDateExpression})";
+        $elapsed = "DATEDIFF(CURDATE(), {$startDate})";
+        $remainingDays = "MOD({$elapsed}, 7)";
+
+        $partialWeek = [];
+        for ($offset = 1; $offset <= 6; $offset++) {
+            $partialWeek[] = "CASE WHEN {$remainingDays} >= {$offset} "
+                . "AND WEEKDAY(DATE_ADD({$startDate}, INTERVAL {$offset} DAY)) < 4 "
+                . 'THEN 1 ELSE 0 END';
+        }
+
+        return "CASE WHEN {$startDateExpression} IS NULL "
+            . "OR {$elapsed} <= 0 THEN 0 ELSE "
+            . "(FLOOR({$elapsed} / 7) * 4 + "
+            . implode(' + ', $partialWeek) . ') END';
+    };
+
+    $receivedPendingDaysSql = $workingDaysPendingSql('dist.confirmdate');
+    $forReceivingPendingDaysSql = $workingDaysPendingSql('dist.distdate');
+    $pendingSinceLastActivitySql = $workingDaysPendingSql(
+        'COALESCE(dist.confirmdate, dist.distdate)'
+    );
+
     $search = trim((string) $request->input('search', ''));
     $status = strtolower(trim((string) $request->input('status', '')));
     $perPage = max(1, min((int) $request->input('per_page', 15), 100));
@@ -4752,18 +4782,12 @@ public function monitoringDashboard(Request $request)
 
                     /* Received (including First Action): count from receive date. */
                     WHEN dist.confirmdate IS NOT NULL
-                    THEN GREATEST(
-                        DATEDIFF(NOW(), dist.confirmdate),
-                        0
-                    )
+                    THEN {$receivedPendingDaysSql}
 
                     /* For Receiving: count from sent/distribution date. */
                     WHEN dist.distdate IS NOT NULL
                         AND {$notPulledSql}
-                    THEN GREATEST(
-                        DATEDIFF(NOW(), dist.distdate),
-                        0
-                    )
+                    THEN {$forReceivingPendingDaysSql}
 
                     ELSE 0
                 END as days_pending
@@ -4832,7 +4856,16 @@ public function monitoringDashboard(Request $request)
     $pendingBase = $buildBase();
     $applyYear($pendingBase);
     $applyPersonnel($pendingBase);
-    $applyStatus($pendingBase, 'for-receiving');
+    // Pending attention includes awaiting receipt and received documents
+    // with NO First Action and NO Final Action, excluding completed workflows.
+    $pendingBase->where(function ($pending) use ($applyStatus) {
+        $pending->where(function ($forReceiving) use ($applyStatus) {
+            $applyStatus($forReceiving, 'for-receiving');
+        })->orWhere(function ($receivedWithoutAction) use ($applyStatus) {
+            $applyStatus($receivedWithoutAction, 'received');
+            $receivedWithoutAction->whereNull('firstAction.id');
+        });
+    });
 
     $peopleNoAction = (clone $pendingBase)
         ->select([
@@ -4847,9 +4880,9 @@ public function monitoringDashboard(Request $request)
             ),
             DB::raw('COUNT(*) as pending_transactions'),
             DB::raw(
-                'MAX(DATEDIFF(NOW(), dist.distdate)) as max_days_pending'
+                "MAX({$pendingSinceLastActivitySql}) as max_days_pending"
             ),
-            DB::raw('MIN(dist.distdate) as oldest_pending_date'),
+            DB::raw('MIN(COALESCE(dist.confirmdate, dist.distdate)) as oldest_pending_date'),
         ])
         ->groupBy(
             'assignedPersonnel.ID',
@@ -4878,7 +4911,9 @@ public function monitoringDashboard(Request $request)
             DB::raw($displayExpression . ' as display_document_no'),
             'd.subject',
             'dist.distdate',
-            DB::raw('DATEDIFF(NOW(), dist.distdate) as days_pending'),
+            'dist.confirmdate',
+            DB::raw("CASE WHEN dist.confirmdate IS NOT NULL THEN 'Received - No Action Yet' ELSE 'For Receiving' END as pending_status"),
+            DB::raw("{$pendingSinceLastActivitySql} as days_pending"),
         ])
         ->orderByDesc('days_pending')
         ->orderByDesc('d.IDdoc')

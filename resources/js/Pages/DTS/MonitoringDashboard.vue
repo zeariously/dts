@@ -169,7 +169,7 @@ const documentRows = computed(() => {
             return
         }
 
-        const key = String(documentId)
+        const key = `${documentId}:${row?.assignment_id ?? row?.distribution_assignment_id ?? 'legacy'}`
         const existing = uniqueDocuments.get(key)
 
         /*
@@ -279,7 +279,7 @@ const actionTakenRows = computed(() => {
             return
         }
 
-        const key = String(documentId)
+        const key = `${documentId}:${item?.assignment_id ?? 'legacy'}`
         const actionType = normalizeActionType(item?.action_type)
         const isFinalAction = actionType === 'action_taken'
         const existing = groupedDocuments.get(key)
@@ -1962,7 +1962,7 @@ const daysPendingClass = (days) => {
             </div>
         </div>
 
-        <!-- For Receiving Monitoring Modal -->
+        <!-- Pending Attention Monitoring Modal -->
         <div
             v-if="showPendingModal"
             class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8 backdrop-blur-sm"
@@ -1973,15 +1973,15 @@ const daysPendingClass = (days) => {
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                             <p class="text-xs font-black uppercase tracking-[0.22em] text-blue-100">
-                                For Receiving Monitoring
+                                Pending Attention Monitoring
                             </p>
 
                             <h2 class="mt-2 text-2xl font-black">
-                                Personnel with For Receiving Documents
+                                Personnel with Pending Documents
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-blue-100">
-                                Review documents waiting to be received by personnel.
+                                Includes documents awaiting receipt and received documents with no action yet. Completed documents are excluded.
                             </p>
                         </div>
 
@@ -1999,7 +1999,7 @@ const daysPendingClass = (days) => {
                     <div class="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3">
                         <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-blue-100">
                             <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-600">
-                                Receiving Personnel
+                                Personnel with Pending Documents
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-blue-800">
@@ -2009,11 +2009,11 @@ const daysPendingClass = (days) => {
 
                         <div class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-sky-100">
                             <p class="text-xs font-black uppercase tracking-[0.18em] text-sky-600">
-                                For Receiving Documents
+                                Documents Needing Attention
                             </p>
 
                             <p class="mt-2 text-3xl font-black text-sky-800">
-                                {{ monitoringCardCounts.forReceiving }}
+                                {{ totalPendingDocuments }}
                             </p>
                         </div>
                     </div>
@@ -2039,14 +2039,14 @@ const daysPendingClass = (days) => {
                                             {{ person.personnel_name || 'Unassigned' }}
                                         </p>
                                         <p class="mt-1 text-xs font-semibold text-slate-500">
-                                            Click to view documents waiting to be received.
+                                            Click to view documents awaiting receipt or received with no action.
                                         </p>
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-2 gap-2 md:min-w-[320px]">
                                     <div class="rounded-2xl bg-blue-50 px-4 py-3 text-center ring-1 ring-blue-100">
                                         <p class="text-[11px] font-black uppercase tracking-wide text-blue-500">
-                                            Pending
+                                            Needs Attention
                                         </p>
                                         <p class="mt-1 text-xl font-black text-blue-800">
                                             {{ pendingCount(person) }}
@@ -2069,7 +2069,7 @@ const daysPendingClass = (days) => {
                                 class="border-t border-slate-100 bg-blue-50/50 p-4">
                                 <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
-                                        For Receiving Documents of {{ person.personnel_name || 'Unassigned' }}
+                                        Pending Documents of {{ person.personnel_name || 'Unassigned' }}
                                     </p>
 
                                     <p class="w-fit rounded-full bg-white px-3 py-2 text-xs font-black text-slate-600 shadow-sm">
@@ -2080,7 +2080,7 @@ const daysPendingClass = (days) => {
                                 <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
                                     <article
                                         v-for="doc in person.documents || []"
-                                        :key="`${person.personnel_id || 'unassigned'}-${doc.IDdoc}`"
+                                        :key="`${person.personnel_id || 'unassigned'}-${doc.IDdoc}-${doc.assignment_id ?? 'legacy'}`"
                                         class="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200"
                                     >
                                         <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2090,7 +2090,7 @@ const daysPendingClass = (days) => {
                                                 </p>
 
                                                 <p class="mt-1 text-xl font-black text-blue-700">
-                                                    #{{ doc.IDdoc }}
+                                                    #{{ doc.display_document_no || doc.document_no || doc.IDdoc }}
                                                 </p>
                                             </div>
 
@@ -2106,8 +2106,12 @@ const daysPendingClass = (days) => {
                                             {{ doc.subject || 'No subject' }}
                                         </p>
 
-                                        <p class="mt-3 text-xs font-semibold text-slate-600">
-                                            Date Sent: {{ formatDate(doc.distdate) }}
+                                        <p class="mt-3 text-xs font-black text-blue-700">
+                                            {{ doc.pending_status || 'For Receiving' }}
+                                        </p>
+                                        <p class="mt-1 text-xs font-semibold text-slate-600">
+                                            {{ doc.confirmdate ? 'Date Received' : 'Date Sent' }}:
+                                            {{ formatDate(doc.confirmdate || doc.distdate) }}
                                         </p>
 
                                         <div class="mt-4 grid grid-cols-2 gap-2">
@@ -2138,7 +2142,7 @@ const daysPendingClass = (days) => {
                                         </p>
 
                                         <p class="mt-3 text-base font-black text-slate-800">
-                                            No documents waiting to be received.
+                                            No documents awaiting receipt or action.
                                         </p>
                                     </div>
                                 </div>
@@ -2154,7 +2158,7 @@ const daysPendingClass = (days) => {
                             </p>
 
                             <h3 class="mt-4 text-lg font-black text-emerald-800">
-                                No personnel with documents waiting to be received.
+                                No personnel with documents awaiting receipt or action.
                             </h3>
 
                             <p class="mt-2 text-sm font-semibold text-emerald-700">

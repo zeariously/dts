@@ -147,6 +147,7 @@ class InventoryController extends Controller
             'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
             'ict_assets.*.returned_at' => 'nullable|date',
             'ict_assets.*.return_remarks' => 'nullable|string|max:1000',
+            'ict_assets.*.remarks' => 'nullable|string|max:1000',
             'ict_assets.*.returned_by' => 'nullable|string|max:255',
             'ict_assets.*.returned_by_user_id' => 'nullable',
             'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
@@ -532,6 +533,9 @@ class InventoryController extends Controller
             'new_ict_asset.mr' =>
                 'nullable|string|max:255',
 
+            'new_ict_asset.remarks' =>
+                'nullable|string|max:1000',
+
             /*
              * Batch ICT unit creation from the Edit modal.
              * The single new_ict_asset rules above remain for backwards compatibility.
@@ -569,8 +573,14 @@ class InventoryController extends Controller
             'new_ict_assets.*.mr' =>
                 'nullable|string|max:255',
 
+            'new_ict_assets.*.remarks' =>
+                'nullable|string|max:1000',
+
             'asset_index' =>
                 'sometimes|nullable|integer|min:0',
+
+            'asset_delete_index' => 'sometimes|required|integer|min:0',
+            'asset_delete_property_number' => 'sometimes|nullable|string|max:100',
 
             'asset' =>
                 'sometimes|nullable|array',
@@ -602,6 +612,9 @@ class InventoryController extends Controller
             'asset.return_remarks' =>
                 'nullable|string|max:1000',
 
+            'asset.remarks' =>
+                'nullable|string|max:1000',
+
             'asset.mr_personnel_id' =>
                 'nullable|integer|exists:lu_personnel,ID',
 
@@ -619,6 +632,7 @@ class InventoryController extends Controller
             'ict_assets.*.status' => 'nullable|in:working,returned,for_return',
             'ict_assets.*.returned_at' => 'nullable|date',
             'ict_assets.*.return_remarks' => 'nullable|string|max:1000',
+            'ict_assets.*.remarks' => 'nullable|string|max:1000',
             'ict_assets.*.returned_by' => 'nullable|string|max:255',
             'ict_assets.*.returned_by_user_id' => 'nullable',
             'ict_assets.*.mr_personnel_id' => 'nullable|integer|exists:lu_personnel,ID',
@@ -712,6 +726,8 @@ class InventoryController extends Controller
                     'release_quantity',
                     $validated
                 );
+
+            $isPropertyDelete = !$isRelease && array_key_exists('asset_delete_index', $validated);
 
             $isIctAssetEdit =
                 !$isRelease
@@ -1290,6 +1306,30 @@ class InventoryController extends Controller
              * one at a time from their accordion. Item-level Edit never
              * bulk-rewrites existing Furniture/Fixtures property rows.
              */
+            // Delete a single property, preserving the parent item and its audit trail.
+            if ($isPropertyDelete) {
+                $deleteCategory = strtolower(trim((string) $item->category));
+                $deleteUnit = strtoupper(trim((string) $item->unit));
+                if (!(($deleteCategory === 'ict' && !in_array($deleteUnit, ['MONTH', 'YEAR'], true))
+                    || in_array($deleteCategory, ['furniture', 'fixtures'], true))) {
+                    throw ValidationException::withMessages(['asset_delete_index' => 'Property deletion is not allowed for this category.']);
+                }
+                $oldCountForDelete = max(0, (int) ($item->currently_available ?? 0));
+                $deleteIndex = (int) $validated['asset_delete_index'];
+                if ($deleteIndex >= $oldCountForDelete) {
+                    throw ValidationException::withMessages(['asset_delete_index' => 'The selected property no longer exists.']);
+                }
+                $deleteAssets = $this->normalizedIctAssetRowsForStorage($item->ict_assets ?? [], $oldCountForDelete);
+                $storedPropertyNumber = trim((string) ($deleteAssets[$deleteIndex]['property_number'] ?? ''));
+                $submittedPropertyNumber = trim((string) ($validated['asset_delete_property_number'] ?? ''));
+                if ($storedPropertyNumber !== $submittedPropertyNumber) {
+                    throw ValidationException::withMessages(['asset_delete_index' => 'This property has changed. Reload and try again.']);
+                }
+                array_splice($deleteAssets, $deleteIndex, 1);
+                $item->ict_assets = array_values($deleteAssets);
+                $item->currently_available = $oldCountForDelete - 1;
+            }
+
             if ($isIctAssetEdit) {
                 $assetCategory =
                     strtolower(
@@ -1513,6 +1553,11 @@ class InventoryController extends Controller
                                 'current_user' =>
                                     $submittedNormalizedAsset[
                                         'current_user'
+                                    ],
+
+                                'remarks' =>
+                                    $submittedNormalizedAsset[
+                                        'remarks'
                                     ],
                             ]
                         );
@@ -2525,7 +2570,7 @@ class InventoryController extends Controller
                     $history->action =
                         $isRelease
                             ? 'release'
-                            : 'edit';
+                            : ($isPropertyDelete ? 'delete' : 'edit');
                 }
 
                 if (
@@ -3158,6 +3203,11 @@ class InventoryController extends Controller
                                 )
                             )
                             : 'Inventory quantity was released.';
+                } elseif ($action === 'delete') {
+                    $eventTitle = 'Deleted Property';
+                    $eventSummary = !empty($propertyNumbers)
+                        ? 'Property ' . $propertyNumbers[0] . ' was deleted. Inventory count decreased by 1.'
+                        : 'A property was deleted. Inventory count decreased by 1.';
                 } elseif ($hasAddedProperty) {
                     $eventTitle =
                         'Added ICT Unit';
@@ -3587,6 +3637,29 @@ class InventoryController extends Controller
                 ? array_values($newAssets)
                 : [];
 
+        // Align a removed property by its property number so other rows
+        // are not incorrectly reported as edits after array reindexing.
+        if (count($oldRows) === count($newRows) + 1) {
+            $oldNumbers = array_map(fn ($row) => trim((string) ($row['property_number'] ?? '')), $oldRows);
+            $newNumbers = array_map(fn ($row) => trim((string) ($row['property_number'] ?? '')), $newRows);
+            foreach ($oldNumbers as $removedIndex => $number) {
+                if ($number === '' || in_array($number, $newNumbers, true)) continue;
+                $aligned = $newNumbers;
+                array_splice($aligned, $removedIndex, 0, ['']);
+                $matches = true;
+                foreach ($aligned as $index => $value) {
+                    if ($index !== $removedIndex && $value !== $oldNumbers[$index]) {
+                        $matches = false;
+                        break;
+                    }
+                }
+                if ($matches) {
+                    array_splice($newRows, $removedIndex, 0, [null]);
+                    break;
+                }
+            }
+        }
+
         $maxRows =
             max(
                 count($oldRows),
@@ -3727,7 +3800,7 @@ class InventoryController extends Controller
             if ($oldAsset !== null && $newAsset === null) {
                 $changes[] = [
                     'field' => 'ict_asset_removed',
-                    'label' => 'ICT Unit Removed',
+                    'label' => 'Property Deleted',
                     'old' => null,
                     'new' =>
                         $oldProperty !== ''
@@ -3756,6 +3829,7 @@ class InventoryController extends Controller
                 'status' => 'Status',
                 'returned_at' => 'Date Returned',
                 'return_remarks' => 'Return Remarks',
+                'remarks' => 'Remarks',
                 'returned_by' => 'Returned By',
                 'mr' => 'MR',
             ];
@@ -4402,6 +4476,9 @@ class InventoryController extends Controller
                     )
                 );
 
+            $propertyRemarks =
+                trim((string) ($asset['remarks'] ?? ''));
+
             $returnedBy =
                 trim(
                     (string) (
@@ -4502,6 +4579,8 @@ class InventoryController extends Controller
                     $returnedAt,
                 'return_remarks' =>
                     $returnRemarks,
+                'remarks' =>
+                    $propertyRemarks,
                 'returned_by' =>
                     $returnedBy,
                 'returned_by_user_id' =>
@@ -4642,6 +4721,9 @@ class InventoryController extends Controller
                     )
                 );
 
+            $propertyRemarks =
+                trim((string) ($asset['remarks'] ?? ''));
+
             $returnedBy =
                 trim(
                     (string) (
@@ -4725,6 +4807,7 @@ class InventoryController extends Controller
                 && $status === ''
                 && $returnedAt === null
                 && $returnRemarks === ''
+                && $propertyRemarks === ''
                 && $returnedBy === ''
                 && $returnedByUserId === null
                 && !$mrPersonnelId
@@ -4777,6 +4860,8 @@ class InventoryController extends Controller
                     $returnedAt,
                 'return_remarks' =>
                     $returnRemarks,
+                'remarks' =>
+                    $propertyRemarks,
                 'returned_by' =>
                     $returnedBy,
                 'returned_by_user_id' =>

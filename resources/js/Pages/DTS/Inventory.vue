@@ -994,8 +994,10 @@ const ictAssetEditingIndex = ref(null)
 const ictAssetEditingOriginalPropertyNumber = ref('')
 const ictAssetEditErrors = ref({})
 const ictAssetEditProcessing = ref(false)
+const ictAssetDeleteProcessing = ref(false)
 
 const ictAssetEditForm = ref({
+    remarks: '',
     description: '',
     accessories: '',
     property_number: '',
@@ -2669,6 +2671,7 @@ const ictEditorAssetRows = (assets) => {
         return_remarks: String(
             asset?.return_remarks ?? ''
         ).trim(),
+        remarks: String(asset?.remarks ?? '').trim(),
         returned_by: String(
             asset?.returned_by ?? ''
         ).trim(),
@@ -2704,6 +2707,7 @@ const normalizeIctAssets = (assets) => {
                 || asset.status
                 || asset.returned_at
                 || asset.return_remarks
+                || asset.remarks
                 || asset.returned_by
                 || asset.returned_by_user_id
                 || asset.mr_personnel_id
@@ -2744,6 +2748,7 @@ const syncIctAssetRowsToCount = (
             status: '',
             returned_at: '',
             return_remarks: '',
+            remarks: '',
             returned_by: '',
             returned_by_user_id: '',
             mr_personnel_id: '',
@@ -6495,7 +6500,7 @@ const propertyScopedHistoryMeta = (
     if (hasRemoved) {
         return {
             event_title:
-                'Removed ICT Unit',
+                'Deleted Property',
             event_summary:
                 `Property ${propertyNumber} was removed.`,
         }
@@ -6749,6 +6754,10 @@ const historyActionLabel = (history) => {
 
     if (history?.action === 'release') {
         return 'Released Stock'
+    }
+
+    if (history?.action === 'delete') {
+        return 'Deleted Property'
     }
 
     if (history?.action === 'edit') {
@@ -7358,6 +7367,7 @@ const openIctAssetEditModal = (
             status: 'working',
             returned_at: '',
             return_remarks: '',
+            remarks: '',
             returned_by: '',
             returned_by_user_id: '',
             mr_personnel_id: '',
@@ -7377,6 +7387,7 @@ const openIctAssetEditModal = (
         ).trim()
 
     ictAssetEditForm.value = {
+        remarks: '', // New remarks are history-only; never prefill the last entry.
         description:
             normalizedAsset.description,
         accessories:
@@ -7488,6 +7499,33 @@ const individualPropertyEditUsesLifeSpan =
                 ictAssetEditingItem.value
             )
     )
+
+// Deletes only the selected property row and retains the parent inventory item.
+const deleteIctAssetProperty = (item, asset) => {
+    const index = Number(asset?._index)
+    if (!canManageInventory.value || !item?.id || !Number.isInteger(index)
+        || index < 0 || ictAssetDeleteProcessing.value) return
+
+    const property = String(asset?.property_number || '').trim()
+    if (!window.confirm(`Delete property ${property || `Row ${index + 1}`}?\nThe inventory count will decrease by 1. This will be recorded in History.`)) return
+
+    ictAssetDeleteProcessing.value = true
+    router.put(`/dts/inventory/${item.id}`, {
+        asset_delete_index: index,
+        asset_delete_property_number: property,
+    }, {
+        preserveScroll: true,
+        preserveState: true,
+        onSuccess: () => {
+            expandedIctItems.value = {...expandedIctItems.value, [item.id]: true}
+            router.reload({only: ['inventoryItems'], preserveScroll: true, preserveState: true})
+        },
+        onError: (errors) => {
+            window.alert(Object.values(errors || {}).join('\n') || 'Unable to delete property.')
+        },
+        onFinish: () => { ictAssetDeleteProcessing.value = false },
+    })
+}
 
 const closeIctAssetEditModal = () => {
     if (ictAssetEditProcessing.value) {
@@ -7703,6 +7741,7 @@ const saveIctAssetEdit = () => {
     const assetPayload =
         isOtherProperty
             ? {
+                remarks: String(ictAssetEditForm.value.remarks ?? '').trim() || null,
                 description,
                 property_number:
                     propertyNumber,
@@ -7710,6 +7749,7 @@ const saveIctAssetEdit = () => {
                     currentUser || null,
             }
             : {
+                remarks: String(ictAssetEditForm.value.remarks ?? '').trim() || null,
                 description,
                 accessories:
                     accessories || null,
@@ -11068,10 +11108,6 @@ const generateInventoryReport = () => {
                                     {{ releaseCurrentLabel }}
                                 </th>
 
-                                <th class="w-[22%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
-                                    Remarks
-                                </th>
-
                                 <th class="w-[16%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Actions
                                 </th>
@@ -11802,6 +11838,7 @@ const generateInventoryReport = () => {
                                                             <th class="w-[14%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
                                                                 MR
                                                             </th>
+
                                                             <th class="w-[10%] px-3 py-3 text-center text-[9px] font-black uppercase tracking-[0.09em]" style="background-color: #2563EB !important; color: #FFFFFF !important;">
                                                                 Action
                                                             </th>
@@ -11887,6 +11924,23 @@ const generateInventoryReport = () => {
                                                                     "
                                                                 >
                                                                     Edit
+                                                                </button>
+                                                                <button
+                                                                    v-if="canManageInventory"
+                                                                    type="button"
+                                                                    :disabled="ictAssetDeleteProcessing"
+                                                                    title="Delete Property"
+                                                                    aria-label="Delete Property"
+                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    @click.stop="deleteIctAssetProperty(item, asset)"
+                                                                >
+                                                                    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                        <path d="M3 6h18" />
+                                                                        <path d="M8 6V4h8v2" />
+                                                                        <path d="M19 6l-1 14H6L5 6" />
+                                                                        <path d="M10 11v5" />
+                                                                        <path d="M14 11v5" />
+                                                                    </svg>
                                                                 </button>
                                                             </td>
                                                         </tr>
@@ -12185,7 +12239,8 @@ const generateInventoryReport = () => {
                                                 <span>Description</span>
                                                 <span>Property Number</span>
                                                 <span>Current User</span>
-                                                <span class="text-center">Action</span>
+
+                                    <span class="text-center">Action</span>
                                             </div>
 
                                             <div
@@ -12218,6 +12273,23 @@ const generateInventoryReport = () => {
                                                 >
                                                     Edit
                                                 </button>
+                                                                <button
+                                                                    v-if="canManageInventory"
+                                                                    type="button"
+                                                                    :disabled="ictAssetDeleteProcessing"
+                                                                    title="Delete Property"
+                                                                    aria-label="Delete Property"
+                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    @click.stop="deleteIctAssetProperty(item, asset)"
+                                                                >
+                                                                    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                        <path d="M3 6h18" />
+                                                                        <path d="M8 6V4h8v2" />
+                                                                        <path d="M19 6l-1 14H6L5 6" />
+                                                                        <path d="M10 11v5" />
+                                                                        <path d="M14 11v5" />
+                                                                    </svg>
+                                                                </button>
                                             </div>
                                         </div>
                                     </td>
@@ -12387,6 +12459,7 @@ const generateInventoryReport = () => {
                                     <span>Description</span>
                                     <span>Property Number</span>
                                     <span>Current User</span>
+
                                     <span class="text-center">Action</span>
                                 </div>
 
@@ -12418,6 +12491,23 @@ const generateInventoryReport = () => {
                                     >
                                         Edit
                                     </button>
+                                                                <button
+                                                                    v-if="canManageInventory"
+                                                                    type="button"
+                                                                    :disabled="ictAssetDeleteProcessing"
+                                                                    title="Delete Property"
+                                                                    aria-label="Delete Property"
+                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    @click.stop="deleteIctAssetProperty(item, asset)"
+                                                                >
+                                                                    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                                                        <path d="M3 6h18" />
+                                                                        <path d="M8 6V4h8v2" />
+                                                                        <path d="M19 6l-1 14H6L5 6" />
+                                                                        <path d="M10 11v5" />
+                                                                        <path d="M14 11v5" />
+                                                                    </svg>
+                                                                </button>
                                 </div>
                             </div>
 
@@ -15425,6 +15515,39 @@ const generateInventoryReport = () => {
                                 {{ person.name }}
                             </option>
                         </select>
+                    </div>
+
+                    <!-- Individual property's Remarks (not the main item remarks) -->
+                    <div class="sm:col-span-2">
+                        <label
+                            for="edit-property-remarks"
+                            class="mb-2 block text-sm font-black text-slate-800"
+                        >
+                            Property Remarks
+                            <span class="font-medium text-slate-400">(Optional)</span>
+                        </label>
+                        <textarea
+                            id="edit-property-remarks"
+                            v-model="ictAssetEditForm.remarks"
+                            rows="3"
+                            maxlength="1000"
+                            placeholder="Enter remarks for this individual property"
+                            class="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-medium text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100"
+                        ></textarea>
+                        <div class="mt-1 flex items-center justify-between gap-3">
+                            <p class="text-xs text-slate-500">
+                                Saved only for this property, not the main inventory item.
+                            </p>
+                            <span class="text-xs text-slate-400">
+                                {{ (ictAssetEditForm.remarks || '').length }}/1000
+                            </span>
+                        </div>
+                        <p
+                            v-if="ictAssetEditErrors.remarks || ictAssetEditErrors['asset.remarks']"
+                            class="mt-2 text-xs font-bold text-rose-600"
+                        >
+                            {{ ictAssetEditErrors.remarks || ictAssetEditErrors['asset.remarks'] }}
+                        </p>
                     </div>
 
                     <div
