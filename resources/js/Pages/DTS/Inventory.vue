@@ -12243,7 +12243,7 @@ const generateInventoryReport = () => {
                                                 <span>Description</span>
                                                 <span class="text-center">Property Number</span>
                                                 <span class="text-center">Current User</span>
-                                                <span class="text-center">MR (Permanent Employee)</span>
+                                                <span class="text-center">MR</span>
 
                                     <span class="text-center">Action</span>
                                             </div>
@@ -16619,7 +16619,7 @@ const generateInventoryReport = () => {
 .inventory-comfort-theme .inventory-ledger-table .border-2.border-blue-200 {
     border-color: #adc4dc !important;
     background-color: #f3f7fb !important;
-    box-shadow:
+    box-shadow: 
         0 8px 20px rgba(51, 65, 85, 0.08);
 }   
 
