@@ -1559,6 +1559,15 @@ class InventoryController extends Controller
                                     $submittedNormalizedAsset[
                                         'remarks'
                                     ],
+                                // Furniture/Fixtures also store the selected MR.
+                                'mr_personnel_id' =>
+                                    $submittedNormalizedAsset[
+                                        'mr_personnel_id'
+                                    ],
+                                'mr' =>
+                                    $submittedNormalizedAsset[
+                                        'mr'
+                                    ],
                             ]
                         );
                 }

@@ -7747,6 +7747,8 @@ const saveIctAssetEdit = () => {
                     propertyNumber,
                 current_user:
                     currentUser || null,
+                mr_personnel_id: mrPersonnelId ? Number(mrPersonnelId) : null,
+                mr: mrPersonnelId ? mrPersonnelName(mrPersonnelId) : null,
             }
             : {
                 remarks: String(ictAssetEditForm.value.remarks ?? '').trim() || null,
@@ -11912,6 +11914,7 @@ const generateInventoryReport = () => {
                                                             </td>
 
                                                             <td class="px-3 py-3 text-center align-top">
+                                                                <div class="flex items-center justify-center gap-2 whitespace-nowrap">
                                                                 <button
                                                                     v-if="canManageInventory"
                                                                     type="button"
@@ -11931,7 +11934,7 @@ const generateInventoryReport = () => {
                                                                     :disabled="ictAssetDeleteProcessing"
                                                                     title="Delete Property"
                                                                     aria-label="Delete Property"
-                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
                                                                     @click.stop="deleteIctAssetProperty(item, asset)"
                                                                 >
                                                                     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -11942,6 +11945,7 @@ const generateInventoryReport = () => {
                                                                         <path d="M14 11v5" />
                                                                     </svg>
                                                                 </button>
+                                                                </div>
                                                             </td>
                                                         </tr>
                                                     </tbody>
@@ -12235,10 +12239,11 @@ const generateInventoryReport = () => {
                                         class="px-4 pb-4 pt-1"
                                     >
                                         <div class="overflow-hidden rounded-xl border border-blue-100 bg-white">
-                                            <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-4 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
+                                            <div class="grid grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_136px] items-center gap-4 border-b border-blue-700 bg-blue-600 px-4 py-2.5 text-[9px] font-black uppercase tracking-[0.09em] text-white">
                                                 <span>Description</span>
-                                                <span>Property Number</span>
-                                                <span>Current User</span>
+                                                <span class="text-center">Property Number</span>
+                                                <span class="text-center">Current User</span>
+                                                <span class="text-center">MR (Permanent Employee)</span>
 
                                     <span class="text-center">Action</span>
                                             </div>
@@ -12246,20 +12251,25 @@ const generateInventoryReport = () => {
                                             <div
                                                 v-for="(asset, assetIndex) in ictAssetDetails(item)"
                                                 :key="`other-asset-row-${item.id}-${assetIndex}`"
-                                                class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
+                                                class="grid grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_136px] items-center gap-4 border-b border-blue-100 px-4 py-3 last:border-b-0"
                                             >
                                                 <span class="break-words text-[11px] font-semibold text-slate-700">
                                                     {{ asset.description || '—' }}
                                                 </span>
 
-                                                <span class="break-words text-[11px] font-black text-slate-800">
+                                                <span class="break-words text-center text-[11px] font-black text-slate-800">
                                                     {{ asset.property_number || '—' }}
                                                 </span>
 
-                                                <span class="break-words text-[11px] font-semibold text-slate-600">
+                                                <span class="break-words text-center text-[11px] font-semibold text-slate-600">
                                                     {{ asset.current_user || 'Unassigned' }}
                                                 </span>
 
+                                                <span class="break-words text-center text-[11px] font-semibold text-slate-600">
+                                                    {{ mrPersonnelName(asset.mr_personnel_id) || asset.mr || 'Unassigned' }}
+                                                </span>
+
+                                                <div class="flex items-center justify-center gap-2 whitespace-nowrap">
                                                 <button
                                                     v-if="canManageInventory"
                                                     type="button"
@@ -12279,7 +12289,7 @@ const generateInventoryReport = () => {
                                                                     :disabled="ictAssetDeleteProcessing"
                                                                     title="Delete Property"
                                                                     aria-label="Delete Property"
-                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
                                                                     @click.stop="deleteIctAssetProperty(item, asset)"
                                                                 >
                                                                     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -12290,6 +12300,7 @@ const generateInventoryReport = () => {
                                                                         <path d="M14 11v5" />
                                                                     </svg>
                                                                 </button>
+                                                </div>
                                             </div>
                                         </div>
                                     </td>
@@ -12451,14 +12462,15 @@ const generateInventoryReport = () => {
 
                             <div
                                 v-if="currentOtherCategoryIsAssetTracked && hasIctAssetDetails(item) && isIctExpanded(item)"
-                                class="overflow-hidden rounded-xl border border-blue-100 bg-white"
+                                class="overflow-x-auto rounded-xl border border-blue-100 bg-white"
                                 @click.stop
                                 @keydown.stop
                             >
-                                <div class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-2 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
+                                <div class="grid min-w-[680px] grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_136px] items-center gap-2 border-b border-blue-700 bg-blue-600 px-3 py-2.5 text-[8px] font-black uppercase tracking-[0.09em] text-white">
                                     <span>Description</span>
                                     <span>Property Number</span>
                                     <span>Current User</span>
+                                    <span class="text-center">MR</span>
 
                                     <span class="text-center">Action</span>
                                 </div>
@@ -12466,18 +12478,22 @@ const generateInventoryReport = () => {
                                 <div
                                     v-for="(asset, assetIndex) in ictAssetDetails(item)"
                                     :key="`mobile-other-asset-${item.id}-${assetIndex}`"
-                                    class="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-2 border-b border-blue-100 px-3 py-2.5 last:border-b-0"
+                                    class="grid min-w-[680px] grid-cols-[minmax(0,1.4fr)_repeat(3,minmax(0,1fr))_136px] items-center gap-2 border-b border-blue-100 px-3 py-2.5 last:border-b-0"
                                 >
                                     <span class="break-words text-[10px] font-semibold text-slate-700">
                                         {{ asset.description || '—' }}
                                     </span>
-                                    <span class="break-words text-[10px] font-black text-slate-800">
+                                    <span class="break-words text-center text-[10px] font-black text-slate-800">
                                         {{ asset.property_number || '—' }}
                                     </span>
-                                    <span class="break-words text-[10px] font-semibold text-slate-600">
+                                    <span class="break-words text-center text-[10px] font-semibold text-slate-600">
                                         {{ asset.current_user || 'Unassigned' }}
                                     </span>
+                                    <span class="break-words text-center text-[10px] font-semibold text-slate-600">
+                                        {{ mrPersonnelName(asset.mr_personnel_id) || asset.mr || 'Unassigned' }}
+                                    </span>
 
+                                    <div class="flex items-center justify-center gap-2 whitespace-nowrap">
                                     <button
                                         v-if="canManageInventory"
                                         type="button"
@@ -12497,7 +12513,7 @@ const generateInventoryReport = () => {
                                                                     :disabled="ictAssetDeleteProcessing"
                                                                     title="Delete Property"
                                                                     aria-label="Delete Property"
-                                                                    class="ml-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
+                                                                    class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100 focus:outline-none focus:ring-4 focus:ring-rose-100 disabled:opacity-50"
                                                                     @click.stop="deleteIctAssetProperty(item, asset)"
                                                                 >
                                                                     <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -12508,6 +12524,7 @@ const generateInventoryReport = () => {
                                                                         <path d="M14 11v5" />
                                                                     </svg>
                                                                 </button>
+                                    </div>
                                 </div>
                             </div>
 
@@ -15480,7 +15497,7 @@ const generateInventoryReport = () => {
                     
 
                     <div
-                        v-if="individualPropertyEditIsIct"
+                        v-if="individualPropertyEditIsIct || individualPropertyEditIsOther"
                         class="sm:col-span-2"
                     >
                         <label
