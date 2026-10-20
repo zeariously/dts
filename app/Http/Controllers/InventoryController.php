@@ -444,6 +444,10 @@ class InventoryController extends Controller
         }
 
         $validated = $request->validate([
+            'stock_add_quarter' => 'sometimes|required|in:q1,q2,q3,q4',
+            'stock_add_quantity' => 'required_with:stock_add_quarter|integer|min:1',
+            'stock_add_remarks' => 'sometimes|nullable|string|max:1000',
+
             'release_quantity' =>
                 'sometimes|required|integer|min:1',
 
@@ -726,6 +730,8 @@ class InventoryController extends Controller
                     'release_quantity',
                     $validated
                 );
+
+            $isStockAddition = !$isRelease && array_key_exists('stock_add_quarter', $validated);
 
             $isPropertyDelete = !$isRelease && array_key_exists('asset_delete_index', $validated);
 
@@ -1294,6 +1300,50 @@ class InventoryController extends Controller
                         $item->tracked_released =
                             $oldTrackedReleased + $releaseQuantity;
                     }
+                }
+            }
+
+            // Supplies stock addition: keep historical releases unchanged and
+            // recompute each subsequent active quarter from its carryover.
+            if ($isStockAddition) {
+                if ($category !== 'supplies') {
+                    throw ValidationException::withMessages(['stock_add_quarter' => 'Only Supplies support adding stocks per quarter.']);
+                }
+                $quarter = $validated['stock_add_quarter'];
+                $quantity = (int) $validated['stock_add_quantity'];
+                $assignedQuarters = $this->normalizedQuarterList(is_array($item->quarters) ? $item->quarters : []);
+                if (!in_array($quarter, $assignedQuarters, true)) {
+                    throw ValidationException::withMessages(['stock_add_quarter' => 'This quarter is not assigned to the item.']);
+                }
+                $stock = $this->normalizedStoredQuarterStock($item->quarter_stock ?? []);
+                // Legacy single-quarter records can be safely initialized.
+                if (!$stock && count($assignedQuarters) === 1) {
+                    $legacyCurrent = max(0, (int) ($item->currently_available ?? 0));
+                    $legacyReleased = max(0, (int) ($item->tracked_released ?? 0));
+                    $stock[$quarter] = [
+                        'added' => $legacyCurrent + $legacyReleased,
+                        'released' => $legacyReleased,
+                        'current' => $legacyCurrent,
+                        'opening' => $legacyCurrent + $legacyReleased,
+                        'carryover' => 0,
+                        'remarks' => '',
+                    ];
+                } elseif (!$stock) {
+                    throw ValidationException::withMessages(['stock_add_quarter' => 'Initialize quarter balances through Edit before adding stock to this legacy item.']);
+                }
+                $currentEntry = $stock[$quarter] ?? [
+                    'added' => 0, 'released' => 0, 'current' => 0,
+                    'opening' => 0, 'carryover' => 0, 'remarks' => '',
+                ];
+                $currentEntry['added'] = max(0, (int) ($currentEntry['added'] ?? 0)) + $quantity;
+                $stock[$quarter] = $currentEntry;
+                // Rebuild carryover for ALL later active quarters (including Q4)
+                // without ever changing their released quantities.
+                $stock = $this->normalizedStoredQuarterStock($stock);
+                $item->quarter_stock = $stock;
+                $item->currently_available = $this->quarterStockCurrentTotal($stock);
+                if ($item->fixed_value === null || (int) $item->fixed_value <= 0) {
+                    $item->tracked_released = $this->quarterStockReleasedTotal($stock);
                 }
             }
 
@@ -2539,6 +2589,12 @@ class InventoryController extends Controller
                 }
             }
 
+            if ($isStockAddition) {
+                $historyNewData['stock_add_quarter'] = $validated['stock_add_quarter'];
+                $historyNewData['stock_add_quantity'] = (int) $validated['stock_add_quantity'];
+                $historyNewData['stock_add_remarks'] = trim((string) ($validated['stock_add_remarks'] ?? ''));
+            }
+
             $fullRecordChanged =
                 $historyOldData !== $historyNewData;
 
@@ -2895,6 +2951,25 @@ class InventoryController extends Controller
                                     true,
                             ];
                         }
+                    }
+                }
+
+                if (isset($newData['stock_add_quantity'], $newData['stock_add_quarter'])) {
+                    $changes[] = [
+                        'field' => 'stock_add_quantity',
+                        'label' => 'Stocks Added · ' . strtoupper((string) $newData['stock_add_quarter']),
+                        'old' => null,
+                        'new' => (int) $newData['stock_add_quantity'],
+                        'single' => true,
+                    ];
+                    if (trim((string) ($newData['stock_add_remarks'] ?? '')) !== '') {
+                        $changes[] = [
+                            'field' => 'stock_add_remarks',
+                            'label' => 'Stock Addition Remarks',
+                            'old' => null,
+                            'new' => $newData['stock_add_remarks'],
+                            'single' => true,
+                        ];
                     }
                 }
 

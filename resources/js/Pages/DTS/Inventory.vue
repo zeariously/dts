@@ -616,6 +616,57 @@ const showDeleteItemModal = ref(false)
 const deletingItem = ref(null)
 const deleteItemProcessing = ref(false)
 
+const showAddSuppliesStockModal = ref(false)
+const addingSuppliesStock = ref(false)
+const addSuppliesStockItem = ref(null)
+const addSuppliesStockForm = ref({ quarter: 'q1', quantity: '', remarks: '' })
+const addSuppliesStockError = ref('')
+
+const openAddSuppliesStockModal = (item) => {
+    if (!canManageInventory.value || item?.category !== 'supplies') return
+    addSuppliesStockItem.value = item
+    const assigned = inferredItemQuarters(item)
+    addSuppliesStockForm.value = {
+        quarter: quarterFilter.value !== 'all' && assigned.includes(quarterFilter.value)
+            ? quarterFilter.value : (latestQuarterForItem(item) || assigned[0] || 'q1'),
+        quantity: '', remarks: '',
+    }
+    addSuppliesStockError.value = ''
+    showAddSuppliesStockModal.value = true
+}
+
+const submitAddSuppliesStock = () => {
+    if (addingSuppliesStock.value || !addSuppliesStockItem.value) return
+    const quantity = Number(addSuppliesStockForm.value.quantity)
+    const quarter = addSuppliesStockForm.value.quarter
+    if (!quarterValues.includes(quarter) || !inferredItemQuarters(addSuppliesStockItem.value).includes(quarter)) {
+        addSuppliesStockError.value = 'Select an applicable quarter for this item.'
+        return
+    }
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+        addSuppliesStockError.value = 'Quantity must be a positive whole number.'
+        return
+    }
+    addingSuppliesStock.value = true
+    addSuppliesStockError.value = ''
+    router.put(`/dts/inventory/${addSuppliesStockItem.value.id}`, {
+        stock_add_quarter: quarter,
+        stock_add_quantity: quantity,
+        stock_add_remarks: String(addSuppliesStockForm.value.remarks || '').trim(),
+    }, {
+        preserveScroll: true,
+        onSuccess: () => {
+            showAddSuppliesStockModal.value = false
+            addSuppliesStockItem.value = null
+            router.reload({ only: ['inventoryItems'] })
+        },
+        onError: (errors) => {
+            addSuppliesStockError.value = Object.values(errors || {})[0] || 'Unable to add stocks.'
+        },
+        onFinish: () => { addingSuppliesStock.value = false },
+    })
+}
+
 const showReleaseItemModal = ref(false)
 const releasingItem = ref(null)
 const releaseItemErrors = ref({})
@@ -11082,7 +11133,7 @@ const generateInventoryReport = () => {
                     <table class="inventory-ledger-table w-full table-fixed">
                         <thead class="bg-blue-500 text-white">
                             <tr>
-                                <th class="w-[20%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[19%] px-3 py-3 text-left text-[9px] font-black uppercase tracking-[0.10em]">
                                     Item
                                 </th>
 
@@ -11106,11 +11157,15 @@ const generateInventoryReport = () => {
                                     }}
                                 </th>
 
-                                <th class="w-[16%] bg-blue-600 px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[15%] bg-blue-600 px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     {{ releaseCurrentLabel }}
                                 </th>
 
-                                <th class="w-[16%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                <th class="w-[15%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
+                                    Remarks
+                                </th>
+
+                                <th class="w-[25%] px-2 py-3 text-center text-[9px] font-black uppercase tracking-[0.10em]">
                                     Actions
                                 </th>
                             </tr>
@@ -11283,7 +11338,17 @@ const generateInventoryReport = () => {
 
                                 <!-- ACTION -->
                                 <td class="px-2 py-3 text-center align-middle">
-                                    <div class="flex flex-wrap items-center justify-center gap-1.5">
+                                    <div class="flex flex-nowrap items-center justify-center gap-1.5">
+                                        <button v-if="canManageInventory && item.category === 'supplies'"
+                                            type="button"
+                                            title="Add Stocks"
+                                            aria-label="Add Stocks"
+                                            class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-lg font-bold leading-none text-emerald-700 transition hover:bg-emerald-100"
+                                            @click="openAddSuppliesStockModal(item)"
+                                        >
+                                            +
+                                        </button>
+
                                         <button v-if="canManageInventory"
                                             type="button"
                                             class="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-slate-700 transition hover:bg-slate-50"
@@ -16493,6 +16558,35 @@ const generateInventoryReport = () => {
 
 
     </div>
+
+        <!-- ADD SUPPLIES STOCK (per quarter) -->
+        <div v-if="showAddSuppliesStockModal" class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/55 p-4" @click.self="!addingSuppliesStock && (showAddSuppliesStockModal = false)">
+            <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+                <h3 class="text-lg font-black text-slate-900">Add Stocks</h3>
+                <p class="mt-1 text-sm text-slate-500">{{ addSuppliesStockItem?.item }}</p>
+                <div class="mt-5 space-y-4">
+                    <div>
+                        <label class="mb-1 block text-xs font-bold text-slate-700">Quarter</label>
+                        <select v-model="addSuppliesStockForm.quarter" class="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm">
+                            <option v-for="q in inferredItemQuarters(addSuppliesStockItem)" :key="q" :value="q">{{ q.toUpperCase() }}</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-bold text-slate-700">Quantity to Add</label>
+                        <input v-model="addSuppliesStockForm.quantity" type="number" min="1" step="1" class="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm" placeholder="e.g. 20" />
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-bold text-slate-700">Remarks (optional)</label>
+                        <textarea v-model="addSuppliesStockForm.remarks" maxlength="1000" rows="3" class="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm" placeholder="Reason for stock addition"></textarea>
+                    </div>
+                    <p v-if="addSuppliesStockError" class="text-sm font-semibold text-red-600">{{ addSuppliesStockError }}</p>
+                </div>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button type="button" :disabled="addingSuppliesStock" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold" @click="showAddSuppliesStockModal = false">Cancel</button>
+                    <button type="button" :disabled="addingSuppliesStock" class="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50" @click="submitAddSuppliesStock">{{ addingSuppliesStock ? 'Saving...' : 'Add Stocks' }}</button>
+                </div>
+            </div>
+        </div>
 </template>
 
 <style>
