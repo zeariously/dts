@@ -105,17 +105,17 @@ const canReattachDts = computed(() => {
         && Boolean(props.canReattachDts)
 })
 
-const canDeleteDocumentAttachments = computed(() => {
-    /*
-     * Show the Remove File button directly for Role 3.
-     * Do not hide the button just because an older controller response
-     * does not yet include canDeleteAttachments.
-     *
-     * The DELETE controller method still performs the final Role 3
-     * authorization before removing anything.
-     */
-    return userRights.value === '3'
-})
+// Only the original uploader can remove their own attachment.
+// Do not show the button for files without a recorded uploader.
+const canDeleteDocumentAttachment = (file) => {
+    const viewerId = String(page.props.auth?.user?.id ?? page.props.auth?.user?.ID ?? '').trim()
+    const uploaderId = String(file?.uploaded_by ?? '').trim()
+
+    return !isSuperAdminViewOnly.value
+        && viewerId !== ''
+        && uploaderId !== ''
+        && viewerId === uploaderId
+}
 
 const canRemarkDts = computed(() => {
     
@@ -646,7 +646,7 @@ const openRemoveAttachmentModal = (file) => {
     const attachmentId = getAttachmentId(file)
 
     if (
-        !canDeleteDocumentAttachments.value
+        !canDeleteDocumentAttachment(file)
         || attachmentDeleteForm.processing
         || !documentId.value
         || !attachmentId
@@ -674,7 +674,7 @@ const confirmRemoveExistingAttachment = () => {
     const attachmentId = getAttachmentId(file)
 
     if (
-        !canDeleteDocumentAttachments.value
+        !canDeleteDocumentAttachment(file)
         || attachmentDeleteForm.processing
         || !documentId.value
         || !attachmentId
@@ -822,7 +822,7 @@ const toOfficeDisplay = computed(() => {
 })
 
 const fromOfficeDisplay = computed(() => {
-    return getFirstFilled(
+    const officeName = getFirstFilled(
         props.document.from_office_name,
         props.document.sender_office_name,
         props.document.from_office,
@@ -830,6 +830,17 @@ const fromOfficeDisplay = computed(() => {
         props.document.office_from,
         props.document.IDfrom ? `Office #${props.document.IDfrom}` : null
     )
+    const abbreviation = String(
+        props.document.from_office_abbrev
+        ?? props.document.from_office_abbreviation
+        ?? ''
+    ).trim()
+
+    if (!abbreviation || officeName === '-' || officeName.toLowerCase() === abbreviation.toLowerCase()) {
+        return officeName
+    }
+
+    return `${officeName} (${abbreviation})`
 })
 
 const toNameDisplay = computed(() => {
@@ -2010,9 +2021,12 @@ const formatFileSize = (bytes) => {
                             </span>
                         </div>
 
-                        <h2 class="mt-4 max-w-5xl break-words text-2xl font-black leading-tight text-slate-950 lg:text-3xl">
-                            {{ hasFilledValue(documentSubject) ? documentSubject : 'No subject' }}
-                        </h2>
+                        <div class="mt-4 max-w-5xl min-w-0">
+                            <p class="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-500">Subject</p>
+                            <h2 class="break-words text-justify text-lg font-bold leading-7 text-slate-950 sm:text-xl">
+                                {{ hasFilledValue(documentSubject) ? documentSubject : 'No subject' }}
+                            </h2>
+                        </div>
 
                         <p class="mt-3 max-w-6xl whitespace-pre-line break-words text-sm font-semibold leading-7 text-slate-600">
                             {{ hasFilledValue(regardingDisplay) ? regardingDisplay : 'No regarding details' }}
@@ -2355,7 +2369,7 @@ const formatFileSize = (bytes) => {
                                     </a>
 
                                     <button
-                                        v-if="canDeleteDocumentAttachments"
+                                        v-if="canDeleteDocumentAttachment(file)"
                                         type="button"
                                         class="inline-flex items-center justify-center rounded-xl border border-red-200 bg-white px-4 py-2 text-xs font-black text-red-700 hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                                         :disabled="attachmentDeleteForm.processing"
@@ -3055,7 +3069,6 @@ const formatFileSize = (bytes) => {
 .attachment-modal-leave-active {
     transition: opacity 180ms ease;
 }
-
 .attachment-modal-enter-active > div,
 .attachment-modal-leave-active > div {
     transition:

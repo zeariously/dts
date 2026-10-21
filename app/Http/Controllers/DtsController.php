@@ -2165,6 +2165,7 @@ public function show(Request $request, $id)
                 'from_person_name' => $documentFromName,
                 'for_office' => $document->forOffice?->officename,
                 'from_office' => $document->fromOffice?->officename,
+                'from_office_abbrev' => $document->fromOffice?->abbrev,
 
                 'subject' => $document->subject,
                 'regarding' => $document->regarding,
@@ -3589,13 +3590,11 @@ public function storeAttachment(Request $request, $id)
 /**
  * Remove an existing document attachment.
  *
- * Only Role 3 may remove files. The attachment ID must belong to the
- * document ID in the URL, which prevents deleting a file from another
- * document by changing the request parameters.
+ * Only the original uploader may remove their own file.
+ * The attachment ID must also belong to the requested document.
  */
 public function destroyAttachment(Request $request, $id, $file)
 {
-    abort_unless($this->currentUserRights() === '3', 403);
     abort_unless($this->viewerCanAccessDocument((int) $id), 403);
 
     if (! Schema::hasTable('dts_document_files')) {
@@ -3614,6 +3613,16 @@ public function destroyAttachment(Request $request, $id, $file)
             'attachment' => 'The attached file was not found for this document.',
         ]);
     }
+
+    // Backend authorization is mandatory even when the Vue button is hidden.
+    // Missing uploader IDs are not treated as ownership.
+    abort_unless(
+        Auth::id() !== null
+        && $attachment->uploaded_by !== null
+        && (string) $attachment->uploaded_by === (string) Auth::id(),
+        403,
+        'Only the user who attached this file can remove it.'
+    );
 
     $originalName = trim((string) (
         $attachment->original_name
@@ -3640,6 +3649,7 @@ public function destroyAttachment(Request $request, $id, $file)
     DB::table('dts_document_files')
         ->where('id', $attachment->id)
         ->where('IDdoc', $id)
+        ->where('uploaded_by', Auth::id())
         ->delete();
 
     $this->recordDtsActivity(
