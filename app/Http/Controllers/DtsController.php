@@ -2121,8 +2121,7 @@ public function show(Request $request, $id)
                 (int) $document->IDdoc,
                 $assignmentId
             ),
-        'canRemarkDts' => $canUseDocumentActions
-            && $this->canRemarkDts()
+        'canRemarkDts' => $this->canRemarkDts()
             && $this->viewerCanRemarkDocument(
                 (int) $document->IDdoc,
                 $assignmentId
@@ -5604,17 +5603,58 @@ private function viewerCanRemarkDocument(
     int $documentId,
     ?int $assignmentId = null
 ): bool {
-    if ($this->currentUserRights() === '2') {
-        return $this->viewerCanActOnDocument(
-            $documentId,
-            $assignmentId
-        );
+    // Remarks remain available even after Final Address/Addressed.
+    // Only the document assigner/creator and assigned personnel may write.
+    if (! $this->viewerCanAccessDocument($documentId, $assignmentId)) {
+        return false;
     }
 
-    return $this->viewerCanAccessDocument(
-        $documentId,
-        $assignmentId
-    );
+    $viewerId = $this->currentUserId();
+    if ($viewerId === null) {
+        return false;
+    }
+
+    $document = DB::table('document')
+        ->where('IDdoc', $documentId)
+        ->first(['IDuser', 'IDkeeper']);
+
+    if (! $document) {
+        return false;
+    }
+
+    // The user who encoded/assigned the document can leave follow-up remarks.
+    if ((int) ($document->IDuser ?? 0) === $viewerId) {
+        return true;
+    }
+
+    $personnelIds = $this->viewerAssignedPersonnelIds();
+    if (empty($personnelIds)) {
+        return false;
+    }
+
+    if ($assignmentId !== null && Schema::hasTable('dts_document_assignments')) {
+        $assignment = DB::table('dts_document_assignments')
+            ->where('IDdoc', $documentId)
+            ->where('id', $assignmentId)
+            ->first(['idmapagency', 'created_by']);
+
+        if (! $assignment) {
+            return false;
+        }
+
+        if ((int) ($assignment->created_by ?? 0) === $viewerId) {
+            return true;
+        }
+
+        if (in_array((int) ($assignment->idmapagency ?? 0), $personnelIds, true)) {
+            return true;
+        }
+    } elseif (in_array((int) ($document->IDkeeper ?? 0), $personnelIds, true)) {
+        return true;
+    }
+
+    // Preserve permission for the currently tagged recipient if transferred.
+    return $this->documentIsTaggedToViewer($documentId, $assignmentId);
 }
 private function ensureViewerCanRemarkDocument(
     int $documentId,

@@ -118,8 +118,8 @@ const canDeleteDocumentAttachment = (file) => {
 }
 
 const canRemarkDts = computed(() => {
-    
-    return Boolean(props.canRemarkDts)
+    // Remarks permission is independent of the Addressed/final-action status.
+    return !isSuperAdminViewOnly.value && Boolean(props.canRemarkDts)
 })
 
 const isDocumentClosedOrEnded = computed(() => {
