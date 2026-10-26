@@ -8,284 +8,138 @@ use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
-
-
 /*
 |--------------------------------------------------------------------------
 | Public / Welcome
 |--------------------------------------------------------------------------
 */
-
-
-
 Route::get('/', function () {
-
     if (auth()->check()) {
-
         return redirect()->route('dts.index');
-
     }
+
     return redirect()->route('login');
-
 });
-
 
 /*
 |--------------------------------------------------------------------------
 | Dashboard
 |--------------------------------------------------------------------------
 */
-
 Route::get('/dashboard', function () {
-
     return Inertia::render('Dashboard');
-
 })->middleware(['auth', 'verified'])->name('dashboard');
 
 /*
 |--------------------------------------------------------------------------
 | Admin Routes
-|--------------------------------------------------------------------------`
+|--------------------------------------------------------------------------
 */
-
 Route::middleware(['auth', 'verified'])
     ->prefix('admin')
     ->name('admin.')
     ->group(function () {
+        Route::get('/users', [AdminUserManagementController::class, 'index'])->name('users.index');
+        Route::post('/users', [AdminUserManagementController::class, 'store'])->name('users.store');
+        Route::patch('/users/{user}/role', [AdminUserManagementController::class, 'updateRole'])->name('users.role.update');
+        Route::post('/announcements', [AdminUserManagementController::class, 'storeAnnouncement'])->name('announcements.store');
+        Route::delete('/announcements/{announcement}', [AdminUserManagementController::class, 'destroyAnnouncement'])->name('announcements.destroy');
 
-        Route::get('/users', [AdminUserManagementController::class, 'index'])
-            ->name('users.index');
+        // Admin - All Documents
+        Route::patch('/documents/{document}', [AdminUserManagementController::class, 'updateDocument'])->name('documents.update');
+        Route::delete('/documents/{document}', [AdminUserManagementController::class, 'destroyDocument'])->name('documents.destroy');
 
-        Route::post('/users', [AdminUserManagementController::class, 'store'])
-            ->name('users.store');
-            
-        Route::patch('/users/{user}/role', [AdminUserManagementController::class, 'updateRole'])
-            ->name('users.role.update');
-
-        Route::post('/announcements', [AdminUserManagementController::class, 'storeAnnouncement'])
-            ->name('announcements.store');
-
-        Route::delete('/announcements/{announcement}', [AdminUserManagementController::class, 'destroyAnnouncement'])
-            ->name('announcements.destroy');
-
-        /*
-        |--------------------------------------------------------------------------
-        | Admin - All Documents
-        |--------------------------------------------------------------------------
-        */
-
-        Route::patch(
-            '/documents/{document}',
-            [AdminUserManagementController::class, 'updateDocument']
-        )->name('documents.update');
-
-        Route::delete(
-            '/documents/{document}',
-            [AdminUserManagementController::class, 'destroyDocument']
-        )->name('documents.destroy');
-
-        Route::post(
-            '/dts-guide/topics',
-            [AdminUserManagementController::class, 'storeGuideTopic']
-        )->name('dts-guide.topics.store');
-
-        Route::patch(
-            '/dts-guide/topics/{topicId}',
-            [AdminUserManagementController::class, 'updateGuideTopic']
-        )->name('dts-guide.topics.update');
-
-
-
+        Route::post('/dts-guide/topics', [AdminUserManagementController::class, 'storeGuideTopic'])->name('dts-guide.topics.store');
+        Route::patch('/dts-guide/topics/{topicId}', [AdminUserManagementController::class, 'updateGuideTopic'])->name('dts-guide.topics.update');
     });
 
-
-
 /*
-
 |--------------------------------------------------------------------------
 | DTS Routes
 |--------------------------------------------------------------------------
 */
-
 Route::middleware(['auth', 'verified'])
-
     ->prefix('dts')
     ->name('dts.')
     ->group(function () {
+        // Main DTS Pages
+        Route::get('/', [DtsController::class, 'index'])->name('index');
+        Route::get('/create', [DtsController::class, 'create'])->name('create');
+        Route::post('/', [DtsController::class, 'store'])->name('store');
+        Route::post('/documents/store', [DtsController::class, 'store'])->name('documents.store');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Main DTS Pages
-        |--------------------------------------------------------------------------
-        */
+        // Monitoring Dashboard
+        Route::get('/monitoring-dashboard', [DtsController::class, 'monitoringDashboard'])->name('monitoring-dashboard');
 
-        Route::get('/', [DtsController::class, 'index'])
-            ->name('index');
+        // Active Announcements for DTS Users
+        Route::get('/announcements/active', [AnnouncementController::class, 'active'])->name('announcements.active');
 
-        Route::get('/create', [DtsController::class, 'create'])
-            ->name('create');
+        // Library Routes
+        Route::get('/library', [DtsController::class, 'library'])->name('library');
 
-        Route::post('/', [DtsController::class, 'store'])
-            ->name('store');
+        // Inventory Routes
+        Route::get('/inventory', [InventoryController::class, 'index'])->name('inventory');
+        Route::post('/inventory', [InventoryController::class, 'store'])->name('inventory.store');
+        Route::get('/inventory/{inventoryItem}/history', [InventoryController::class, 'history'])->name('inventory.history');
+        Route::put('/inventory/{inventoryItem}', [InventoryController::class, 'update'])->name('inventory.update');
+        Route::delete('/inventory/{inventoryItem}', [InventoryController::class, 'destroy'])->name('inventory.destroy');
+        Route::post('/inventory/purchase-request/validate', [InventoryController::class, 'uploadPurchaseRequestValidation'])->name('inventory.purchase-request.validate');
 
-        Route::post('/documents/store', [DtsController::class, 'store'])
+        // Library - Personnel
+        Route::post('/library/personnel/store', [DtsController::class, 'storePersonnel'])->name('library.personnel.store');
+        Route::post('/library/personnel/delete', [DtsController::class, 'deletePersonnel'])->name('library.personnel.delete');
+        Route::post('/library/personnel/{id}/update', [DtsController::class, 'updatePersonnel'])->name('library.personnel.update');
 
-            ->name('documents.store');
+        Route::post('/library/office/store', [DtsController::class, 'storeOffice'])->name('library.office.store');
+        Route::post('/library/office/delete', [DtsController::class, 'deleteOffice'])->name('library.office.delete');
+        Route::post('/library/office/{id}/update', [DtsController::class, 'updateOffice'])->name('library.office.update');
 
-        /*
-        | Monitoring Dashboard
-        */
+        Route::post('/library/doctype/store', [DtsController::class, 'storeDocType'])->name('library.doctype.store');
+        Route::post('/library/doctype/delete', [DtsController::class, 'deleteDocType'])->name('library.doctype.delete');
+        Route::post('/library/doctype/{id}/update', [DtsController::class, 'updateDocType'])->name('library.doctype.update');
 
-        Route::get('/monitoring-dashboard', [DtsController::class, 'monitoringDashboard'])
-            ->name('monitoring-dashboard');
+        Route::post('/library/attachment/store', [DtsController::class, 'storeLibraryAttachment'])->name('library.attachment.store');
+        Route::post('/library/attachment/delete', [DtsController::class, 'deleteLibraryAttachment'])->name('library.attachment.delete');
+        Route::post('/library/attachment/{id}/update', [DtsController::class, 'updateLibraryAttachment'])->name('library.attachment.update');
 
-        /*
-        | Active Announcements for DTS Users
-        */
+        Route::post('/library/action-types', [DtsController::class, 'storeActionType'])->name('library.action-types.store');
+        Route::patch('/library/action-types/{id}', [DtsController::class, 'updateActionType'])->name('library.action-types.update');
+        Route::delete('/library/action-types', [DtsController::class, 'deleteActionType'])->name('library.action-types.delete');
 
-        Route::get('/announcements/active', [AnnouncementController::class, 'active'])
-            ->name('announcements.active');
-
-
-
-        /*
-        | Library Routes
-        */
-        Route::get('/library', [DtsController::class, 'library'])
-
-            ->name('library');
-
-        /*
-        | Inventory Routes
-        */
-
-        Route::get('/inventory', [InventoryController::class, 'index'])
-         ->name('inventory');
-
-        Route::post('/inventory', [InventoryController::class, 'store'])
-            ->name('inventory.store');
-
-        Route::get('/inventory/{inventoryItem}/history', [InventoryController::class, 'history'])
-            ->name('inventory.history');
-
-        Route::put('/inventory/{inventoryItem}', [InventoryController::class, 'update'])
-            ->name('inventory.update');
-
-        Route::delete('/inventory/{inventoryItem}', [InventoryController::class, 'destroy'])
-            ->name('inventory.destroy');
-
-        Route::post(
-
-            '/inventory/purchase-request/validate',[InventoryController::class, 'uploadPurchaseRequestValidation'])
-            ->name('inventory.purchase-request.validate');
-
-        /*
-        | Library - Personnel
-        */
-
-        Route::post('/library/personnel/store', [DtsController::class, 'storePersonnel'])
-            ->name('library.personnel.store');
-
-        Route::post('/library/personnel/delete', [DtsController::class, 'deletePersonnel'])
-            ->name('library.personnel.delete');
-
-        Route::post('/library/personnel/{id}/update', [DtsController::class, 'updatePersonnel'])
-            ->name('library.personnel.update');
-
-        Route::post('/library/office/store', [DtsController::class, 'storeOffice'])
-
-            ->name('library.office.store');
-
-        Route::post('/library/office/delete', [DtsController::class, 'deleteOffice'])
-            ->name('library.office.delete');
-
-        Route::post('/library/office/{id}/update', [DtsController::class, 'updateOffice'])
-            ->name('library.office.update');
-
-        Route::post('/library/doctype/store', [DtsController::class, 'storeDocType'])
-            ->name('library.doctype.store');
-
-        Route::post('/library/doctype/delete', [DtsController::class, 'deleteDocType'])
-            ->name('library.doctype.delete');
-
-        Route::post('/library/doctype/{id}/update', [DtsController::class, 'updateDocType'])
-            ->name('library.doctype.update');
-
-        Route::post('/library/attachment/store', [DtsController::class, 'storeLibraryAttachment'])
-            ->name('library.attachment.store');
-
-        Route::post('/library/attachment/delete', [DtsController::class, 'deleteLibraryAttachment'])
-            ->name('library.attachment.delete');
-
-        Route::post('/library/attachment/{id}/update', [DtsController::class, 'updateLibraryAttachment'])
-            ->name('library.attachment.update');
-
-        Route::post('/library/action-types', [DtsController::class, 'storeActionType'])
-            ->name('library.action-types.store');
-
-        Route::patch('/library/action-types/{id}', [DtsController::class, 'updateActionType'])
-            ->name('library.action-types.update');
-
-        Route::delete('/library/action-types', [DtsController::class, 'deleteActionType'])
-            ->name('library.action-types.delete');
-
-        Route::get('/files/{file}/view', [DtsController::class, 'viewFile'])
-            ->name('files.view');
-
-        Route::post('/{id}/attachments', [DtsController::class, 'storeAttachment'])
-            ->whereNumber('id')
-            ->name('attachments.store');
-
+        // Attachment Routes
+        Route::get('/files/{file}/view', [DtsController::class, 'viewFile'])->name('files.view');
+        Route::post('/{id}/attachments', [DtsController::class, 'storeAttachment'])->whereNumber('id')->name('attachments.store');
         Route::delete('/{id}/attachments/{file}', [DtsController::class, 'destroyAttachment'])
+            ->whereNumber('id')->whereNumber('file')->name('attachments.destroy');
+
+        // Incoming document workflow
+        Route::post('/{id}/receive', [DtsController::class, 'receive'])->name('receive');
+        Route::post('/{id}/forward', [DtsController::class, 'forward'])->name('forward');
+        Route::post('/{id}/return', [DtsController::class, 'returnDocument'])->name('return');
+        Route::post('/{id}/remarks', [DtsController::class, 'storeRemark'])->name('remarks.store');
+        Route::post('/{id}/action-taken', [DtsController::class, 'actionTakenDocument'])->name('action-taken');
+        Route::post('/{id}/action-taken/{remarkId}/close', [DtsController::class, 'closeActionTaken'])->name('action-taken.close');
+        Route::post('/{id}/pullout', [DtsController::class, 'pullout'])->name('pullout');
+        Route::patch('/{id}/entry-date', [DtsController::class, 'updateEntryDate'])->name('entry-date.update');
+
+        // NEW: Outgoing document status action (Forwarded to Records -> Recorded)
+        Route::post('/{id}/outgoing/record', [DtsController::class, 'markOutgoingRecorded'])
             ->whereNumber('id')
-            ->whereNumber('file')
-            ->name('attachments.destroy');
+            ->name('outgoing.record');
 
-            Route::post('/{id}/receive', [DtsController::class, 'receive'])
-            ->name('receive');
-
-        Route::post('/{id}/forward', [DtsController::class, 'forward'])
-            ->name('forward');
-
-        Route::post('/{id}/return', [DtsController::class, 'returnDocument'])
-            ->name('return');
-
-        Route::post('/{id}/remarks', [DtsController::class, 'storeRemark'])
-            ->name('remarks.store');
-
-        Route::post('/{id}/action-taken', [DtsController::class, 'actionTakenDocument'])
-            ->name('action-taken');
-
-        Route::post('/{id}/action-taken/{remarkId}/close', [DtsController::class, 'closeActionTaken'])
-            ->name('action-taken.close');
-
-        Route::post('/{id}/pullout', [DtsController::class, 'pullout'])
-            ->name('pullout');
-
-        Route::patch('/{id}/entry-date', [DtsController::class, 'updateEntryDate'])
-            ->name('entry-date.update');
-
-        Route::get(
-            '/guide/topics', [AdminUserManagementController::class, 'guideTopicOverrides'])
-            ->name('guide.topics');
-
-        Route::get('/{id}', [DtsController::class, 'show'])
-            ->name('show');
+        Route::get('/guide/topics', [AdminUserManagementController::class, 'guideTopicOverrides'])->name('guide.topics');
+        Route::get('/{id}', [DtsController::class, 'show'])->name('show');
     });
 
-        Route::middleware('auth')->group(function () {
-
-        Route::get('/profile', [ProfileController::class, 'edit'])
-        ->name('profile.edit');
-
-        Route::patch('/profile', [ProfileController::class, 'update'])
-        ->name('profile.update');
-        
-        Route::delete('/profile', [ProfileController::class, 'destroy'])
-        ->name('profile.destroy');
-
+/*
+|--------------------------------------------------------------------------
+| Profile Routes
+|--------------------------------------------------------------------------
+*/
+Route::middleware('auth')->group(function () {
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+    Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 });
-
-
 
 require __DIR__ . '/auth.php';

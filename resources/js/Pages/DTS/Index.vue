@@ -105,6 +105,27 @@ const isRoleTwo = computed(() => {
     return userRights.value === '2'
 })
 
+// Outgoing updates are restricted to DTS management accounts. Role 2 is read-only.
+const canRecordOutgoingFromTable = computed(() => ['1', '3'].includes(userRights.value))
+const recordingOutgoingId = ref(null)
+const outgoingRecordForm = useForm({})
+const outgoingAlreadyRecorded = (doc) =>
+    String(doc?.outgoing_status || '').trim().toLowerCase() === 'recorded'
+
+const markOutgoingRecordedFromTable = (doc) => {
+    const id = Number(doc?.IDdoc ?? doc?.id)
+    if (!canRecordOutgoingFromTable.value || !Number.isInteger(id) || id <= 0
+        || outgoingAlreadyRecorded(doc) || outgoingRecordForm.processing) return
+
+    recordingOutgoingId.value = id
+    outgoingRecordForm.post(`/dts/${id}/outgoing/record`, {
+        preserveScroll: true,
+        onSuccess: () => router.reload({ preserveScroll: true }),
+        onFinish: () => { recordingOutgoingId.value = null },
+    })
+}
+
+
 const canShowReturnedCard = computed(() => {
   
     return userRights.value === '3'
@@ -1028,7 +1049,9 @@ const buildCurrentPayload = () => {
             payload.report_classification = reportClassification.value
         }
 
-        if (reportUser.value) {
+        if (isOutgoingReport.value) {
+            if (reportOutgoingStatus.value) payload.report_status = reportOutgoingStatus.value
+        } else if (reportUser.value) {
             payload.report_user = reportUser.value
         }
 
@@ -1059,6 +1082,15 @@ const reportClassification = ref(
     || ''
 )
 const reportUser = ref(currentParams.value.get('report_user') || '')
+const reportOutgoingStatus = ref(currentParams.value.get('report_status') || '')
+const isOutgoingReport = computed(() => ['true', 'outgoing', '1'].includes(String(reportClassification.value).toLowerCase()))
+watch(reportClassification, (classification) => {
+    if (['true', 'outgoing', '1'].includes(String(classification).toLowerCase())) {
+        reportUser.value = ''
+    } else {
+        reportOutgoingStatus.value = ''
+    }
+})
 
 const isoToDisplayDate = (value) => {
     const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -1172,6 +1204,15 @@ const selectedReportUserLabel = computed(() => {
 const reportGeneratedAt = new Date().toISOString()
 
 const reportSummaryCards = computed(() => {
+    if (isOutgoingReport.value) {
+        const forwarded = reportRows.value.filter(doc => String(doc?.outgoing_status || doc?.workflow_status || '').toLowerCase() === 'forwarded to records').length
+        const recorded = reportRows.value.filter(doc => String(doc?.outgoing_status || doc?.workflow_status || '').toLowerCase() === 'recorded').length
+        return [
+            { key: 'total', label: 'Total Outgoing', value: reportRows.value.length, cardClass: 'border-blue-200 bg-blue-50', labelClass: 'text-blue-700', valueClass: 'text-blue-950' },
+            { key: 'forwarded', label: 'Forwarded to Records', value: forwarded, cardClass: 'border-sky-200 bg-sky-50', labelClass: 'text-sky-700', valueClass: 'text-sky-950' },
+            { key: 'recorded', label: 'Recorded', value: recorded, cardClass: 'border-green-200 bg-green-50', labelClass: 'text-green-700', valueClass: 'text-green-950' },
+        ]
+    }
     const summary = reportStatusSummary.value
 
     const cards = [
@@ -1263,7 +1304,8 @@ const loadReportAutomatically = () => {
     router.get('/dts', {
         section: 'reports',
         report_classification: reportClassification.value,
-        report_user: reportUser.value,
+        report_user: isOutgoingReport.value ? '' : reportUser.value,
+        report_status: isOutgoingReport.value ? reportOutgoingStatus.value : '',
         start_date: reportStartDate.value,
         end_date: reportEndDate.value,
         per_page: perPage.value,
@@ -1293,7 +1335,6 @@ const pageTitle = computed(() => {
     if (activeSection.value === 'pending-docs') return 'Pending Documents'
     if (activeSection.value === 'pending-docs-07') return 'Pending Documents 07'
     if (activeSection.value === 'sent-docs') return 'Sent Documents'
-    if (activeSection.value === 'pulled-out-docs') return 'Pulled Out Documents'
 
     if (activeFilter.value === 'for-receiving') return 'For Receiving'
     if (['collab-received', 'received'].includes(activeFilter.value)) return 'Received'
@@ -1309,7 +1350,7 @@ const isPendingDocs07 = computed(() => {
 })
 
 const incomingSections = ['incoming', 'received-docs', 'pending-docs', 'pending-docs-07']
-const outgoingSections = ['outgoing', 'sent-docs', 'pulled-out-docs']
+const outgoingSections = ['outgoing', 'sent-docs']
 const collaborationFilters = ['for-receiving', 'received', 'collab-received', 'for-action', 'in-progress', 'addressed', 'returned']
 
 const isIncomingGroup = computed(() => {
@@ -1326,7 +1367,7 @@ const isCollaborationGroup = computed(() => {
 })
 
 const showPageTabs = computed(() => {
-    return isOutgoingGroup.value
+    return false // Outgoing has only one list; no tab navigation needed.
 })
 
 const pageTabsTitle = computed(() => {
@@ -1401,15 +1442,9 @@ const incomingTabs = computed(() => {
 const outgoingTabs = computed(() => {
     return [
         {
-            label: 'Sent Documents',
+            label: 'Outgoing Documents',
             href: buildDtsUrl({ section: 'sent-docs' }),
             active: activeSection.value === 'sent-docs',
-            count: null,
-        },
-        {
-            label: 'Pulled Out Documents',
-            href: buildDtsUrl({ section: 'pulled-out-docs' }),
-            active: activeSection.value === 'pulled-out-docs',
             count: null,
         },
     ]
@@ -1467,11 +1502,8 @@ const isActivePageTab = (tab) => {
 
 
 const isGroupLandingPage = computed(() => {
-    return activeSection.value === 'outgoing'
-        || (
-            activeSection.value === 'collaboration'
-            && !activeFilter.value
-        )
+    return activeSection.value === 'collaboration'
+        && !activeFilter.value
 })
 
 const isSameId = (first, second) => {
@@ -1849,6 +1881,10 @@ const isDatabaseAddressedDocument = (doc) => {
 }
 
 const documentStatusLabel = (doc) => {
+    if (['true', '1', 'outgoing'].includes(String(doc?.classification ?? '').trim().toLowerCase())) {
+        return doc?.outgoing_status || doc?.workflow_status || doc?.status || 'Recorded'
+    }
+
     if (
         ['in-progress', 'addressed', 'completed'].includes(activeFilter.value)
         || ['addressed-docs', 'completed-docs'].includes(activeSection.value)
@@ -1910,49 +1946,26 @@ const documentActionStatusLabel = (doc) => {
 const documentActionStatusClass = () =>
     'border-red-300 bg-red-100 text-red-800'
 
-const documentStatusClass = (doc) => {
-    const status = String(documentStatusLabel(doc)).toLowerCase()
+// Shared DTS badge colors. Keep these classes identical in Index.vue and Show.vue.
+const dtsStatusBadgeClass = (status) => {
+    const value = String(status ?? '').trim().toLowerCase()
 
-    if (
-        status.includes('addressed')
-        || status.includes('in progress')
-        || status.includes('completed')
-        || status.includes('complete')
-        || status.includes('cleared')
-        || status === 'done'
-        || status.includes('done')
-        || status.includes('approved')
-    ) {
-        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
-    }
-
-    if (status === 'received' || status.includes('received')) {
-        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
-    }
-
-    if (status === 'for receiving' || status.includes('for receiving')) {
-        return 'border-violet-300 bg-violet-100 text-violet-800'
-    }
-
-    if (status.includes('pending 07')) {
-        return 'border-orange-300 bg-orange-100 text-orange-800'
-    }
-
-    if (status.includes('pending')) {
-        return 'border-red-300 bg-red-100 text-red-800'
-    }
-
-    if (status.includes('return')) {
-        return 'border-rose-300 bg-rose-100 text-rose-800'
-    }
-
-    if (status.includes('pulled')) {
-        return 'border-slate-300 bg-slate-100 text-slate-800'
-    }
-
+    if (value === 'recorded') return 'border-green-300 bg-green-100 text-green-800'
+    if (value === 'forwarded to records') return 'border-blue-300 bg-blue-100 text-blue-800'
+    if (value === 'for forwarding') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
+    if (value.includes('released')) return 'border-teal-300 bg-teal-100 text-teal-800'
+    if (value.includes('addressed') || value.includes('completed') || value.includes('cleared') || value.includes('approved') || value === 'done' || value.includes('in progress')) return 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    if (value === 'received') return 'border-emerald-300 bg-emerald-100 text-emerald-800'
+    if (value.includes('for receiving')) return 'border-violet-300 bg-violet-100 text-violet-800'
+    if (value.includes('for action')) return 'border-red-300 bg-red-100 text-red-800'
+    if (value.includes('pending 07')) return 'border-orange-300 bg-orange-100 text-orange-800'
+    if (value.includes('pending')) return 'border-red-300 bg-red-100 text-red-800'
+    if (value.includes('return')) return 'border-rose-300 bg-rose-100 text-rose-800'
+    if (value.includes('pulled')) return 'border-slate-300 bg-slate-100 text-slate-800'
     return 'border-slate-300 bg-slate-100 text-slate-700'
 }
 
+const documentStatusClass = (doc) => dtsStatusBadgeClass(documentStatusLabel(doc))
 
 const isPendingReturnForReport = (doc) => {
     const parentId = String(doc?.distribution_parent_id ?? '').trim()
@@ -2000,6 +2013,13 @@ const reportRows = computed(() => {
     }
 
     return rows.value.filter((doc) => {
+        if (isOutgoingReport.value) {
+            const outgoingStatus = String(doc?.outgoing_status || doc?.workflow_status || 'Recorded').trim().toLowerCase()
+            const selected = String(reportOutgoingStatus.value || '').trim().toLowerCase()
+            return ['true', '1', 'outgoing'].includes(String(doc?.classification ?? '').toLowerCase())
+                && ['forwarded to records', 'recorded'].includes(outgoingStatus)
+                && (!selected || outgoingStatus === selected)
+        }
         const status = String(reportDocumentStatusLabel(doc) || '')
             .trim()
             .toLowerCase()
@@ -2031,35 +2051,7 @@ const reportStatusSummary = computed(() => {
     return summary
 })
 
-const reportDocumentStatusClass = (doc) => {
-    const status = String(reportDocumentStatusLabel(doc) || '').toLowerCase()
-
-    if (status.includes('addressed')) {
-        return 'border-cyan-300 bg-cyan-100 text-cyan-800'
-    }
-
-    if (status.includes('received')) {
-        return 'border-emerald-300 bg-emerald-100 text-emerald-800'
-    }
-
-    if (status.includes('for receiving')) {
-        return 'border-violet-300 bg-violet-100 text-violet-800'
-    }
-
-    if (status.includes('return')) {
-        return 'border-rose-300 bg-rose-100 text-rose-800'
-    }
-
-    if (status.includes('pulled')) {
-        return 'border-slate-300 bg-slate-100 text-slate-800'
-    }
-
-    if (status.includes('pending')) {
-        return 'border-red-300 bg-red-100 text-red-800'
-    }
-
-    return 'border-slate-300 bg-slate-100 text-slate-700'
-}
+const reportDocumentStatusClass = (doc) => dtsStatusBadgeClass(reportDocumentStatusLabel(doc))
 
 const reportAssignedToDisplay = (doc) => {
     return doc?.to_personnel
@@ -2423,7 +2415,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-red-800 ring-1 ring-red-200">
-                                                DTS - #{{ documentNumberDisplay(doc) }}
+                                                {{ documentNumberDisplay(doc) }}
                                             </span>
 
                                             <span
@@ -2546,7 +2538,7 @@ const submitEntryDateUpdate = () => {
                                     <div class="min-w-0">
                                         <div class="flex flex-wrap items-center gap-2">
                                             <span class="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
-                                                DTS - #{{ documentNumberDisplay(doc) }}
+                                                {{ documentNumberDisplay(doc) }}
                                             </span>
 
                                             <span
@@ -2970,7 +2962,7 @@ const submitEntryDateUpdate = () => {
                                     </h3>
 
                                     <p class="mt-1 text-sm font-medium text-black">
-                                        Filter documents by classification, assigned user, and date range.
+                                        Filter by classification, user (Incoming) or status (Outgoing), and date range.
                                     </p>
                                 </div>
 
@@ -3006,7 +2998,7 @@ const submitEntryDateUpdate = () => {
                                     </select>
                                 </div>
 
-                                <div class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                                <div v-if="!isOutgoingReport" class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
                                     <label class="text-sm font-bold text-black md:text-right">
                                         User:
                                     </label>
@@ -3027,6 +3019,17 @@ const submitEntryDateUpdate = () => {
                                         >
                                             {{ reportUserOptionLabel(user) }}
                                         </option>
+                                    </select>
+                                </div>
+
+                                <div v-if="isOutgoingReport" class="grid grid-cols-1 gap-2 md:grid-cols-[180px_1fr] md:items-center">
+                                    <label class="text-sm font-bold text-black md:text-right">Status:</label>
+                                    <select v-model="reportOutgoingStatus"
+                                        class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                                        @change="loadReportAutomatically">
+                                        <option value="">All Statuses</option>
+                                        <option value="Forwarded to Records">Forwarded to Records</option>
+                                        <option value="Recorded">Recorded</option>
                                     </select>
                                 </div>
 
@@ -3137,11 +3140,11 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 </p>
 
-                                <p class="mt-1">
-                                    User:
-                                    <span class="font-bold">
-                                        {{ selectedReportUserLabel }}
-                                    </span>
+                                <p v-if="isOutgoingReport" class="mt-1">
+                                    Status: <span class="font-bold">{{ reportOutgoingStatus || 'All Statuses' }}</span>
+                                </p>
+                                <p v-else class="mt-1">
+                                    User: <span class="font-bold">{{ selectedReportUserLabel }}</span>
                                 </p>
 
                                 <p v-if="reportStartDate || reportEndDate" class="mt-1">
@@ -3220,7 +3223,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-3 py-4 font-bold text-blue-700">
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </td>
 
                                     <td class="border border-black px-3 py-4 font-semibold text-black">
@@ -3296,7 +3299,7 @@ const submitEntryDateUpdate = () => {
                                     :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
                                 >
                                     <td class="border border-black px-2 py-3 font-bold text-black">
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </td>
 
                                     <td class="border border-black px-2 py-3 font-semibold text-black">
@@ -3454,7 +3457,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
-                                    DTS - #{{ documentNumberDisplay(doc) }}
+                                    {{ documentNumberDisplay(doc) }}
                                 </Link>
                             </div>
 
@@ -3619,7 +3622,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -3844,7 +3847,7 @@ const submitEntryDateUpdate = () => {
                                 :href="documentUrl(doc)"
                                 class="font-bold text-blue-700 hover:underline"
                             >
-                                DTS - #{{ documentNumberDisplay(doc) }}
+                                {{ documentNumberDisplay(doc) }}
                             </Link>
                         </td>
 
@@ -3955,17 +3958,17 @@ const submitEntryDateUpdate = () => {
 
             <!-- SENT DOCS CONTENT -->
             <div
-                v-else-if="activeSection === 'sent-docs'"
+                v-else-if="['sent-docs', 'outgoing'].includes(activeSection)"
                 class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
             >
                 <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div>
                         <h2 class="text-2xl font-bold tracking-wide text-cyan-700">
-                            Sent Documents
+                            Outgoing Documents
                         </h2>
 
                         <p class="mt-2 text-sm font-medium text-black">
-                            List of documents distributed or sent to offices.
+                            List of outgoing documents and their current status.
                         </p>
                     </div>
 
@@ -4009,7 +4012,7 @@ const submitEntryDateUpdate = () => {
                 </div>
 
             <div class="overflow-x-auto rounded-xl border border-black">
-                <table class="w-full min-w-[1100px] table-fixed border-collapse text-center text-sm">
+                <table class="w-full min-w-[1250px] table-fixed border-collapse text-center text-sm">
                     <thead>
                         <tr class="bg-blue-600 text-white">
                             <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
@@ -4033,7 +4036,11 @@ const submitEntryDateUpdate = () => {
                             </th>
 
                             <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
-                                Return<br>Date
+                                Status
+                            </th>
+
+                            <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
+                                Actions
                             </th>
                         </tr>
                     </thead>
@@ -4049,7 +4056,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="font-bold text-blue-700 hover:underline"
                                 >
-                                    DTS - #{{ documentNumberDisplay(doc) }}
+                                    {{ documentNumberDisplay(doc) }}
                                 </Link>
                             </td>
 
@@ -4088,19 +4095,33 @@ const submitEntryDateUpdate = () => {
 
                             <td class="border border-black px-4 py-4 align-middle text-center">
                                 <p class="font-bold text-black">
-                                    {{ formatDateTime(doc.return_date || doc.returndate, '-') }}
+                                    <span class="inline-flex rounded-full border px-3 py-1 text-xs font-black" :class="documentStatusClass(doc)">{{ documentStatusLabel(doc) }}</span>
                                 </p>
+                            </td>
+
+                            <td class="border border-black px-3 py-4 align-middle text-center">
+                                <button
+                                    v-if="canRecordOutgoingFromTable && !outgoingAlreadyRecorded(doc)"
+                                    type="button"
+                                    :disabled="outgoingRecordForm.processing"
+                                    class="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                    @click="markOutgoingRecordedFromTable(doc)"
+                                >
+                                    {{ recordingOutgoingId === Number(doc.IDdoc) && outgoingRecordForm.processing ? 'Saving...' : 'Mark as Recorded' }}
+                                </button>
+                                <span v-else-if="outgoingAlreadyRecorded(doc)" class="font-bold text-emerald-700">Recorded</span>
+                                <Link v-else :href="documentUrl(doc)" class="text-sm font-semibold text-blue-700 hover:underline">View</Link>
                             </td>
                         </tr>
 
                         <tr v-if="rows.length === 0">
-                            <td colspan="6" class="border border-black px-7 py-14 text-center">
+                            <td colspan="7" class="border border-black px-7 py-14 text-center">
                                 <div class="text-lg font-bold text-black">
-                                    No sent documents found
+                                    No outgoing documents found
                                 </div>
 
                                 <p class="mt-2 text-sm font-medium text-black">
-                                    No sent records available.
+                                    No outgoing records available.
                                 </p>
                             </td>
                         </tr>
@@ -4136,169 +4157,6 @@ const submitEntryDateUpdate = () => {
                 </div>
             </div>
 
-                <!-- PULLED OUT DOCS CONTENT -->
-                <div
-                    v-else-if="activeSection === 'pulled-out-docs'"
-                    class="rounded-2xl border border-blue-200 bg-white p-6 shadow-sm"
-                >
-                    <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                        <div>
-                            <h2 class="text-2xl font-bold tracking-wide text-cyan-700">
-                                Pulled Out Documents
-                            </h2>
-
-                            <p class="mt-2 text-sm font-medium text-black">
-                                List of documents pulled out from outgoing records.
-                            </p>
-                        </div>
-
-                        <div class="text-sm font-bold text-black">
-                            Page {{ currentPage }} of {{ lastPage }}
-                        </div>
-                    </div>
-
-                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
-                    <div class="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_auto] md:items-end">
-                        <div>
-                            <label class="mb-2 block text-sm font-bold text-black">
-                                Search:
-                            </label>
-
-                            <input
-                                v-model="search"
-                                type="text"
-                                placeholder="Search Doc ID, type, office, or subject..."
-                                class="w-full rounded-lg border border-blue-300 bg-white px-4 py-2.5 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                                @keyup.enter="runSearch"
-                            />
-                        </div>
-
-                        <button
-                            type="button"
-                            class="rounded-lg border border-blue-400 bg-white px-5 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100"
-                            @click="runSearch"
-                        >
-                            Search
-                        </button>
-
-                        <button
-                            type="button"
-                            class="rounded-lg border border-blue-300 bg-white px-5 py-2.5 text-sm font-bold text-blue-700 hover:bg-blue-100"
-                            @click="resetSearch"
-                        >
-                            Reset
-                        </button>
-                    </div>
-                </div>
-
-                <div class="overflow-x-auto rounded-xl border border-black">
-                    <table class="w-full min-w-[1000px] table-fixed border-collapse text-center text-sm">
-                        <thead>
-                            <tr class="bg-blue-600 text-white">
-                                <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
-                                    Doc ID
-                                </th>
-
-                                <th class="w-[12%] border border-black px-4 py-4 text-center font-bold">
-                                    Type
-                                </th>
-
-                                <th class="w-[24%] border border-black px-4 py-4 text-center font-bold">
-                                    From
-                                </th>
-
-                                <th class="w-[36%] border border-black px-4 py-4 text-center font-bold">
-                                    Subject
-                                </th>
-
-                                <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                    Date Sent
-                                </th>
-                            </tr>
-                        </thead>
-
-                        <tbody>
-                            <tr
-                                v-for="(doc, index) in rows"
-                                :key="doc.IDdoc"
-                                :class="index % 2 === 0 ? 'bg-white' : 'bg-gray-100'"
-                            >
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <Link
-                                        :href="documentUrl(doc)"
-                                        class="font-bold text-blue-700 hover:underline"
-                                    >
-                                        DTS - #{{ documentNumberDisplay(doc) }}
-                                    </Link>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                        {{ doc.from_office || '-' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="whitespace-pre-line break-words text-base font-bold leading-6 text-black">
-                                        {{ doc.subject || 'No subject' }}
-                                    </p>
-                                </td>
-
-                                <td class="border border-black px-4 py-4 align-middle text-center">
-                                    <p class="font-bold text-black">
-                                        {{ formatDateTime(doc.date_sent || doc.distdate || doc.entrydate) }}
-                                    </p>
-                                </td>
-                            </tr>
-
-                            <tr v-if="rows.length === 0">
-                                <td colspan="5" class="border border-black px-7 py-14 text-center">
-                                    <div class="text-lg font-bold text-black">
-                                        No pulled out documents found
-                                    </div>
-
-                                    <p class="mt-2 text-sm font-medium text-black">
-                                        No pulled out records available.
-                                    </p>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <div
-                    v-if="links.length > 3"
-                    class="mt-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between"
-                >
-                    <div class="text-sm font-bold text-black">
-                        Page {{ currentPage }} of {{ lastPage }}
-                    </div>
-
-                    <div class="flex flex-wrap gap-2">
-                        <button
-                            v-for="link in links"
-                            :key="`${link.label}-${link.url}`"
-                            type="button"
-                            :disabled="!link.url"
-                            class="rounded-lg border px-3 py-2 text-sm font-bold"
-                            :class="[
-                                link.active
-                                    ? 'border-blue-600 bg-blue-600 text-white'
-                                    : 'border-blue-300 bg-white text-blue-700 hover:bg-blue-50',
-                                !link.url ? 'cursor-not-allowed opacity-50' : ''
-                            ]"
-                            @click="goToPage(link.url)"
-                            v-html="link.label"
-                        ></button>
-                    </div>
-                </div>
-            </div>
                         <!-- INCOMING TABLE CONTENT -->
             <div
                 v-else-if="(activeSection === 'incoming' && !activeFilter) || activeFilter === 'for-receiving'"
@@ -4374,7 +4232,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
-                                    DTS - #{{ documentNumberDisplay(doc) }}
+                                    {{ documentNumberDisplay(doc) }}
                                 </Link>
                             </div>
 
@@ -4539,7 +4397,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -4733,7 +4591,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
-                                    DTS - #{{ documentNumberDisplay(doc) }}
+                                    {{ documentNumberDisplay(doc) }}
                                 </Link>
                             </div>
 
@@ -4898,7 +4756,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -5099,7 +4957,7 @@ const submitEntryDateUpdate = () => {
                                     :href="documentUrl(doc)"
                                     class="mt-1 inline-flex break-all text-base font-black text-blue-700 hover:underline"
                                 >
-                                    DTS - #{{ documentNumberDisplay(doc) }}
+                                    {{ documentNumberDisplay(doc) }}
                                 </Link>
                             </div>
 
@@ -5264,7 +5122,7 @@ const submitEntryDateUpdate = () => {
                                         :href="documentUrl(doc)"
                                         class="font-bold text-blue-700 hover:underline"
                                     >
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </Link>
                                 </td>
 
@@ -5397,8 +5255,9 @@ const submitEntryDateUpdate = () => {
                     v-if="activeSection === 'documents'"
                     class="mb-6 grid grid-cols-[repeat(auto-fit,minmax(145px,1fr))] gap-3 lg:mb-8 xl:gap-4"
                 >
-                    <div
-                        class="relative min-h-[118px] overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl shadow-blue-100 xl:min-h-[132px] xl:rounded-[1.6rem] xl:p-4 2xl:p-5"
+                    <Link
+                        :href="buildDtsUrl({ section: 'incoming' })"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-blue-600 to-indigo-600 p-3 text-white shadow-xl shadow-blue-100 transition hover:-translate-y-1 hover:shadow-2xl xl:min-h-[132px] xl:rounded-[1.6rem] xl:p-4 2xl:p-5"
                     >
                         <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"></div>
 
@@ -5410,18 +5269,31 @@ const submitEntryDateUpdate = () => {
                             <div class="min-w-0 flex-1">
                                 <div class="flex items-start justify-between gap-3">
                                     <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">
-                                        Total Documents
+                                        Incoming Documents
                                     </p>
 
                                     
                                 </div>
 
                                 <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">
-                                    {{ props.stats.total }}
+                                    {{ props.stats.incoming_documents ?? 0 }}
                                 </p>
                             </div>
                         </div>
-                    </div>
+                    </Link>
+
+                    <Link
+                        :href="buildDtsUrl({ section: 'sent-docs' })"
+                        class="group relative min-h-[118px] overflow-hidden rounded-[1.35rem] bg-gradient-to-br from-teal-600 to-cyan-700 p-3 text-white shadow-xl shadow-teal-100 transition hover:-translate-y-1 hover:shadow-2xl xl:min-h-[132px] xl:rounded-[1.6rem] xl:p-4 2xl:p-5"
+                    >
+                        <div class="relative flex h-full items-start gap-3 2xl:gap-4">
+                            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-lg xl:h-10 xl:w-10 xl:text-xl 2xl:h-12 2xl:w-12">📤</div>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-xs font-black leading-tight text-white/90 xl:text-sm 2xl:text-base">Outgoing Documents</p>
+                                <p class="mt-2 text-3xl font-black leading-none tracking-tight xl:text-4xl 2xl:mt-3 2xl:text-5xl">{{ props.stats.outgoing_documents ?? 0 }}</p>
+                            </div>
+                        </div>
+                    </Link>
 
                     <Link
                         :href="buildDtsUrl({ section: 'incoming', filter: 'for-receiving' })"
@@ -5692,7 +5564,7 @@ const submitEntryDateUpdate = () => {
                             >
                                 <td class="px-4 py-5 align-top">
                                     <span class="font-bold text-blue-700">
-                                        DTS - #{{ documentNumberDisplay(doc) }}
+                                        {{ documentNumberDisplay(doc) }}
                                     </span>
                                 </td>
 

@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Head, router, usePage } from '@inertiajs/vue3'
 
 const props = defineProps({
+    monitoringMode: { type: String, default: 'incoming' },
+    outgoingStats: { type: Object, default: () => ({ total: 0, forwarded: 0, recorded: 0 }) },
     stats: {
         type: Object,
         default: () => ({}),
@@ -37,6 +39,35 @@ const props = defineProps({
 })
 
 const page = usePage()
+const isOutgoingMonitoring = computed(() => props.monitoringMode === 'outgoing')
+const outgoingStatus = ref(props.filters.status || '')
+const outgoingSearch = ref(props.filters.search || '')
+const outgoingYear = ref(props.filters.year || '')
+const outgoingPerPage = ref(Number(props.filters.per_page || 15))
+let outgoingSearchTimer = null
+const outgoingRows = computed(() => props.transactions?.data || [])
+const outgoingStatusBadge = (value) => String(value || '').toLowerCase() === 'recorded'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    : 'border-blue-200 bg-blue-50 text-blue-800'
+const outgoingFilter = (statusValue = outgoingStatus.value) => {
+    router.get('/dts/monitoring-dashboard', {
+        classification: 'outgoing',
+        search: outgoingSearch.value,
+        status: statusValue,
+        year: outgoingYear.value,
+        per_page: outgoingPerPage.value,
+    }, { preserveScroll: true, preserveState: true })
+}
+const goMonitoringMode = (mode) => {
+    router.get('/dts/monitoring-dashboard', mode === 'outgoing' ? { classification: 'outgoing' } : {},
+        { preserveScroll: true })
+}
+watch(outgoingSearch, () => {
+    if (!isOutgoingMonitoring.value) return
+    clearTimeout(outgoingSearchTimer)
+    outgoingSearchTimer = setTimeout(() => outgoingFilter(), 350)
+})
+
 const showUserMenu = ref(false)
 const showNotificationModal = ref(false)
 const showPendingModal = ref(false)
@@ -713,6 +744,7 @@ watch(search, () => {
 })
 
 onBeforeUnmount(() => {
+    clearTimeout(outgoingSearchTimer)
     clearTimeout(searchTimer)
 })
 
@@ -1115,8 +1147,94 @@ const daysPendingClass = (days) => {
         </header>
 
         <main class="mx-auto max-w-[1700px] px-4 py-6 sm:px-6 lg:px-8">
-            <!-- Main Workspace -->
-            <section class="space-y-5">
+            <!-- Incoming / Outgoing monitoring switch -->
+            <div class="mb-5 flex flex-wrap gap-3">
+                <button type="button" @click="goMonitoringMode('incoming')"
+                    class="rounded-2xl px-5 py-3 text-sm font-black transition"
+                    :class="!isOutgoingMonitoring ? 'bg-blue-700 text-white shadow-md' : 'bg-white text-blue-700 ring-1 ring-blue-200 hover:bg-blue-50'">
+                    Incoming Monitoring
+                </button>
+                <button type="button" @click="goMonitoringMode('outgoing')"
+                    class="rounded-2xl px-5 py-3 text-sm font-black transition"
+                    :class="isOutgoingMonitoring ? 'bg-blue-700 text-white shadow-md' : 'bg-white text-blue-700 ring-1 ring-blue-200 hover:bg-blue-50'">
+                    Outgoing Monitoring
+                </button>
+            </div>
+
+            <section v-if="isOutgoingMonitoring" class="space-y-5">
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <button v-for="card in [
+                        { key: '', label: 'Total Outgoing', value: outgoingStats.total, active: 'border-blue-500', badge: 'bg-blue-50 text-blue-700' },
+                        { key: 'Forwarded to Records', label: 'Forwarded to Records', value: outgoingStats.forwarded, active: 'border-blue-500', badge: 'bg-blue-50 text-blue-700' },
+                        { key: 'Recorded', label: 'Recorded', value: outgoingStats.recorded, active: 'border-emerald-500', badge: 'bg-emerald-50 text-emerald-700' },
+                    ]" :key="card.label" type="button"
+                        class="rounded-[1.75rem] border-2 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
+                        :class="outgoingStatus === card.key ? card.active : 'border-transparent'"
+                        @click="outgoingStatus = card.key; outgoingFilter(card.key)">
+                        <span class="rounded-full px-3 py-1 text-xs font-bold" :class="card.badge">{{ card.label }}</span>
+                        <p class="mt-4 text-3xl font-black text-slate-900">{{ card.value || 0 }}</p>
+                    </button>
+                </div>
+
+                <section class="rounded-[1.75rem] bg-white p-5 shadow-sm ring-1 ring-blue-100">
+                    <h2 class="mb-4 text-lg font-black text-slate-900">Outgoing Document Filters</h2>
+                    <div class="grid gap-4 md:grid-cols-4">
+                        <input v-model="outgoingSearch" type="search" placeholder="Search code or subject..."
+                            class="rounded-xl border-blue-200 text-sm focus:border-blue-500 focus:ring-blue-200" />
+                        <select v-model="outgoingStatus" @change="outgoingFilter()" class="rounded-xl border-blue-200 text-sm focus:ring-blue-200">
+                            <option value="">All Statuses</option>
+                            <option value="Forwarded to Records">Forwarded to Records</option>
+                            <option value="Recorded">Recorded</option>
+                        </select>
+                        <select v-model="outgoingYear" @change="outgoingFilter()" class="rounded-xl border-blue-200 text-sm focus:ring-blue-200">
+                            <option value="">All Years</option>
+                            <option v-for="y in years" :key="y" :value="String(y)">{{ y }}</option>
+                        </select>
+                        <select v-model="outgoingPerPage" @change="outgoingFilter()" class="rounded-xl border-blue-200 text-sm focus:ring-blue-200">
+                            <option :value="10">10 entries</option><option :value="15">15 entries</option>
+                            <option :value="25">25 entries</option><option :value="50">50 entries</option>
+                        </select>
+                    </div>
+                </section>
+
+                <section class="overflow-hidden rounded-[1.75rem] bg-white shadow-sm ring-1 ring-blue-100">
+                    <div class="border-b border-blue-100 px-5 py-5">
+                        <h2 class="text-xl font-black text-slate-900">Outgoing Documents</h2>
+                        <p class="mt-1 text-sm text-slate-500">Monitoring only. No Staff Concern or receiving workflow.</p>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-sm">
+                            <thead class="bg-blue-700 text-left text-xs uppercase text-white">
+                                <tr><th class="px-5 py-4">DTS Code</th><th class="px-5 py-4">Subject</th>
+                                    <th class="px-5 py-4">Entry Date</th><th class="px-5 py-4">Status</th>
+                                    <th class="px-5 py-4">Action</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="doc in outgoingRows" :key="doc.IDdoc" class="border-b border-slate-100 hover:bg-blue-50/50">
+                                    <td class="whitespace-nowrap px-5 py-4 font-black text-blue-700">{{ doc.display_document_no }}</td>
+                                    <td class="min-w-[260px] px-5 py-4 font-semibold text-slate-800">{{ doc.subject || '-' }}</td>
+                                    <td class="whitespace-nowrap px-5 py-4 text-slate-600">{{ formatDate(doc.entrydate) }}</td>
+                                    <td class="px-5 py-4"><span class="inline-flex whitespace-nowrap rounded-full border px-3 py-1 text-xs font-bold" :class="outgoingStatusBadge(doc.outgoing_status)">{{ doc.outgoing_status || '-' }}</span></td>
+                                    <td class="px-5 py-4"><button type="button" @click="goToDocument(doc)" class="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700">View Details</button></td>
+                                </tr>
+                                <tr v-if="outgoingRows.length === 0"><td colspan="5" class="px-5 py-12 text-center font-semibold text-slate-500">No outgoing documents found.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-if="transactions.links?.length" class="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+                        <p class="text-xs font-semibold text-slate-500">{{ transactions.total || 0 }} matching documents</p>
+                        <div class="flex flex-wrap gap-2">
+                            <button v-for="(link, i) in transactions.links" :key="i" type="button" :disabled="!link.url"
+                                @click="goToPage(link.url)" class="rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-40"
+                                :class="link.active ? 'border-blue-600 bg-blue-600 text-white' : 'border-blue-100 bg-white text-blue-700'"
+                                v-html="cleanPaginationLabel(link.label)"></button>
+                        </div>
+                    </div>
+                </section>
+            </section>
+
+            <!-- Existing Incoming Monitoring Workspace -->
+            <section v-else class="space-y-5">
                 <!-- Monitoring Status Cards -->
                 <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
                     <button

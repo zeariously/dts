@@ -49,6 +49,10 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    canMarkOutgoingRecorded: {
+        type: Boolean,
+        default: false,
+    },
     canActionTakenDts: {
         type: Boolean,
         default: false,
@@ -82,9 +86,11 @@ const isRoleTwo = computed(() => {
     return userRights.value === '2'
 })
 
+const isOutgoingRoleTwoViewer = computed(() => isRoleTwo.value && isOutgoingDocument.value)
+
 const canReceiveDts = computed(() => {
     
-    return !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
+    return !isOutgoingRoleTwoViewer.value && !isSuperAdminViewOnly.value && Boolean(props.canReceiveDts)
 })
 
 const canTransferDts = computed(() => {
@@ -92,7 +98,9 @@ const canTransferDts = computed(() => {
      * Transfer has its own backend permission.
      * Role 3 can transfer documents even when they are not the tagged receiver.
      */
-    return !isSuperAdminViewOnly.value && Boolean(props.canTransferDts)
+    return !isOutgoingDocument.value
+        && !isSuperAdminViewOnly.value
+        && Boolean(props.canTransferDts)
 })
 
 const canReattachDts = computed(() => {
@@ -101,7 +109,8 @@ const canReattachDts = computed(() => {
      * Role 3 is allowed to attach a replacement file to any document
      * that they are allowed to open.
      */
-    return !isSuperAdminViewOnly.value
+    return !isOutgoingRoleTwoViewer.value
+        && !isSuperAdminViewOnly.value
         && Boolean(props.canReattachDts)
 })
 
@@ -111,7 +120,8 @@ const canDeleteDocumentAttachment = (file) => {
     const viewerId = String(page.props.auth?.user?.id ?? page.props.auth?.user?.ID ?? '').trim()
     const uploaderId = String(file?.uploaded_by ?? '').trim()
 
-    return !isSuperAdminViewOnly.value
+    return !isOutgoingRoleTwoViewer.value
+        && !isSuperAdminViewOnly.value
         && viewerId !== ''
         && uploaderId !== ''
         && viewerId === uploaderId
@@ -119,7 +129,7 @@ const canDeleteDocumentAttachment = (file) => {
 
 const canRemarkDts = computed(() => {
     // Remarks permission is independent of the Addressed/final-action status.
-    return !isSuperAdminViewOnly.value && Boolean(props.canRemarkDts)
+    return !isOutgoingRoleTwoViewer.value && !isSuperAdminViewOnly.value && Boolean(props.canRemarkDts)
 })
 
 const isDocumentClosedOrEnded = computed(() => {
@@ -150,11 +160,27 @@ const isDocumentReceivedForAction = computed(() => {
 })
 
 const canActionTakenDts = computed(() => {
-    return !isSuperAdminViewOnly.value
+    return !isOutgoingRoleTwoViewer.value
+        && !isSuperAdminViewOnly.value
         && !isDocumentClosedOrEnded.value
         && Boolean(props.canActionTakenDts)
         && isDocumentReceivedForAction.value
 })
+
+const outgoingRecordForm = useForm({})
+const canMarkOutgoingRecorded = computed(() =>
+    isOutgoingDocument.value
+    && !isSuperAdminViewOnly.value
+    && Boolean(props.canMarkOutgoingRecorded)
+    && String(props.document?.outgoing_status || '').trim().toLowerCase() !== 'recorded'
+)
+const markOutgoingRecorded = () => {
+    if (!canMarkOutgoingRecorded.value || outgoingRecordForm.processing || !documentId.value) return
+    outgoingRecordForm.post(`/dts/${documentId.value}/outgoing/record`, {
+        preserveScroll: true,
+        onSuccess: () => router.reload({ preserveScroll: true }),
+    })
+}
 
 const activeTab = ref('details')
 
@@ -711,47 +737,26 @@ const confirmRemoveExistingAttachment = () => {
     )
 }
 
-const statusClass = (status) => {
-    const value = String(status || '').toLowerCase()
+// Shared DTS badge colors. Keep these classes identical in Index.vue and Show.vue.
+const dtsStatusBadgeClass = (status) => {
+    const value = String(status ?? '').trim().toLowerCase()
 
-    if (value.includes('pulled')) {
-        return 'bg-slate-100 text-slate-800 border border-slate-300'
-    }
-
-    if (value.includes('return')) {
-        return 'bg-red-100 text-red-800 border border-red-300'
-    }
-
-    if (value.includes('addressed') || value.includes('done')) {
-        return 'bg-cyan-100 text-cyan-800 border border-cyan-300'
-    }
-
-    if (value.includes('received')) {
-        return 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-    }
-
-    if (value.includes('for receiving')) {
-        return 'bg-violet-100 text-violet-800 border border-violet-300'
-    }
-
-    if (value.includes('pending 07')) {
-        return 'bg-orange-100 text-orange-800 border border-orange-300'
-    }
-
-    if (value.includes('pending')) {
-        return 'bg-yellow-100 text-yellow-900 border border-yellow-300'
-    }
-
-    if (value.includes('review') || value.includes('process')) {
-        return 'bg-purple-100 text-purple-800 border border-purple-300'
-    }
-
-    if (value.includes('approved') || value.includes('completed') || value.includes('cleared')) {
-        return 'bg-green-100 text-green-800 border border-green-300'
-    }
-
-    return 'bg-blue-100 text-blue-800 border border-blue-300'
+    if (value === 'recorded') return 'border-green-300 bg-green-100 text-green-800'
+    if (value === 'forwarded to records') return 'border-blue-300 bg-blue-100 text-blue-800'
+    if (value === 'for forwarding') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
+    if (value.includes('released')) return 'border-teal-300 bg-teal-100 text-teal-800'
+    if (value.includes('addressed') || value.includes('completed') || value.includes('cleared') || value.includes('approved') || value === 'done' || value.includes('in progress')) return 'border-cyan-300 bg-cyan-100 text-cyan-800'
+    if (value === 'received') return 'border-emerald-300 bg-emerald-100 text-emerald-800'
+    if (value.includes('for receiving')) return 'border-violet-300 bg-violet-100 text-violet-800'
+    if (value.includes('for action')) return 'border-red-300 bg-red-100 text-red-800'
+    if (value.includes('pending 07')) return 'border-orange-300 bg-orange-100 text-orange-800'
+    if (value.includes('pending')) return 'border-red-300 bg-red-100 text-red-800'
+    if (value.includes('return')) return 'border-rose-300 bg-rose-100 text-rose-800'
+    if (value.includes('pulled')) return 'border-slate-300 bg-slate-100 text-slate-800'
+    return 'border-slate-300 bg-slate-100 text-slate-700'
 }
+
+const statusClass = (status) => dtsStatusBadgeClass(status)
 
 const getFirstFilled = (...values) => {
     for (const value of values) {
@@ -927,6 +932,12 @@ const initialRemarksDisplay = computed(() => {
     return addedDocumentRemarksDisplay.value
 })
 
+const isOutgoingDocument = computed(() =>
+    ['true', '1', 'outgoing'].includes(
+        String(props.document?.classification ?? '').trim().toLowerCase()
+    )
+)
+
 const classificationLabel = computed(() => {
     const classification = getFirstFilled(
         props.document.classification_label,
@@ -997,7 +1008,9 @@ const currentWorkflowStatus = computed(() => {
      * - Role 2 returner: Returned
      * - Role 3/Admin recipient: For Receiving
      */
-    return statusSummary.value.current_status || props.document.status || 'Pending'
+    return isOutgoingDocument.value
+        ? (props.document.outgoing_status || props.document.status || 'Recorded')
+        : (statusSummary.value.current_status || props.document.status || 'Pending')
 })
 
 const canReceiveCurrentDocument = computed(() => {
@@ -1020,7 +1033,8 @@ const canTransferCurrentDocument = computed(() => {
      * Before receive: only Receive Document + View Action History are shown.
      * After receive: Select Action appears, and Transfer/Return are inside it.
      */
-    return canTransferDts.value
+    return !isOutgoingDocument.value
+        && canTransferDts.value
         && !isDocumentClosedOrEnded.value
         && isDocumentReceivedForAction.value
         && !status.includes('pulled')
@@ -1032,7 +1046,8 @@ const canQuickTransferCurrentDocument = computed(() => {
      * show Transfer Document immediately as a quick button,
      * regardless if the document is already received or not.
      */
-    return isRoleThree.value
+    return !isOutgoingDocument.value
+        && isRoleThree.value
         && canTransferDts.value
 })
 
@@ -1046,6 +1061,7 @@ const canReturnCurrentDocument = computed(() => {
      * permission supplied by the controller instead.
      */
     return isRoleTwo.value
+        && !isOutgoingDocument.value
         && !isSuperAdminViewOnly.value
         && Boolean(props.canActionTakenDts)
         && !isDocumentClosedOrEnded.value
@@ -1380,8 +1396,8 @@ const remarksHistory = computed(() => {
 
         history.push({
             id: `${isAddressAction ? actionType : 'saved-remark'}-${item.id}`,
-            type: isAddressAction ? 'Select Action' : 'Remark',
-            title: isClosedAction ? 'Action Closed' : (isSavedAction ? 'Action Saved' : 'Added Remark'),
+            type: actionType === 'outgoing_status' ? 'Outgoing Status' : (isAddressAction ? 'Select Action' : 'Remark'),
+            title: actionType === 'outgoing_status' ? 'Status Updated' : (isClosedAction ? 'Action Closed' : (isSavedAction ? 'Action Saved' : 'Added Remark')),
             description: isClosedAction
                 ? `Closed action: ${actionTarget || 'Action'}.`
                 : (isSavedAction
@@ -2114,6 +2130,16 @@ const formatFileSize = (bytes) => {
                             </button>
 
                             <button
+                                v-if="canMarkOutgoingRecorded"
+                                type="button"
+                                class="rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-black text-white hover:bg-emerald-600 disabled:opacity-60"
+                                :disabled="outgoingRecordForm.processing"
+                                @click="markOutgoingRecorded"
+                            >
+                                {{ outgoingRecordForm.processing ? 'Saving...' : 'Mark as Recorded' }}
+                            </button>
+
+                            <button
                                 type="button"
                                 class="mt-2 rounded-xl bg-white px-5 py-2.5 text-sm font-black text-blue-700 shadow-sm hover:bg-blue-50"
                                 @click="showActionHistoryModal = true"
@@ -2202,7 +2228,7 @@ const formatFileSize = (bytes) => {
                         </div>
 
                         <!-- Compact key details: status is already shown in the top badge -->
-                        <div class="grid grid-cols-1 gap-4 xl:grid-cols-[0.75fr_1fr_1.45fr]">
+                        <div class="grid grid-cols-1 gap-4" :class="isOutgoingDocument ? 'xl:grid-cols-[0.75fr_2fr]' : 'xl:grid-cols-[0.75fr_1fr_1.45fr]'">
                             <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                                 <div class="flex items-center justify-between gap-3">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
@@ -2219,7 +2245,7 @@ const formatFileSize = (bytes) => {
                                 </p>
                             </div>
 
-                            <div class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                            <div v-if="!isOutgoingDocument" class="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                                 <div class="flex items-center justify-between gap-3">
                                     <p class="text-xs font-black uppercase tracking-[0.18em] text-blue-700">
                                         Staff Concern
@@ -2507,7 +2533,7 @@ const formatFileSize = (bytes) => {
 
     <!-- Transfer Document Modal -->
     <div
-        v-if="showForwardModal"
+        v-if="showForwardModal && !isOutgoingDocument"
         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 py-8"
     >
         <div class="w-full max-w-xl overflow-hidden rounded-[2rem] bg-white shadow-2xl">

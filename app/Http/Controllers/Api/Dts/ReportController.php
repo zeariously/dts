@@ -836,7 +836,8 @@ class ReportController extends Controller
 
 
         if (
-            $reportUser !== ''
+            strtolower($classification) !== 'true'
+            && $reportUser !== ''
             && strtolower(
                 $reportUser
             ) !== 'all'
@@ -859,6 +860,14 @@ class ReportController extends Controller
             );
         }
 
+
+        // Status-only filter for outgoing (no assigned user).
+        if (strtolower($classification) === 'true') {
+            $outgoingStatus = trim((string) $request->input('report_status', ''));
+            if ($outgoingStatus !== '' && in_array($outgoingStatus, ['Forwarded to Records', 'Recorded'], true)) {
+                $query->where('d.outgoing_status', $outgoingStatus);
+            }
+        }
 
         /*
          * Date range
@@ -928,6 +937,8 @@ class ReportController extends Controller
                 $request->input(
                     'report_user'
                 ),
+
+            'report_status' => $request->input('report_status'),
 
             'start_date' =>
                 $request->input(

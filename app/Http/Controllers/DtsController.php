@@ -465,15 +465,12 @@ public function index(Request $request)
         : '';
 
     $displayDocumentNumberExpression = "CASE
+        WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
+            THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
         WHEN assignment.id IS NOT NULL
             AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
-        THEN CONCAT(
-            CAST(d.IDdoc AS CHAR),
-            '-',
-            UPPER(TRIM(assignment.assignment_suffix))
-        )
-        {$legacyDocumentAssignmentDisplayWhen}
-        ELSE CAST(d.IDdoc AS CHAR)
+            THEN CONCAT('IN-', CAST(d.IDdoc AS CHAR), '-', UPPER(TRIM(assignment.assignment_suffix)))
+        ELSE CONCAT('IN-', CAST(d.IDdoc AS CHAR))
     END";
 
     $workflowStatusExpression = "CASE
@@ -500,6 +497,8 @@ public function index(Request $request)
             THEN 'Received'
         WHEN dist.distdate IS NOT NULL
             THEN 'For Receiving'
+        WHEN LOWER(CAST(d.classification AS CHAR)) IN ('true', '1')
+            THEN COALESCE(NULLIF(d.outgoing_status, ''), 'Recorded')
         WHEN CAST(COALESCE(d.IDdocstatus, 0) AS UNSIGNED) = 7
             THEN 'Pending 07'
         ELSE 'Pending'
@@ -618,6 +617,10 @@ public function index(Request $request)
 
     $stats = [
         'total' => (clone $statsBase)->count(),
+        'incoming_documents' => (clone $statsBase)->where('d.classification', 'False')->distinct()->count('d.IDdoc'),
+        'outgoing_documents' => DB::table('document')->where('classification', 'True')
+            ->when($selectedYear !== '', fn ($q) => $q->whereYear('entrydate', (int) $selectedYear))
+            ->count(),
         'for_receiving' => $countStatus($statsBase, 'for_receiving'),
         'received' => $countStatus($statsBase, 'received'),
         'for_action' => $countStatus($statsBase, 'received'),
@@ -635,7 +638,8 @@ public function index(Request $request)
 
     $documentsQuery = $buildWorkflowBase();
 
-    if (! $isAllDocumentsSection && $section !== 'reports') {
+    if (! $isAllDocumentsSection && $section !== 'reports' && ! ($currentRights === '2' && in_array($section, ['sent-docs', 'outgoing'], true))) {
+        // Outgoing has no staff assignment; Role 2 may view the full outgoing list.
         $applyTaggedScope($documentsQuery);
     }
 
@@ -651,11 +655,19 @@ public function index(Request $request)
 
         $reportUser = trim((string) $request->input('report_user', ''));
 
-        if ($reportUser !== '' && strtolower($reportUser) !== 'all') {
+        if (strtolower((string) $request->input('report_classification')) !== 'true' && $reportUser !== '' && strtolower($reportUser) !== 'all') {
             $documentsQuery->whereRaw(
                 'COALESCE(dist.idmapagency, assignment.idmapagency, d.IDkeeper) = ?',
                 [(int) $reportUser]
             );
+        }
+
+        // Outgoing reporting has no staff assignment: status filter replaces user filter.
+        if (strtolower((string) $request->input('report_classification')) === 'true') {
+            $reportStatus = trim((string) $request->input('report_status', ''));
+            if ($reportStatus !== '' && in_array($reportStatus, ['Forwarded to Records', 'Recorded'], true)) {
+                $documentsQuery->where('d.outgoing_status', $reportStatus);
+            }
         }
 
         if ($request->filled('start_date')) {
@@ -697,9 +709,12 @@ public function index(Request $request)
     } elseif ($section === 'pending-docs-07') {
         $applyStatusFilter($documentsQuery, 'for_receiving');
         $documentsQuery->where('d.IDdocstatus', 7);
+    } elseif ($section === 'incoming') {
+        // Incoming dashboard card: never mix outgoing records into this list.
+        $documentsQuery->where('d.classification', 'False');
     } elseif ($section === 'sent-docs') {
-        $documentsQuery->whereNotNull('dist.distdate');
-        $applyNotPulled($documentsQuery);
+        // Outgoing dashboard card: list all outgoing documents.
+        $documentsQuery->where('d.classification', 'True');
     } elseif ($section === 'pulled-out-docs') {
         $applyStatusFilter($documentsQuery, 'pulled');
     }
@@ -863,6 +878,7 @@ public function index(Request $request)
             'year' => $selectedYear,
             'report_classification' => $request->input('report_classification'),
             'report_user' => $request->input('report_user'),
+            'report_status' => $request->input('report_status'),
             'start_date' => $request->input('start_date'),
             'end_date' => $request->input('end_date'),
         ],
@@ -928,6 +944,11 @@ public function store(Request $request)
         ->values()
         ->all();
 
+    $isOutgoingDocument = strtolower(trim((string) $request->input('classification_id', $request->input('classification', '')))) === 'true';
+    if ($isOutgoingDocument) {
+        $staffIds = []; // Outgoing documents have no Staff Concern or assignment workflow.
+    }
+
     $request->merge([
         'classification' => $request->input(
             'classification_id',
@@ -952,8 +973,18 @@ public function store(Request $request)
         'IDkeeper' => $staffIds[0] ?? null,
     ]);
 
+    if ($isOutgoingDocument && (
+        ! Schema::hasColumn('document', 'outgoing_number')
+        || ! Schema::hasColumn('document', 'outgoing_status')
+    )) {
+        return back()->withErrors([
+            'classification_id' => 'Please run the independent Outgoing numbering migration first.',
+        ])->withInput();
+    }
+
     $validated = $request->validate([
         'classification' => ['required', 'in:False,True'],
+        'outgoing_status' => [$isOutgoingDocument ? 'required' : 'nullable', 'in:For Forwarding,Forwarded to Records,Released'],
         'IDdoctype' => ['required', 'integer', 'exists:lu_doctype,ID'],
         'IDtransac' => ['nullable', 'integer', 'exists:transactions,ID'],
         'IDfrom' => ['required', 'integer', 'exists:lu_office,ID'],
@@ -962,7 +993,7 @@ public function store(Request $request)
         'from_name' => ['nullable', 'string', 'max:255'],
         'IDdocstatus' => ['nullable', 'integer', 'exists:lu_docstatus,ID'],
 
-        'IDkeepers' => ['required', 'array', 'min:1'],
+        'IDkeepers' => [$isOutgoingDocument ? 'nullable' : 'required', 'array', ...($isOutgoingDocument ? [] : ['min:1'])],
         'IDkeepers.*' => [
             'required',
             'integer',
@@ -1087,7 +1118,8 @@ public function store(Request $request)
             $defaultDocStatusId,
             $staffIds,
             $personnelRows,
-            $isMultipleAssignment
+            $isMultipleAssignment,
+            $isOutgoingDocument
         ) {
             $lastDocumentId = DB::table('document')
                 ->orderByDesc('IDdoc')
@@ -1127,7 +1159,7 @@ public function store(Request $request)
                 'IDnote' => null,
                 'IDuser' => Auth::id(),
                 'remarks' => $validated['remarks'] ?? null,
-                'IDkeeper' => $isMultipleAssignment
+                'IDkeeper' => $isOutgoingDocument || $isMultipleAssignment
                     ? null
                     : $staffIds->first(),
                 'IDprogram_pms' => null,
@@ -1140,6 +1172,17 @@ public function store(Request $request)
             ]);
 
             $documentNameUpdates = [];
+
+            if ($isOutgoingDocument) {
+                // The existing GET_LOCK('dts_create_document') serializes document creation.
+                // Internal IDdoc remains unchanged; Outgoing numbers use their own sequence.
+                $nextOutgoingNumber = ((int) DB::table('document')
+                    ->where('classification', 'True')
+                    ->max('outgoing_number')) + 1;
+                $documentNameUpdates['outgoing_number'] = $nextOutgoingNumber;
+                $documentNameUpdates['outgoing_status'] = $validated['outgoing_status'];
+            }
+
 
             if (Schema::hasColumn('document', 'to_name')) {
                 $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
@@ -1300,12 +1343,17 @@ public function store(Request $request)
     }
 
     $successMessage = $firstAssignmentId
-        ? 'Document saved successfully as DTS - '
+        ? 'Document saved successfully as IN-'
             . $document->IDdoc
             . ' with '
             . $result['assignment_count']
             . ' staff assignments.'
-        : 'Document saved successfully as DTS - ' . $document->IDdoc . '.';
+        : ($isOutgoingDocument
+            ? 'Document saved successfully as OUT-' . str_pad(
+                (string) DB::table('document')->where('IDdoc', $document->IDdoc)->value('outgoing_number'),
+                6, '0', STR_PAD_LEFT
+            ) . '.'
+            : 'Document saved successfully as IN-' . $document->IDdoc . '.');
 
     return redirect()
         ->route('dts.show', $routeParameters)
@@ -1756,6 +1804,10 @@ public function show(Request $request, $id)
         $currentWorkflowStatus = 'Addressed';
     }
 
+    if ($document->classification === 'True') {
+        $currentWorkflowStatus = $document->outgoing_status ?: 'Recorded';
+    }
+
     $latestTransferDate = ! empty($latestDistributionForSummary?->distdate)
         ? Carbon::parse($latestDistributionForSummary->distdate)
         : null;
@@ -2089,10 +2141,11 @@ public function show(Request $request, $id)
     $currentPersonnelName = $staffConcerns
         ->firstWhere('ID', $currentPersonnelId)?->name;
 
-    $displayDocumentNo = $this->workflowReference(
-        (int) $document->IDdoc,
-        $assignmentId
-    );
+    $displayDocumentNo = $document->classification === 'True'
+        ? ($document->outgoing_number !== null
+            ? 'OUT-' . str_pad((string) $document->outgoing_number, 6, '0', STR_PAD_LEFT)
+            : 'OUT-' . $document->IDdoc)
+        : 'IN-' . $this->workflowReference((int) $document->IDdoc, $assignmentId);
 
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
@@ -2100,18 +2153,24 @@ public function show(Request $request, $id)
             (int) $document->IDdoc,
             $assignmentId
         ),
-        'canReceiveDts' => $canUseReceiveAction
+        'canMarkOutgoingRecorded' => $document->classification === 'True'
+            && in_array($this->currentUserRights(), ['1', '3'], true)
+            && ! $this->isSuperAdminViewOnly((int) $document->IDdoc, $assignmentId),
+        'canReceiveDts' => $document->classification !== 'True'
+            && $canUseReceiveAction
             && $this->canReceiveDts()
             && $this->viewerCanActOnDocument(
                 (int) $document->IDdoc,
                 $assignmentId
             ),
-        'canTransferDts' => $canUseDocumentActions
+        'canTransferDts' => $document->classification !== 'True'
+            && $canUseDocumentActions
             && $this->viewerCanTransferDocument(
                 (int) $document->IDdoc,
                 $assignmentId
             ),
-        'canReattachDts' => $canUseDocumentActions
+        'canReattachDts' => ! ($this->currentUserRights() === '2' && strtolower(trim((string) $document->classification)) === 'true')
+            && $canUseDocumentActions
             && $this->viewerCanReattachDocument(
                 (int) $document->IDdoc,
                 $assignmentId
@@ -2121,12 +2180,14 @@ public function show(Request $request, $id)
                 (int) $document->IDdoc,
                 $assignmentId
             ),
-        'canRemarkDts' => $this->canRemarkDts()
+        'canRemarkDts' => ! ($this->currentUserRights() === '2' && strtolower(trim((string) $document->classification)) === 'true')
+            && $this->canRemarkDts()
             && $this->viewerCanRemarkDocument(
                 (int) $document->IDdoc,
                 $assignmentId
             ),
-        'canActionTakenDts' => $canUseDocumentActions
+        'canActionTakenDts' => $document->classification !== 'True'
+            && $canUseDocumentActions
             && $this->canRemarkDts()
             && $this->viewerCanActOnDocument(
                 (int) $document->IDdoc,
@@ -2147,6 +2208,8 @@ public function show(Request $request, $id)
                 'created_by_name' => $documentCreatorName ?? (! empty($document->IDuser) ? 'Account #' . $document->IDuser : null),
 
                 'classification' => $document->classification,
+                'outgoing_status' => $document->outgoing_status,
+                'outgoing_number' => $document->outgoing_number,
                 'classification_label' => $document->classification === 'True' ? 'Outgoing' : 'Incoming',
 
                 'IDdoctype' => $document->IDdoctype,
@@ -2265,6 +2328,8 @@ public function viewFile($file)
 }
 public function receive(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanReceiveDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
@@ -2323,6 +2388,8 @@ public function receive(Request $request, $id)
 }
 public function pullout(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanManageDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
@@ -2371,6 +2438,8 @@ public function pullout(Request $request, $id)
 }
 public function forward(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanReceiveDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
@@ -2487,6 +2556,8 @@ public function forward(Request $request, $id)
 }
 public function returnDocument(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     abort_unless($this->currentUserRights() === '2', 403);
 
     $this->ensureCanReceiveDts();
@@ -3444,6 +3515,8 @@ public function deleteLibraryAttachment(Request $request)
 
 public function updateEntryDate(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanManageDts();
     $validated = $request->validate([
         'entrydate' => ['required', 'date'],
@@ -3472,6 +3545,8 @@ public function updateEntryDate(Request $request, $id)
 
 public function storeAttachment(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     /*
      * Attachments are shared by the physical document, while the optional
      * re-attach remark belongs to the currently opened assignment.
@@ -3594,6 +3669,8 @@ public function storeAttachment(Request $request, $id)
  */
 public function destroyAttachment(Request $request, $id, $file)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     abort_unless($this->viewerCanAccessDocument((int) $id), 403);
 
     if (! Schema::hasTable('dts_document_files')) {
@@ -3667,8 +3744,58 @@ public function destroyAttachment(Request $request, $id, $file)
         'Attached file removed successfully. You may now attach a replacement PDF.'
     );
 }
+/** Set an Outgoing document to Recorded; Incoming workflows are unaffected. */
+public function markOutgoingRecorded(Request $request, $id)
+{
+    // Only DTS management accounts may record outgoing documents.
+    $this->ensureCanManageDts();
+
+    $document = DtsDocument::query()->where('IDdoc', $id)->firstOrFail();
+    abort_unless(strtolower(trim((string) $document->classification)) === 'true', 403);
+    abort_unless($this->viewerCanAccessDocument((int) $document->IDdoc, null), 403);
+    abort_unless(Schema::hasColumn('document', 'outgoing_status'), 409, 'Outgoing status migration is required.');
+
+    $oldStatus = trim((string) ($document->outgoing_status ?? ''));
+    if (strcasecmp($oldStatus, 'Recorded') === 0) {
+        return back()->with('success', 'This outgoing document is already Recorded.');
+    }
+
+    DB::transaction(function () use ($document, $oldStatus) {
+        DB::table('document')->where('IDdoc', $document->IDdoc)
+            ->update(['outgoing_status' => 'Recorded']);
+
+        if (Schema::hasTable('dts_document_remarks')) {
+            $data = [
+                'IDdoc' => $document->IDdoc,
+                'remarks' => 'Outgoing status changed from ' . ($oldStatus ?: 'Unspecified') . ' to Recorded.',
+                'created_by' => Auth::id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+            if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) {
+                $data['assignment_id'] = null;
+            }
+            if (Schema::hasColumn('dts_document_remarks', 'action_type')) {
+                $data['action_type'] = 'outgoing_status';
+            }
+            DB::table('dts_document_remarks')->insert($data);
+        }
+    });
+
+    $this->recordDtsActivity(
+        'recorded outgoing document',
+        'Marked outgoing document #' . $document->IDdoc . ' as Recorded.',
+        (int) $document->IDdoc,
+        ['previous_status' => $oldStatus, 'new_status' => 'Recorded']
+    );
+
+    return back()->with('success', 'Outgoing document marked as Recorded.');
+}
+
 public function storeRemark(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanRemarkDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
@@ -3740,6 +3867,8 @@ public function storeRemark(Request $request, $id)
 }
 public function actionTakenDocument(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     $this->ensureCanRemarkDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
@@ -4007,6 +4136,8 @@ public function actionTakenDocument(Request $request, $id)
 
 public function completeDocument(Request $request, $id)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     /*
      * Role 2 is the personnel/user role that performs Select Action and
      * decides when the currently assigned document is finished.
@@ -4148,6 +4279,8 @@ public function completeDocument(Request $request, $id)
 
 public function closeActionTaken(Request $request, $id, $remarkId)
 {
+    $this->ensureRoleTwoOutgoingReadOnly((int) $id);
+
     /*
      * Monitoring Dashboard is view-only.
      * Action Taken records are for monitoring per document only,
@@ -4162,6 +4295,95 @@ public function monitoringDashboard(Request $request)
     $user = auth()->user();
 
     abort_unless((int) ($user->rights ?? 0) === 4, 403);
+
+    // Outgoing documents have no distribution or Staff Concern; query directly from document.
+    if ($request->query('classification') === 'outgoing') {
+        abort_unless(Schema::hasColumn('document', 'outgoing_status'), 409, 'Outgoing migration has not been run.');
+
+        $search = trim((string) $request->query('search', ''));
+        $year = trim((string) $request->query('year', ''));
+        $status = trim((string) $request->query('status', ''));
+        $perPage = max(1, min(100, (int) $request->query('per_page', 15)));
+        $allowed = ['Forwarded to Records', 'Recorded'];
+        if (!in_array($status, $allowed, true)) {
+            $status = '';
+        }
+
+        $base = DB::table('document as d')->where('d.classification', 'True');
+        if ($year !== '' && strtolower($year) !== 'all') {
+            if (preg_match('/^\d{4}$/', $year)) {
+                $base->whereYear('d.entrydate', (int) $year);
+            } else {
+                $year = '';
+            }
+        }
+        if ($search !== '') {
+            $like = '%' . $search . '%';
+            $base->where(function ($q) use ($like) {
+                $q->where('d.subject', 'like', $like)
+                  ->orWhere('d.IDdoc', 'like', $like)
+                  ->orWhere('d.outgoing_status', 'like', $like);
+                if (Schema::hasColumn('document', 'outgoing_number')) {
+                    $q->orWhere('d.outgoing_number', 'like', $like);
+                }
+            });
+        }
+
+        $outgoingCounts = (clone $base)
+            ->selectRaw('COUNT(*) as total')
+            ->selectRaw("SUM(CASE WHEN d.outgoing_status = 'Recorded' THEN 1 ELSE 0 END) as recorded")
+            ->selectRaw("SUM(CASE WHEN d.outgoing_status = 'Forwarded to Records' THEN 1 ELSE 0 END) as forwarded")
+            ->first();
+
+        $rows = clone $base;
+        if ($status !== '') {
+            $rows->where('d.outgoing_status', $status);
+        }
+        $hasNumber = Schema::hasColumn('document', 'outgoing_number');
+        $numberExpression = $hasNumber
+            ? "CASE WHEN d.outgoing_number IS NOT NULL THEN CONCAT('OUT-', LPAD(d.outgoing_number, 6, '0')) ELSE CONCAT('OUT-', d.IDdoc) END"
+            : "CONCAT('OUT-', d.IDdoc)";
+        $transactions = $rows
+            ->select(['d.IDdoc', 'd.subject', 'd.entrydate', 'd.outgoing_status'])
+            ->selectRaw($numberExpression . ' as display_document_no')
+            ->orderByDesc('d.entrydate')
+            ->orderByDesc('d.IDdoc')
+            ->paginate($perPage)
+            ->withQueryString();
+
+        $availableYears = DB::table('document')
+            ->where('classification', 'True')
+            ->whereNotNull('entrydate')
+            ->selectRaw('YEAR(entrydate) as year')
+            ->distinct()
+            ->orderByDesc('year')
+            ->pluck('year');
+
+        return Inertia::render('DTS/MonitoringDashboard', [
+            ...$this->dtsNotificationProps(),
+            'monitoringMode' => 'outgoing',
+            'outgoingStats' => [
+                'total' => (int) ($outgoingCounts->total ?? 0),
+                'forwarded' => (int) ($outgoingCounts->forwarded ?? 0),
+                'recorded' => (int) ($outgoingCounts->recorded ?? 0),
+            ],
+            'transactions' => $transactions,
+            'stats' => [],
+            'peopleNoAction' => [],
+            'actionTakenItems' => [],
+            'years' => $availableYears,
+            'personnelOptions' => [],
+            'filters' => [
+                'classification' => 'outgoing',
+                'search' => $search,
+                'status' => $status,
+                'per_page' => $perPage,
+                'year' => $year,
+                'personnel' => '',
+            ],
+        ]);
+    }
+
 
     $trueValues = ['True', 'true', 'Y', 'y', '1', 1];
 
@@ -4540,14 +4762,11 @@ public function monitoringDashboard(Request $request)
     };
 
     $displayExpression = "CASE
-        WHEN assignment.id IS NOT NULL
-            AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
-        THEN CONCAT(
-            CAST(d.IDdoc AS CHAR),
-            '-',
-            UPPER(TRIM(assignment.assignment_suffix))
-        )
-        ELSE CAST(d.IDdoc AS CHAR)
+        WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
+            THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
+        WHEN assignment.id IS NOT NULL AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
+            THEN CONCAT('IN-', CAST(d.IDdoc AS CHAR), '-', UPPER(TRIM(assignment.assignment_suffix)))
+        ELSE CONCAT('IN-', CAST(d.IDdoc AS CHAR))
     END";
 
     $notPulledSql = "(
@@ -5118,6 +5337,7 @@ public function monitoringDashboard(Request $request)
 
     return Inertia::render('DTS/MonitoringDashboard', [
         ...$this->dtsNotificationProps(),
+        'monitoringMode' => 'incoming',
         'stats' => $stats,
         'transactions' => $transactions,
         'peopleNoAction' => $peopleNoAction,
@@ -5550,6 +5770,11 @@ private function viewerCanTransferDocument(
     int $documentId,
     ?int $assignmentId = null
 ): bool {
+    // Outgoing documents have no staff assignment or transfer workflow.
+    if (DB::table('document')->where('IDdoc', $documentId)->value('classification') === 'True') {
+        return false;
+    }
+
     /*
      * Preserve the Role 3 quick-transfer rule, but verify that the requested
      * assignment belongs to the document.
@@ -5894,6 +6119,21 @@ private function workflowReference(
     return (string) $documentId;
 }
 
+
+/** Role 2 can inspect all outgoing documents, but must never change them. */
+private function ensureRoleTwoOutgoingReadOnly(int $documentId): void
+{
+    if ($this->currentUserRights() !== '2') {
+        return;
+    }
+
+    $isOutgoing = DB::table('document')->where('IDdoc', $documentId)
+        ->whereRaw("LOWER(TRIM(classification)) = 'true'")
+        ->exists();
+
+    abort_if($isOutgoing, 403, 'Outgoing documents are view-only for Role 2.');
+}
+
 private function currentUserRights(): string
 {
     return trim((string) (auth()->user()->rights ?? ''));
@@ -6171,14 +6411,11 @@ private function dtsNotificationProps(): array
     };
 
     $displayExpression = "CASE
-        WHEN assignment.id IS NOT NULL
-            AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
-        THEN CONCAT(
-            CAST(d.IDdoc AS CHAR),
-            '-',
-            UPPER(TRIM(assignment.assignment_suffix))
-        )
-        ELSE CAST(d.IDdoc AS CHAR)
+        WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
+            THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
+        WHEN assignment.id IS NOT NULL AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
+            THEN CONCAT('IN-', CAST(d.IDdoc AS CHAR), '-', UPPER(TRIM(assignment.assignment_suffix)))
+        ELSE CONCAT('IN-', CAST(d.IDdoc AS CHAR))
     END";
 
     $notificationSelect = [

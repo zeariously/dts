@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useForm } from '@inertiajs/vue3'
 import SearchableSelect from '@/Components/DTS/SearchableSelect.vue'
 
@@ -213,8 +213,11 @@ const closeStaffOptions = () => {
     }, 150)
 }
 
+const isOutgoing = computed(() => String(form.classification_id ?? '').trim().toLowerCase() === 'true')
+
 const form = useForm({
     classification_id: '',
+    outgoing_status: 'Forwarded to Records',
     type_id: '',
     entry_month: String(today.getMonth() + 1).padStart(2, '0'),
     entry_day: String(today.getDate()).padStart(2, '0'),
@@ -229,6 +232,17 @@ const form = useForm({
     staff_concern_id: '',
     staff_concern_ids: [],
     attachments: [],
+})
+
+
+watch(() => form.classification_id, () => {
+    if (isOutgoing.value) {
+        form.staff_concern_ids = []
+        form.staff_concern_id = ''
+        staffSearch.value = ''
+        showStaffOptions.value = false
+        form.clearErrors('staff_concern_ids', 'staff_concern_id')
+    }
 })
 
 const formatFileSize = (bytes) => {
@@ -374,7 +388,11 @@ const validateRequiredFields = () => {
         errors.subject = 'Subject is required.'
     }
 
-    if (!Array.isArray(form.staff_concern_ids) || form.staff_concern_ids.length === 0) {
+    if (isOutgoing.value && !['For Forwarding', 'Forwarded to Records', 'Released'].includes(form.outgoing_status)) {
+        errors.outgoing_status = 'Select a valid Outgoing status.'
+    }
+
+    if (!isOutgoing.value && (!Array.isArray(form.staff_concern_ids) || form.staff_concern_ids.length === 0)) {
         errors.staff_concern_ids = 'Select at least one Staff Concern.'
     }
 
@@ -398,7 +416,7 @@ const submitForm = () => {
      */
     syncAttachmentsToForm()
 
-    form.staff_concern_id = form.staff_concern_ids[0] || ''
+    form.staff_concern_id = isOutgoing.value ? '' : (form.staff_concern_ids[0] || '')
 
     if (!validateRequiredFields()) {
         return
@@ -449,7 +467,7 @@ const submitForm = () => {
                     </p>
 
                     <p class="mt-2 text-xs font-semibold text-slate-400">
-                        A unique DTS No. will be assigned only after the document is successfully saved.
+                        A unique Incoming (IN-) or Outgoing (OUT-) tracking code will be assigned after saving.
                     </p>
                 </div>
 
@@ -745,7 +763,22 @@ const submitForm = () => {
                     ></textarea>
                 </div>
 
-                <div>
+                <div v-if="isOutgoing">
+                    <label class="mb-1 block text-sm font-bold text-slate-700">
+                        Outgoing Status<span class="text-red-600">*</span>
+                    </label>
+                    <select v-model="form.outgoing_status" required
+                        class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
+                        <option value="For Forwarding">For Forwarding</option>
+                        <option value="Forwarded to Records">Forwarded to Records</option>
+                        <option value="Released">Released</option>
+                    </select>
+                    <p v-if="form.errors.outgoing_status" class="mt-2 text-xs font-bold text-red-700">
+                        {{ form.errors.outgoing_status }}
+                    </p>
+                </div>
+
+                <div v-if="!isOutgoing">
                     <label class="mb-1 block text-sm font-bold text-slate-700">
                         Staff Concern<span class="text-red-600">*</span>
                     </label>
