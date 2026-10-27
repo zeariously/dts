@@ -732,7 +732,7 @@ public function index(Request $request)
         // Outgoing reporting has no staff assignment: status filter replaces user filter.
         if (strtolower((string) $request->input('report_classification')) === 'true') {
             $reportStatus = trim((string) $request->input('report_status', ''));
-            if ($reportStatus !== '' && in_array($reportStatus, ['Forwarded to Records', 'Recorded'], true)) {
+            if ($reportStatus !== '' && in_array($reportStatus, ['Forwarded to RND', 'Forwarded to Records', 'Recorded'], true)) {
                 $documentsQuery->where('d.outgoing_status', $reportStatus);
             }
         }
@@ -1014,7 +1014,7 @@ public function store(Request $request)
     $isOutgoingDocument = in_array(strtolower(trim((string) $request->input('classification_id', $request->input('classification', '')))), ['true', 'outgoing'], true);
     $request->merge([
         'classification_id' => $isOutgoingDocument ? 'True' : 'False',
-        'outgoing_status' => $isOutgoingDocument ? 'Forwarded to Records' : null,
+        'outgoing_status' => $isOutgoingDocument ? $request->input('outgoing_status', 'Forwarded to Records') : null,
     ]);
     if ($isOutgoingDocument && !Schema::hasTable('dts_outgoing_manual_codes')) {
         return back()->withErrors(['manual_outgoing_code' => 'Run the manual outgoing code migration on LOCAL first.'])->withInput();
@@ -1052,7 +1052,7 @@ public function store(Request $request)
 
     $validated = $request->validate([
         'classification' => ['required', 'in:False,True'],
-        'outgoing_status' => [$isOutgoingDocument ? 'required' : 'nullable', 'in:Forwarded to Records,Recorded'],
+        'outgoing_status' => [$isOutgoingDocument ? 'required' : 'nullable', 'in:Forwarded to Records,Forwarded to RND'],
         'manual_outgoing_code' => [$isOutgoingDocument ? 'required' : 'nullable', 'string', 'max:80', 'regex:/^[A-Za-z0-9][A-Za-z0-9\-\/_]*$/'],
         'IDdoctype' => ['required', 'integer', 'exists:lu_doctype,ID'],
         'IDtransac' => ['nullable', 'integer', 'exists:transactions,ID'],
@@ -3843,6 +3843,49 @@ public function destroyAttachment(Request $request, $id, $file)
         'Attached file removed successfully. You may now attach a replacement PDF.'
     );
 }
+/** RND -> Records is the only allowed manual intermediate outgoing transition. */
+public function forwardOutgoingToRecords(Request $request, $id)
+{
+    $this->ensureCanManageDts();
+    abort_unless(Schema::hasColumn('document', 'outgoing_status'), 409, 'Outgoing status migration is required.');
+    $document = DtsDocument::query()->where('IDdoc', $id)->firstOrFail();
+    abort_unless(strtolower(trim((string) $document->classification)) === 'true', 403);
+    abort_unless($this->viewerCanAccessDocument((int) $document->IDdoc, null), 403);
+
+    DB::transaction(function () use ($document) {
+        // Conditional UPDATE makes repeat requests safe and blocks invalid transitions.
+        $updated = DB::table('document')
+            ->where('IDdoc', $document->IDdoc)
+            ->where('classification', 'True')
+            ->where('outgoing_status', 'Forwarded to RND')
+            ->update(['outgoing_status' => 'Forwarded to Records']);
+        if ($updated !== 1) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'outgoing_status' => 'Only documents currently Forwarded to RND can be forwarded to Records.',
+            ]);
+        }
+        if (Schema::hasTable('dts_document_remarks')) {
+            $data = [
+                'IDdoc' => $document->IDdoc,
+                'remarks' => 'Outgoing status changed from Forwarded to RND to Forwarded to Records.',
+                'created_by' => Auth::id(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+            if (Schema::hasColumn('dts_document_remarks', 'assignment_id')) $data['assignment_id'] = null;
+            if (Schema::hasColumn('dts_document_remarks', 'action_type')) $data['action_type'] = 'outgoing_status';
+            DB::table('dts_document_remarks')->insert($data);
+        }
+    });
+    $this->recordDtsActivity(
+        'forwarded outgoing document to records',
+        'Forwarded outgoing document #' . $document->IDdoc . ' from RND to Records.',
+        (int) $document->IDdoc,
+        ['previous_status' => 'Forwarded to RND', 'new_status' => 'Forwarded to Records']
+    );
+    return back()->with('success', 'Outgoing document forwarded to Records.');
+}
+
 /** Set an Outgoing document to Recorded; Incoming workflows are unaffected. */
 public function markOutgoingRecorded(Request $request, $id)
 {
@@ -3855,9 +3898,14 @@ public function markOutgoingRecorded(Request $request, $id)
     abort_unless(Schema::hasColumn('document', 'outgoing_status'), 409, 'Outgoing status migration is required.');
 
     $oldStatus = trim((string) ($document->outgoing_status ?? ''));
+    if (strcasecmp($oldStatus, 'Forwarded to RND') === 0) {
+        return back()->withErrors(['outgoing_status' => 'Forward this document to Records before marking it Recorded.']);
+    }
     if (strcasecmp($oldStatus, 'Recorded') === 0) {
         return back()->with('success', 'This outgoing document is already Recorded.');
     }
+
+    abort_unless(strcasecmp($oldStatus, 'Forwarded to Records') === 0, 422, 'Only documents Forwarded to Records can be marked Recorded.');
 
     DB::transaction(function () use ($document, $oldStatus) {
         DB::table('document')->where('IDdoc', $document->IDdoc)
@@ -4403,7 +4451,7 @@ public function monitoringDashboard(Request $request)
         $year = trim((string) $request->query('year', ''));
         $status = trim((string) $request->query('status', ''));
         $perPage = max(1, min(100, (int) $request->query('per_page', 15)));
-        $allowed = ['Forwarded to Records', 'Recorded'];
+        $allowed = ['Forwarded to RND', 'Forwarded to Records', 'Recorded'];
         if (!in_array($status, $allowed, true)) {
             $status = '';
         }
@@ -4444,6 +4492,7 @@ public function monitoringDashboard(Request $request)
 
         $outgoingCounts = (clone $base)
             ->selectRaw('COUNT(*) as total')
+            ->selectRaw("SUM(CASE WHEN d.outgoing_status = 'Forwarded to RND' THEN 1 ELSE 0 END) as rnd")
             ->selectRaw("SUM(CASE WHEN d.outgoing_status = 'Recorded' THEN 1 ELSE 0 END) as recorded")
             ->selectRaw("SUM(CASE WHEN d.outgoing_status = 'Forwarded to Records' THEN 1 ELSE 0 END) as forwarded")
             ->first();
@@ -4483,6 +4532,7 @@ public function monitoringDashboard(Request $request)
             ...$this->dtsNotificationProps(),
             'monitoringMode' => 'outgoing',
             'outgoingStats' => [
+                'rnd' => (int) ($outgoingCounts->rnd ?? 0),
                 'total' => (int) ($outgoingCounts->total ?? 0),
                 'forwarded' => (int) ($outgoingCounts->forwarded ?? 0),
                 'recorded' => (int) ($outgoingCounts->recorded ?? 0),

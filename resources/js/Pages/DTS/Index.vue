@@ -110,7 +110,7 @@ const canRecordOutgoingFromTable = computed(() => ['1', '3'].includes(userRights
 const recordingOutgoingId = ref(null)
 const outgoingRecordForm = useForm({})
 const outgoingAlreadyRecorded = (doc) =>
-    String(doc?.outgoing_status || '').trim().toLowerCase() === 'recorded'
+    String(doc?.outgoing_status || '').trim().toLowerCase() !== 'forwarded to records'
 
 const markOutgoingRecordedFromTable = (doc) => {
     const id = Number(doc?.IDdoc ?? doc?.id)
@@ -1951,6 +1951,7 @@ const dtsStatusBadgeClass = (status) => {
     const value = String(status ?? '').trim().toLowerCase()
 
     if (value === 'recorded') return 'border-green-300 bg-green-100 text-green-800'
+    if (value === 'forwarded to rnd') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
     if (value === 'forwarded to records') return 'border-blue-300 bg-blue-100 text-blue-800'
     if (value === 'for forwarding') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
     if (value.includes('released')) return 'border-teal-300 bg-teal-100 text-teal-800'
@@ -1997,6 +1998,19 @@ const reportDocumentStatusLabel = (doc) => {
  * report-specific guard ensures that a stale or legacy workflow label such as
  * Pending can never appear in the preview or printed report.
  */
+// Outgoing report only: display the document's entry month, without changing its date.
+const outgoingReportMonth = (doc) => {
+    const value = String(doc?.entrydate ?? '').trim()
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (!match) return '-'
+
+    const month = Number(match[2])
+    return month >= 1 && month <= 12
+        ? new Intl.DateTimeFormat('en-US', { month: 'long' })
+            .format(new Date(2026, month - 1, 1))
+        : '-'
+}
+
 const reportRows = computed(() => {
     const allowedStatuses = new Set([
         'for receiving',
@@ -2017,7 +2031,7 @@ const reportRows = computed(() => {
             const outgoingStatus = String(doc?.outgoing_status || doc?.workflow_status || 'Recorded').trim().toLowerCase()
             const selected = String(reportOutgoingStatus.value || '').trim().toLowerCase()
             return ['true', '1', 'outgoing'].includes(String(doc?.classification ?? '').toLowerCase())
-                && ['forwarded to records', 'recorded'].includes(outgoingStatus)
+                && ['forwarded to rnd', 'forwarded to records', 'recorded'].includes(outgoingStatus)
                 && (!selected || outgoingStatus === selected)
         }
         const status = String(reportDocumentStatusLabel(doc) || '')
@@ -3028,6 +3042,7 @@ const submitEntryDateUpdate = () => {
                                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold text-black outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                         @change="loadReportAutomatically">
                                         <option value="">All Statuses</option>
+                                        <option value="Forwarded to RND">Forwarded to RND</option>
                                         <option value="Forwarded to Records">Forwarded to Records</option>
                                         <option value="Recorded">Recorded</option>
                                     </select>
@@ -3191,18 +3206,19 @@ const submitEntryDateUpdate = () => {
                     </div>
 
                     <div class="overflow-x-auto">
-                        <table class="screen-report-table w-full min-w-[1000px] table-fixed border-collapse text-center text-sm">
+                        <table :class="isOutgoingReport ? 'min-w-[750px]' : 'min-w-[1000px]'" class="screen-report-table w-full table-fixed border-collapse text-center text-sm">
                             <thead>
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[10%] border border-black px-3 py-4 font-bold">
                                         DTS #
                                     </th>
+                                    <th v-if="isOutgoingReport" class="w-[12%] border border-black px-2 py-3 font-bold">Month</th>
 
-                                    <th class="w-[20%] border border-black px-3 py-4 font-bold">
+                                    <th v-if="!isOutgoingReport" class="w-[20%] border border-black px-3 py-4 font-bold">
                                         To
                                     </th>
 
-                                    <th class="w-[20%] border border-black px-3 py-4 font-bold">
+                                    <th v-if="!isOutgoingReport" class="w-[20%] border border-black px-3 py-4 font-bold">
                                         From
                                     </th>
 
@@ -3225,12 +3241,13 @@ const submitEntryDateUpdate = () => {
                                     <td class="border border-black px-3 py-4 font-bold text-blue-700">
                                         {{ documentNumberDisplay(doc) }}
                                     </td>
+                                    <td v-if="isOutgoingReport" class="border border-black px-2 py-3 font-semibold text-black">{{ outgoingReportMonth(doc) }}</td>
 
-                                    <td class="border border-black px-3 py-4 font-semibold text-black">
+                                    <td v-if="!isOutgoingReport" class="border border-black px-3 py-4 font-semibold text-black">
                                         {{ reportAssignedToDisplay(doc) }}
                                     </td>
 
-                                    <td class="border border-black px-3 py-4 font-semibold text-black">
+                                    <td v-if="!isOutgoingReport" class="border border-black px-3 py-4 font-semibold text-black">
                                         {{ doc.from_office || '-' }}
                                     </td>
 
@@ -3249,7 +3266,7 @@ const submitEntryDateUpdate = () => {
                                 </tr>
 
                                 <tr v-if="reportRows.length === 0">
-                                    <td colspan="5" class="border border-black px-7 py-14 text-center">
+                                    <td :colspan="isOutgoingReport ? 4 : 5" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
                                             No report records found
                                         </div>
@@ -3266,19 +3283,20 @@ const submitEntryDateUpdate = () => {
                         <table class="print-report-table w-full table-fixed border-collapse text-center text-xs">
                             <thead>
                                 <tr class="print-page-top-spacer">
-                                    <th colspan="5"></th>
+                                    <th :colspan="isOutgoingReport ? 4 : 5"></th>
                                 </tr>
 
                                 <tr class="bg-blue-50 text-black">
                                     <th class="w-[10%] border border-black px-2 py-3 font-bold">
                                         DTS #
                                     </th>
+                                    <th v-if="isOutgoingReport" class="w-[12%] border border-black px-2 py-3 font-bold">Month</th>
 
-                                    <th class="w-[20%] border border-black px-2 py-3 font-bold">
+                                    <th v-if="!isOutgoingReport" class="w-[20%] border border-black px-2 py-3 font-bold">
                                         To
                                     </th>
 
-                                    <th class="w-[20%] border border-black px-2 py-3 font-bold">
+                                    <th v-if="!isOutgoingReport" class="w-[20%] border border-black px-2 py-3 font-bold">
                                         From
                                     </th>
 
@@ -3301,12 +3319,13 @@ const submitEntryDateUpdate = () => {
                                     <td class="border border-black px-2 py-3 font-bold text-black">
                                         {{ documentNumberDisplay(doc) }}
                                     </td>
+                                    <td v-if="isOutgoingReport" class="border border-black px-2 py-3 font-semibold text-black">{{ outgoingReportMonth(doc) }}</td>
 
-                                    <td class="border border-black px-2 py-3 font-semibold text-black">
+                                    <td v-if="!isOutgoingReport" class="border border-black px-2 py-3 font-semibold text-black">
                                         {{ reportAssignedToDisplay(doc) }}
                                     </td>
 
-                                    <td class="border border-black px-2 py-3 font-semibold text-black">
+                                    <td v-if="!isOutgoingReport" class="border border-black px-2 py-3 font-semibold text-black">
                                         {{ doc.from_office || '-' }}
                                     </td>
 
@@ -3320,7 +3339,7 @@ const submitEntryDateUpdate = () => {
                                 </tr>
 
                                 <tr v-if="reportRows.length === 0">
-                                    <td colspan="5" class="border border-black px-7 py-14 text-center">
+                                    <td :colspan="isOutgoingReport ? 4 : 5" class="border border-black px-7 py-14 text-center">
                                         <div class="text-lg font-bold text-black">
                                             No report records found
                                         </div>
@@ -3334,7 +3353,7 @@ const submitEntryDateUpdate = () => {
 
                             <tfoot>
                                 <tr class="print-page-bottom-spacer">
-                                    <td colspan="5"></td>
+                                    <td :colspan="isOutgoingReport ? 4 : 5"></td>
                                 </tr>
                             </tfoot>
                         </table>

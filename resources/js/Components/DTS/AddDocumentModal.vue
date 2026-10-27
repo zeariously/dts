@@ -218,6 +218,7 @@ const isOutgoing = computed(() => String(form.classification_id ?? '').trim().to
 const form = useForm({
     classification_id: '',
     manual_outgoing_code: '',
+    outgoing_status: 'Forwarded to Records',
     type_id: '',
     entry_month: String(today.getMonth() + 1).padStart(2, '0'),
     entry_day: String(today.getDate()).padStart(2, '0'),
@@ -247,6 +248,7 @@ watch(() => form.classification_id, () => {
         staffSearch.value = ''
         showStaffOptions.value = false
         form.clearErrors('staff_concern_ids', 'staff_concern_id')
+        form.outgoing_status = 'Forwarded to Records'
     }
 })
 
@@ -393,6 +395,10 @@ const validateRequiredFields = () => {
         errors.manual_outgoing_code = 'Enter a valid manual Outgoing DTS code (letters, digits, -, / or _).'
     }
 
+    if (isOutgoing.value && !['Forwarded to Records', 'Forwarded to RND'].includes(form.outgoing_status)) {
+        errors.outgoing_status = 'Select an Outgoing status.'
+    }
+
     if (!String(form.subject || '').trim()) {
         errors.subject = 'Subject is required.'
     }
@@ -429,6 +435,7 @@ const submitForm = () => {
         form.from_name = ''
     } else {
         form.manual_outgoing_code = ''
+        form.outgoing_status = null
     }
 
     if (!validateRequiredFields()) {
@@ -584,11 +591,13 @@ const submitForm = () => {
                 <div v-if="isOutgoing" class="rounded-xl border border-blue-200 bg-blue-50 p-4">
                     <label class="mb-2 block text-sm font-bold text-blue-900">Outgoing DTS Code <span class="text-red-600">*</span></label>
                     <input v-model.trim="form.manual_outgoing_code" type="text" maxlength="80" required
-                        placeholder="e.g. OUT-26-00127" autocomplete="off"
+                        placeholder="Enter Outgoing DTS Code" autocomplete="off"
                         class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold uppercase focus:border-blue-500 focus:ring-blue-200" />
                     <p v-if="form.errors.manual_outgoing_code" class="mt-2 text-xs font-bold text-red-700">{{ form.errors.manual_outgoing_code }}</p>
                     <p class="mt-1 text-xs text-blue-700">This is the exact code displayed in Outgoing, Reports and Monitoring.</p>
                 </div>
+
+
 
                 <div v-if="!isOutgoing">
                     <label class="mb-1 block text-sm font-bold text-slate-700">
@@ -783,6 +792,16 @@ const submitForm = () => {
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="Enter remarks"
                     ></textarea>
+                </div>
+
+                <div v-if="isOutgoing" class="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                    <label class="mb-2 block text-sm font-bold text-indigo-900">Initial Outgoing Status <span class="text-red-600">*</span></label>
+                    <select v-model="form.outgoing_status" required class="w-full rounded-xl border border-indigo-200 bg-white px-4 py-3 text-sm font-semibold focus:border-blue-500 focus:ring-blue-200">
+                        <option value="Forwarded to Records">Forwarded to Records</option>
+                        <option value="Forwarded to RND">Forwarded to RND</option>
+                    </select>
+                    <p v-if="form.errors.outgoing_status" class="mt-2 text-xs font-bold text-red-700">{{ form.errors.outgoing_status }}</p>
+                    <p class="mt-2 text-xs text-indigo-700">RND documents can be forwarded to Records later from Document Details.</p>
                 </div>
 
                 <div v-if="!isOutgoing">

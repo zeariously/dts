@@ -122,7 +122,11 @@ Route::middleware(['auth', 'verified'])
         Route::post('/{id}/pullout', [DtsController::class, 'pullout'])->name('pullout');
         Route::patch('/{id}/entry-date', [DtsController::class, 'updateEntryDate'])->name('entry-date.update');
 
-        // NEW: Outgoing document status action (Forwarded to Records -> Recorded)
+        // Outgoing document workflow: Forwarded to RND -> Forwarded to Records -> Recorded
+        Route::post('/{id}/outgoing/forward-to-records', [DtsController::class, 'forwardOutgoingToRecords'])
+            ->whereNumber('id')
+            ->name('outgoing.forward-to-records');
+
         Route::post('/{id}/outgoing/record', [DtsController::class, 'markOutgoingRecorded'])
             ->whereNumber('id')
             ->name('outgoing.record');

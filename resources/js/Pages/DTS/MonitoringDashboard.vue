@@ -4,7 +4,7 @@ import { Head, router, usePage } from '@inertiajs/vue3'
 
 const props = defineProps({
     monitoringMode: { type: String, default: 'incoming' },
-    outgoingStats: { type: Object, default: () => ({ total: 0, forwarded: 0, recorded: 0 }) },
+    outgoingStats: { type: Object, default: () => ({ total: 0, rnd: 0, forwarded: 0, recorded: 0 }) },
     stats: {
         type: Object,
         default: () => ({}),
@@ -1162,9 +1162,10 @@ const daysPendingClass = (days) => {
             </div>
 
             <section v-if="isOutgoingMonitoring" class="space-y-5">
-                <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-4">
                     <button v-for="card in [
                         { key: '', label: 'Total Outgoing', value: outgoingStats.total, active: 'border-blue-500', badge: 'bg-blue-50 text-blue-700' },
+                        { key: 'Forwarded to RND', label: 'Forwarded to RND', value: outgoingStats.rnd, active: 'border-indigo-500', badge: 'bg-indigo-50 text-indigo-700' },
                         { key: 'Forwarded to Records', label: 'Forwarded to Records', value: outgoingStats.forwarded, active: 'border-blue-500', badge: 'bg-blue-50 text-blue-700' },
                         { key: 'Recorded', label: 'Recorded', value: outgoingStats.recorded, active: 'border-emerald-500', badge: 'bg-emerald-50 text-emerald-700' },
                     ]" :key="card.label" type="button"
@@ -1183,6 +1184,7 @@ const daysPendingClass = (days) => {
                             class="rounded-xl border-blue-200 text-sm focus:border-blue-500 focus:ring-blue-200" />
                         <select v-model="outgoingStatus" @change="outgoingFilter()" class="rounded-xl border-blue-200 text-sm focus:ring-blue-200">
                             <option value="">All Statuses</option>
+                            <option value="Forwarded to RND">Forwarded to RND</option>
                             <option value="Forwarded to Records">Forwarded to Records</option>
                             <option value="Recorded">Recorded</option>
                         </select>

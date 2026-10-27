@@ -172,8 +172,22 @@ const canMarkOutgoingRecorded = computed(() =>
     isOutgoingDocument.value
     && !isSuperAdminViewOnly.value
     && Boolean(props.canMarkOutgoingRecorded)
-    && String(props.document?.outgoing_status || '').trim().toLowerCase() !== 'recorded'
+    && String(props.document?.outgoing_status || '').trim().toLowerCase() === 'forwarded to records'
 )
+const outgoingForwardForm = useForm({})
+const canForwardOutgoingToRecords = computed(() =>
+    isOutgoingDocument.value
+    && !isSuperAdminViewOnly.value
+    && Boolean(props.canMarkOutgoingRecorded)
+    && String(props.document?.outgoing_status || '').trim().toLowerCase() === 'forwarded to rnd'
+)
+const forwardOutgoingToRecords = () => {
+    if (!canForwardOutgoingToRecords.value || outgoingForwardForm.processing || !documentId.value) return
+    outgoingForwardForm.post(`/dts/${documentId.value}/outgoing/forward-to-records`, {
+        preserveScroll: true,
+        onSuccess: () => router.reload({ preserveScroll: true }),
+    })
+}
 const markOutgoingRecorded = () => {
     if (!canMarkOutgoingRecorded.value || outgoingRecordForm.processing || !documentId.value) return
     outgoingRecordForm.post(`/dts/${documentId.value}/outgoing/record`, {
@@ -742,6 +756,7 @@ const dtsStatusBadgeClass = (status) => {
     const value = String(status ?? '').trim().toLowerCase()
 
     if (value === 'recorded') return 'border-green-300 bg-green-100 text-green-800'
+    if (value === 'forwarded to rnd') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
     if (value === 'forwarded to records') return 'border-blue-300 bg-blue-100 text-blue-800'
     if (value === 'for forwarding') return 'border-indigo-300 bg-indigo-100 text-indigo-800'
     if (value.includes('released')) return 'border-teal-300 bg-teal-100 text-teal-800'
@@ -2127,6 +2142,16 @@ const formatFileSize = (bytes) => {
                                 @click="openActionTakenModal"
                             >
                                 Select Action
+                            </button>
+
+                            <button
+                                v-if="canForwardOutgoingToRecords"
+                                type="button"
+                                class="rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-black text-white hover:bg-indigo-600 disabled:opacity-60"
+                                :disabled="outgoingForwardForm.processing"
+                                @click="forwardOutgoingToRecords"
+                            >
+                                {{ outgoingForwardForm.processing ? 'Saving...' : 'Forward to Records' }}
                             </button>
 
                             <button
