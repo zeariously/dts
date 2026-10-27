@@ -810,35 +810,40 @@ public function index(Request $request)
 
     if ($search !== '') {
         $searchLike = '%' . $search . '%';
-        $lowerSearchLike = '%' . strtolower($search) . '%';
+
+        /*
+         * Mixed legacy/MySQL collations can cause SQLSTATE 1267 when a
+         * CASE expression (especially the outgoing DTS display number)
+         * is compared using LIKE. Convert both sides explicitly without
+         * changing the database schema or existing records.
+         */
+        $unicodeLike = static function (string $expression): string {
+            return 'CONVERT((' . $expression . ') USING utf8mb4) '
+                . 'COLLATE utf8mb4_unicode_ci LIKE '
+                . 'CONVERT(? USING utf8mb4) COLLATE utf8mb4_unicode_ci';
+        };
 
         $documentsQuery->where(function ($query) use (
             $searchLike,
-            $lowerSearchLike,
             $displayDocumentNumberExpression,
-            $workflowStatusExpression
+            $workflowStatusExpression,
+            $unicodeLike
         ) {
             $query
-                ->whereRaw(
-                    '(' . $displayDocumentNumberExpression . ') LIKE ?',
-                    [$searchLike]
-                )
-                ->orWhere('d.subject', 'like', $searchLike)
-                ->orWhere('d.regarding', 'like', $searchLike)
-                ->orWhere('fromOffice.officename', 'like', $searchLike)
-                ->orWhere('fromOffice.abbrev', 'like', $searchLike)
-                ->orWhere('forOffice.officename', 'like', $searchLike)
-                ->orWhere('receiverPersonnel.name', 'like', $searchLike)
+                ->whereRaw($unicodeLike($displayDocumentNumberExpression), [$searchLike])
+                ->orWhereRaw($unicodeLike('d.subject'), [$searchLike])
+                ->orWhereRaw($unicodeLike('d.regarding'), [$searchLike])
+                ->orWhereRaw($unicodeLike('fromOffice.officename'), [$searchLike])
+                ->orWhereRaw($unicodeLike('fromOffice.abbrev'), [$searchLike])
+                ->orWhereRaw($unicodeLike('forOffice.officename'), [$searchLike])
+                ->orWhereRaw($unicodeLike('receiverPersonnel.name'), [$searchLike])
+                ->orWhereRaw($unicodeLike($workflowStatusExpression), [$searchLike])
                 ->orWhereRaw(
-                    'LOWER(' . $workflowStatusExpression . ') LIKE ?',
-                    [$lowerSearchLike]
-                )
-                ->orWhereRaw(
-                    "DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%M %e, %Y') LIKE ?",
+                    $unicodeLike("DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%M %e, %Y')"),
                     [$searchLike]
                 )
                 ->orWhereRaw(
-                    "DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%Y-%m-%d') LIKE ?",
+                    $unicodeLike("DATE_FORMAT(COALESCE(dist.distdate, d.entrydate), '%Y-%m-%d')"),
                     [$searchLike]
                 );
         });
