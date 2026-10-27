@@ -4015,31 +4015,27 @@ const submitEntryDateUpdate = () => {
                 <table class="w-full min-w-[1250px] table-fixed border-collapse text-center text-sm">
                     <thead>
                         <tr class="bg-blue-600 text-white">
-                            <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[13%] border border-black px-4 py-4 text-center font-bold">
                                 Doc ID
                             </th>
 
-                            <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[13%] border border-black px-4 py-4 text-center font-bold">
                                 Type
                             </th>
 
-                            <th class="w-[18%] border border-black px-4 py-4 text-center font-bold">
-                                {{ documentAgencyColumnLabel }}
-                            </th>
-
-                            <th class="w-[32%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[36%] border border-black px-4 py-4 text-center font-bold">
                                 Subject
                             </th>
 
-                            <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[14%] border border-black px-4 py-4 text-center font-bold">
                                 Distribution<br>Date
                             </th>
 
-                            <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[14%] border border-black px-4 py-4 text-center font-bold">
                                 Status
                             </th>
 
-                            <th class="w-[15%] border border-black px-4 py-4 text-center font-bold">
+                            <th class="w-[10%] border border-black px-4 py-4 text-center font-bold">
                                 Actions
                             </th>
                         </tr>
@@ -4063,21 +4059,6 @@ const submitEntryDateUpdate = () => {
                             <td class="border border-black px-4 py-4 align-middle text-center">
                                 <p class="font-bold text-black">
                                     {{ doc.code || doc.abbreviation || doc.document_code || doc.doctype || doc.type || '-' }}
-                                </p>
-                            </td>
-
-                            <td class="border border-black px-4 py-4 align-middle text-center">
-                                <p class="whitespace-pre-line break-words font-semibold italic leading-6 text-black">
-                                    <span class="block">
-                                            {{ documentAgencyDisplay(doc) }}
-                                        </span>
-
-                                        <span
-                                            v-if="documentAgencyAbbrev(doc)"
-                                            class="mt-1 block text-xs font-black uppercase tracking-[0.12em] text-slate-900"
-                                        >
-                                            ({{ documentAgencyAbbrev(doc) }})
-                                        </span>
                                 </p>
                             </td>
 
@@ -4115,7 +4096,7 @@ const submitEntryDateUpdate = () => {
                         </tr>
 
                         <tr v-if="rows.length === 0">
-                            <td colspan="7" class="border border-black px-7 py-14 text-center">
+                            <td colspan="6" class="border border-black px-7 py-14 text-center">
                                 <div class="text-lg font-bold text-black">
                                     No outgoing documents found
                                 </div>

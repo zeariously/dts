@@ -217,7 +217,7 @@ const isOutgoing = computed(() => String(form.classification_id ?? '').trim().to
 
 const form = useForm({
     classification_id: '',
-    outgoing_status: 'Forwarded to Records',
+    manual_outgoing_code: '',
     type_id: '',
     entry_month: String(today.getMonth() + 1).padStart(2, '0'),
     entry_day: String(today.getDate()).padStart(2, '0'),
@@ -237,6 +237,11 @@ const form = useForm({
 
 watch(() => form.classification_id, () => {
     if (isOutgoing.value) {
+        form.to_office_id = ''
+        form.to_name = ''
+        form.from_office_id = ''
+        form.from_name = ''
+        form.clearErrors('to_office_id', 'to_name', 'from_office_id', 'from_name')
         form.staff_concern_ids = []
         form.staff_concern_id = ''
         staffSearch.value = ''
@@ -368,28 +373,28 @@ const validateRequiredFields = () => {
         errors.entry_year = 'Entry year is required.'
     }
 
-    if (!String(form.to_office_id || '').trim()) {
+    if (!isOutgoing.value && !String(form.to_office_id || '').trim()) {
         errors.to_office_id = 'To Office is required.'
     }
 
-    if (!String(form.to_name || '').trim()) {
+    if (!isOutgoing.value && !String(form.to_name || '').trim()) {
         errors.to_name = 'To name is required.'
     }
 
-    if (!String(form.from_office_id || '').trim()) {
+    if (!isOutgoing.value && !String(form.from_office_id || '').trim()) {
         errors.from_office_id = 'From Office is required.'
     }
 
-    if (!String(form.from_name || '').trim()) {
+    if (!isOutgoing.value && !String(form.from_name || '').trim()) {
         errors.from_name = 'From name is required.'
+    }
+
+    if (isOutgoing.value && !/^[A-Za-z0-9][A-Za-z0-9\-\/_]*$/.test(String(form.manual_outgoing_code || '').trim())) {
+        errors.manual_outgoing_code = 'Enter a valid manual Outgoing DTS code (letters, digits, -, / or _).'
     }
 
     if (!String(form.subject || '').trim()) {
         errors.subject = 'Subject is required.'
-    }
-
-    if (isOutgoing.value && !['For Forwarding', 'Forwarded to Records', 'Released'].includes(form.outgoing_status)) {
-        errors.outgoing_status = 'Select a valid Outgoing status.'
     }
 
     if (!isOutgoing.value && (!Array.isArray(form.staff_concern_ids) || form.staff_concern_ids.length === 0)) {
@@ -417,6 +422,14 @@ const submitForm = () => {
     syncAttachmentsToForm()
 
     form.staff_concern_id = isOutgoing.value ? '' : (form.staff_concern_ids[0] || '')
+    if (isOutgoing.value) {
+        form.to_office_id = ''
+        form.to_name = ''
+        form.from_office_id = ''
+        form.from_name = ''
+    } else {
+        form.manual_outgoing_code = ''
+    }
 
     if (!validateRequiredFields()) {
         return
@@ -467,7 +480,7 @@ const submitForm = () => {
                     </p>
 
                     <p class="mt-2 text-xs font-semibold text-slate-400">
-                        A unique Incoming (IN-) or Outgoing (OUT-) tracking code will be assigned after saving.
+                        Incoming tracking codes are generated automatically. Outgoing codes must be entered manually.
                     </p>
                 </div>
 
@@ -568,7 +581,16 @@ const submitForm = () => {
                     </div>
                 </div>
 
-                <div>
+                <div v-if="isOutgoing" class="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                    <label class="mb-2 block text-sm font-bold text-blue-900">Outgoing DTS Code <span class="text-red-600">*</span></label>
+                    <input v-model.trim="form.manual_outgoing_code" type="text" maxlength="80" required
+                        placeholder="e.g. OUT-26-00127" autocomplete="off"
+                        class="w-full rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm font-semibold uppercase focus:border-blue-500 focus:ring-blue-200" />
+                    <p v-if="form.errors.manual_outgoing_code" class="mt-2 text-xs font-bold text-red-700">{{ form.errors.manual_outgoing_code }}</p>
+                    <p class="mt-1 text-xs text-blue-700">This is the exact code displayed in Outgoing, Reports and Monitoring.</p>
+                </div>
+
+                <div v-if="!isOutgoing">
                     <label class="mb-1 block text-sm font-bold text-slate-700">
                         To Office<span class="text-red-600">*</span>
                     </label>
@@ -610,7 +632,7 @@ const submitForm = () => {
                     </p>
                 </div>
 
-                <div>
+                <div v-if="!isOutgoing">
                     <label class="mb-1 block text-sm font-bold text-slate-700">
                         From Office<span class="text-red-600">*</span>
                     </label>
@@ -761,21 +783,6 @@ const submitForm = () => {
                         class="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="Enter remarks"
                     ></textarea>
-                </div>
-
-                <div v-if="isOutgoing">
-                    <label class="mb-1 block text-sm font-bold text-slate-700">
-                        Outgoing Status<span class="text-red-600">*</span>
-                    </label>
-                    <select v-model="form.outgoing_status" required
-                        class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100">
-                        <option value="For Forwarding">For Forwarding</option>
-                        <option value="Forwarded to Records">Forwarded to Records</option>
-                        <option value="Released">Released</option>
-                    </select>
-                    <p v-if="form.errors.outgoing_status" class="mt-2 text-xs font-bold text-red-700">
-                        {{ form.errors.outgoing_status }}
-                    </p>
                 </div>
 
                 <div v-if="!isOutgoing">

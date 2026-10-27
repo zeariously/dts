@@ -20,6 +20,69 @@ use Illuminate\Support\Facades\Storage;
 
 class DtsController extends Controller
 {
+    /**
+     * DTS elapsed working days: Monday to Thursday only.
+     * The start date is excluded; today's date is included if eligible.
+     * Mirrors monitoringDashboard() SQL workingDaysPendingSql().
+     */
+    private function dtsWorkingDaysSince($date): int
+    {
+        if (empty($date)) {
+            return 0;
+        }
+
+        $start = Carbon::parse($date)->startOfDay();
+        $end = now()->startOfDay();
+        if ($start->greaterThanOrEqualTo($end)) {
+            return 0;
+        }
+
+        $elapsed = (int) $start->diffInDays($end);
+        $days = intdiv($elapsed, 7) * 4;
+        $remainder = $elapsed % 7;
+
+        for ($offset = 1; $offset <= $remainder; $offset++) {
+            if ($start->copy()->addDays($offset)->dayOfWeekIso <= 4) {
+                $days++;
+            }
+        }
+
+        return $days;
+    }
+
+
+/**
+ * Imported Travel Documents retain their source OUT-26-... or RMS-26-...
+ * display code. Numeric document.IDdoc remains the routing primary key.
+ * A correlated lookup avoids changing existing queries or multiplying rows.
+ */
+
+private function outgoingManualReferenceCaseSql(): string
+{
+    if (!Schema::hasTable('dts_outgoing_manual_codes')) {
+        return '';
+    }
+
+    return "WHEN d.classification = 'True'
+        AND EXISTS (SELECT 1 FROM dts_outgoing_manual_codes AS mc WHERE mc.IDdoc = d.IDdoc)
+        THEN (SELECT mc.display_document_no FROM dts_outgoing_manual_codes AS mc
+              WHERE mc.IDdoc = d.IDdoc LIMIT 1)";
+}
+
+private function travelReferenceCaseSql(): string
+{
+    if (!Schema::hasTable('dts_outgoing_travel_reference_v2')) {
+        return '';
+    }
+
+    return "WHEN d.classification = 'True'
+        AND EXISTS (SELECT 1 FROM dts_outgoing_travel_reference_v2 AS tr
+                    WHERE tr.IDdoc = d.IDdoc)
+        THEN (SELECT tr.display_document_no
+              FROM dts_outgoing_travel_reference_v2 AS tr
+              WHERE tr.IDdoc = d.IDdoc LIMIT 1)";
+}
+
 public function index(Request $request)
 {
     $perPage = max(1, min((int) $request->input('per_page', 10), 100));
@@ -464,7 +527,11 @@ public function index(Request $request)
           )"
         : '';
 
+    $manualReferenceCaseSql = $this->outgoingManualReferenceCaseSql();
+    $travelReferenceCaseSql = $this->travelReferenceCaseSql();
     $displayDocumentNumberExpression = "CASE
+        {$manualReferenceCaseSql}
+        {$travelReferenceCaseSql}
         WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
             THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
         WHEN assignment.id IS NOT NULL
@@ -944,7 +1011,14 @@ public function store(Request $request)
         ->values()
         ->all();
 
-    $isOutgoingDocument = strtolower(trim((string) $request->input('classification_id', $request->input('classification', '')))) === 'true';
+    $isOutgoingDocument = in_array(strtolower(trim((string) $request->input('classification_id', $request->input('classification', '')))), ['true', 'outgoing'], true);
+    $request->merge([
+        'classification_id' => $isOutgoingDocument ? 'True' : 'False',
+        'outgoing_status' => $isOutgoingDocument ? 'Forwarded to Records' : null,
+    ]);
+    if ($isOutgoingDocument && !Schema::hasTable('dts_outgoing_manual_codes')) {
+        return back()->withErrors(['manual_outgoing_code' => 'Run the manual outgoing code migration on LOCAL first.'])->withInput();
+    }
     if ($isOutgoingDocument) {
         $staffIds = []; // Outgoing documents have no Staff Concern or assignment workflow.
     }
@@ -958,14 +1032,8 @@ public function store(Request $request)
             'type_id',
             $request->input('IDdoctype')
         ),
-        'IDfrom' => $request->input(
-            'from_office_id',
-            $request->input('IDfrom')
-        ),
-        'IDfor' => $request->input(
-            'to_office_id',
-            $request->input('IDfor')
-        ),
+        'IDfrom' => $isOutgoingDocument ? null : $request->input('from_office_id', $request->input('IDfrom')),
+        'IDfor' => $isOutgoingDocument ? null : $request->input('to_office_id', $request->input('IDfor')),
         'IDkeepers' => $staffIds,
         /*
          * Keep the legacy field populated for old validation/error rendering.
@@ -984,11 +1052,12 @@ public function store(Request $request)
 
     $validated = $request->validate([
         'classification' => ['required', 'in:False,True'],
-        'outgoing_status' => [$isOutgoingDocument ? 'required' : 'nullable', 'in:For Forwarding,Forwarded to Records,Released'],
+        'outgoing_status' => [$isOutgoingDocument ? 'required' : 'nullable', 'in:Forwarded to Records,Recorded'],
+        'manual_outgoing_code' => [$isOutgoingDocument ? 'required' : 'nullable', 'string', 'max:80', 'regex:/^[A-Za-z0-9][A-Za-z0-9\-\/_]*$/'],
         'IDdoctype' => ['required', 'integer', 'exists:lu_doctype,ID'],
         'IDtransac' => ['nullable', 'integer', 'exists:transactions,ID'],
-        'IDfrom' => ['required', 'integer', 'exists:lu_office,ID'],
-        'IDfor' => ['required', 'integer', 'exists:lu_office,ID'],
+        'IDfrom' => [$isOutgoingDocument ? 'nullable' : 'required', 'integer', 'exists:lu_office,ID'],
+        'IDfor' => [$isOutgoingDocument ? 'nullable' : 'required', 'integer', 'exists:lu_office,ID'],
         'to_name' => ['nullable', 'string', 'max:255'],
         'from_name' => ['nullable', 'string', 'max:255'],
         'IDdocstatus' => ['nullable', 'integer', 'exists:lu_docstatus,ID'],
@@ -1024,6 +1093,16 @@ public function store(Request $request)
         'IDkeepers.min' => 'Select at least one Staff Concern.',
         'IDkeepers.*.exists' => 'One of the selected staff records was not found.',
     ]);
+
+    $manualCode = null;
+    if ($isOutgoingDocument) {
+        $manualCode = strtoupper(trim($validated['manual_outgoing_code']));
+        if (DB::table('dts_outgoing_manual_codes')->where('display_document_no', $manualCode)->exists()
+            || (Schema::hasTable('dts_outgoing_travel_reference_v2')
+                && DB::table('dts_outgoing_travel_reference_v2')->where('display_document_no', $manualCode)->exists())) {
+            return back()->withErrors(['manual_outgoing_code' => 'This Outgoing DTS code is already in use.'])->withInput();
+        }
+    }
 
     $staffIds = collect($validated['IDkeepers'])
         ->map(fn ($id) => (int) $id)
@@ -1119,7 +1198,8 @@ public function store(Request $request)
             $staffIds,
             $personnelRows,
             $isMultipleAssignment,
-            $isOutgoingDocument
+            $isOutgoingDocument,
+            $manualCode
         ) {
             $lastDocumentId = DB::table('document')
                 ->orderByDesc('IDdoc')
@@ -1183,6 +1263,16 @@ public function store(Request $request)
                 $documentNameUpdates['outgoing_status'] = $validated['outgoing_status'];
             }
 
+
+            if ($isOutgoingDocument) {
+                // Atomic with document insert. Unique index prevents concurrent duplicate codes.
+                DB::table('dts_outgoing_manual_codes')->insert([
+                    'IDdoc' => $document->IDdoc,
+                    'display_document_no' => $manualCode,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
 
             if (Schema::hasColumn('document', 'to_name')) {
                 $documentNameUpdates['to_name'] = $validated['to_name'] ?? null;
@@ -1349,10 +1439,7 @@ public function store(Request $request)
             . $result['assignment_count']
             . ' staff assignments.'
         : ($isOutgoingDocument
-            ? 'Document saved successfully as OUT-' . str_pad(
-                (string) DB::table('document')->where('IDdoc', $document->IDdoc)->value('outgoing_number'),
-                6, '0', STR_PAD_LEFT
-            ) . '.'
+            ? 'Document saved successfully as ' . $manualCode . '.'
             : 'Document saved successfully as IN-' . $document->IDdoc . '.');
 
     return redirect()
@@ -1831,7 +1918,7 @@ public function show(Request $request, $id)
         'completed_by' => $completedByName
             ?? (! empty($completionData?->completed_by) ? 'Account #' . $completionData->completed_by : null),
         'receive_due_at' => $receiveDueDate ? $receiveDueDate->format('Y-m-d H:i:s') : null,
-        'days_since_transfer' => $latestTransferDate ? $latestTransferDate->diffInDays(now()) : null,
+        'days_since_transfer' => $latestTransferDate ? $this->dtsWorkingDaysSince($latestTransferDate) : null,
         'is_overdue' => (
             $currentWorkflowStatus === 'For Receiving'
             && $receiveDueDate
@@ -2141,11 +2228,23 @@ public function show(Request $request, $id)
     $currentPersonnelName = $staffConcerns
         ->firstWhere('ID', $currentPersonnelId)?->name;
 
-    $displayDocumentNo = $document->classification === 'True'
+    $manualOutgoingCode = ($document->classification === 'True'
+        && Schema::hasTable('dts_outgoing_manual_codes'))
+        ? DB::table('dts_outgoing_manual_codes')->where('IDdoc', $document->IDdoc)->value('display_document_no')
+        : null;
+
+    $importedTravelCode = ($document->classification === 'True'
+        && Schema::hasTable('dts_outgoing_travel_reference_v2'))
+        ? DB::table('dts_outgoing_travel_reference_v2')
+            ->where('IDdoc', $document->IDdoc)
+            ->value('display_document_no')
+        : null;
+
+    $displayDocumentNo = $manualOutgoingCode ?: ($importedTravelCode ?: ($document->classification === 'True'
         ? ($document->outgoing_number !== null
             ? 'OUT-' . str_pad((string) $document->outgoing_number, 6, '0', STR_PAD_LEFT)
             : 'OUT-' . $document->IDdoc)
-        : 'IN-' . $this->workflowReference((int) $document->IDdoc, $assignmentId);
+        : 'IN-' . $this->workflowReference((int) $document->IDdoc, $assignmentId)));
 
     return Inertia::render('DTS/Show', [
         ...$this->dtsNotificationProps(),
@@ -4326,6 +4425,20 @@ public function monitoringDashboard(Request $request)
                 if (Schema::hasColumn('document', 'outgoing_number')) {
                     $q->orWhere('d.outgoing_number', 'like', $like);
                 }
+                if (Schema::hasTable('dts_outgoing_manual_codes')) {
+                    $q->orWhereExists(function ($sub) use ($like) {
+                        $sub->selectRaw('1')->from('dts_outgoing_manual_codes as mc')
+                            ->whereColumn('mc.IDdoc', 'd.IDdoc')
+                            ->where('mc.display_document_no', 'like', $like);
+                    });
+                }
+                if (Schema::hasTable('dts_outgoing_travel_reference_v2')) {
+                    $q->orWhereExists(function ($sub) use ($like) {
+                        $sub->selectRaw('1')->from('dts_outgoing_travel_reference_v2 as tr')
+                            ->whereColumn('tr.IDdoc', 'd.IDdoc')
+                            ->where('tr.display_document_no', 'like', $like);
+                    });
+                }
             });
         }
 
@@ -4340,9 +4453,16 @@ public function monitoringDashboard(Request $request)
             $rows->where('d.outgoing_status', $status);
         }
         $hasNumber = Schema::hasColumn('document', 'outgoing_number');
-        $numberExpression = $hasNumber
+        $normalNumberExpression = $hasNumber
             ? "CASE WHEN d.outgoing_number IS NOT NULL THEN CONCAT('OUT-', LPAD(d.outgoing_number, 6, '0')) ELSE CONCAT('OUT-', d.IDdoc) END"
             : "CONCAT('OUT-', d.IDdoc)";
+        $numberExpression = $normalNumberExpression;
+        if (Schema::hasTable('dts_outgoing_travel_reference_v2')) {
+            $numberExpression = "COALESCE((SELECT tr.display_document_no FROM dts_outgoing_travel_reference_v2 AS tr WHERE tr.IDdoc = d.IDdoc LIMIT 1), {$numberExpression})";
+        }
+        if (Schema::hasTable('dts_outgoing_manual_codes')) {
+            $numberExpression = "COALESCE((SELECT mc.display_document_no FROM dts_outgoing_manual_codes AS mc WHERE mc.IDdoc = d.IDdoc LIMIT 1), {$numberExpression})";
+        }
         $transactions = $rows
             ->select(['d.IDdoc', 'd.subject', 'd.entrydate', 'd.outgoing_status'])
             ->selectRaw($numberExpression . ' as display_document_no')
@@ -4459,6 +4579,7 @@ public function monitoringDashboard(Request $request)
     }
 
     $availableYears = DB::table('document')
+        ->where('classification', 'False') // Incoming monitoring: no outgoing years.
         ->selectRaw('YEAR(entrydate) as year')
         ->whereNotNull('entrydate')
         ->groupBy(DB::raw('YEAR(entrydate)'))
@@ -4672,6 +4793,7 @@ public function monitoringDashboard(Request $request)
         $hasDistributionAssignment
     ) {
         return DB::table('document as d')
+            ->where('d.classification', 'False') // Strictly Incoming for ALL monitoring counts/lists.
             ->leftJoinSub(
                 $makeAssignmentSource(),
                 'assignment',
@@ -4761,7 +4883,11 @@ public function monitoringDashboard(Request $request)
             );
     };
 
+    $manualReferenceCaseSql = $this->outgoingManualReferenceCaseSql();
+    $travelReferenceCaseSql = $this->travelReferenceCaseSql();
     $displayExpression = "CASE
+        {$manualReferenceCaseSql}
+        {$travelReferenceCaseSql}
         WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
             THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
         WHEN assignment.id IS NOT NULL AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
@@ -5175,6 +5301,7 @@ public function monitoringDashboard(Request $request)
     ) {
         $actionTakenBase = DB::table('dts_document_remarks as remarksTable')
             ->join('document as d', 'd.IDdoc', '=', 'remarksTable.IDdoc')
+            ->where('d.classification', 'False') // Never show outgoing in Incoming Action Taken.
             ->leftJoinSub(
                 $makeAssignmentSource(),
                 'assignment',
@@ -6410,7 +6537,11 @@ private function dtsNotificationProps(): array
         return $query;
     };
 
+    $manualReferenceCaseSql = $this->outgoingManualReferenceCaseSql();
+    $travelReferenceCaseSql = $this->travelReferenceCaseSql();
     $displayExpression = "CASE
+        {$manualReferenceCaseSql}
+        {$travelReferenceCaseSql}
         WHEN d.classification = 'True' AND d.outgoing_number IS NOT NULL
             THEN CONCAT('OUT-', LPAD(CAST(d.outgoing_number AS CHAR), 6, '0'))
         WHEN assignment.id IS NOT NULL AND NULLIF(TRIM(assignment.assignment_suffix), '') IS NOT NULL
@@ -6481,7 +6612,7 @@ private function dtsNotificationProps(): array
                         ? $dueDate->format('Y-m-d H:i:s')
                         : null,
                     'days_since_transfer' => $transferDate
-                        ? $transferDate->diffInDays(now())
+                        ? $this->dtsWorkingDaysSince($transferDate)
                         : 0,
                     'is_overdue' => $dueDate
                         ? now()->greaterThanOrEqualTo($dueDate)
@@ -6509,7 +6640,7 @@ private function dtsNotificationProps(): array
         $receivedReminderQuery = $buildNotificationBase()
             ->whereNotNull('dist.IDdist')
             ->whereNotNull('dist.confirmdate')
-            ->whereDate('dist.confirmdate', '<=', now()->subDays(3));
+            ->whereDate('dist.confirmdate', '<=', today());
 
         $applyViewerTag($receivedReminderQuery);
         $applyActiveDistribution($receivedReminderQuery);
@@ -6566,11 +6697,12 @@ private function dtsNotificationProps(): array
                     'current_status' => 'Received',
                     'status_started_at' => $doc->received_date,
                     'days_pending' => $receivedAt
-                        ? $receivedAt->diffInDays(now())
+                        ? $this->dtsWorkingDaysSince($receivedAt)
                         : 0,
                     'is_overdue' => true,
                 ];
             })
+            ->filter(fn ($item) => (int) ($item['days_pending'] ?? 0) >= 3)
             ->values();
 
         $automaticStatusReminders = $automaticStatusReminders
