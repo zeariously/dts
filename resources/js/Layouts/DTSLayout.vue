@@ -80,6 +80,35 @@ const showNotifications = ref(false)
 
 const showMobileSidebar = ref(false)
 
+// Desktop users can collapse the navigation using the hamburger button.
+const desktopSidebarOpen = ref(true)
+const isDesktopViewport = ref(false)
+const SIDEBAR_STORAGE_KEY = 'dts_desktop_sidebar_open_v1'
+
+const syncSidebarViewport = () => {
+    if (typeof window === 'undefined') return
+    isDesktopViewport.value = window.innerWidth >= 1024
+    if (isDesktopViewport.value) showMobileSidebar.value = false
+}
+
+const toggleSidebar = () => {
+    if (isDesktopViewport.value) {
+        desktopSidebarOpen.value = !desktopSidebarOpen.value
+        try {
+            window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(desktopSidebarOpen.value))
+        } catch (error) {
+            // The toggle still works if browser storage is unavailable.
+        }
+    } else {
+        showMobileSidebar.value = !showMobileSidebar.value
+    }
+    showUserMenu.value = false
+}
+
+const navigationIsOpen = computed(() => isDesktopViewport.value
+    ? desktopSidebarOpen.value
+    : showMobileSidebar.value)
+
 const seenNotificationKeys = ref([])
 
 const activeAnnouncements = ref([])
@@ -282,6 +311,15 @@ const fetchActiveAnnouncements = async () => {
 
 onMounted(() => {
 
+    syncSidebarViewport()
+    window.addEventListener('resize', syncSidebarViewport)
+    try {
+        const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
+        if (saved !== null) desktopSidebarOpen.value = saved === 'true'
+    } catch (error) {
+        // Default to expanded navigation if storage is unavailable.
+    }
+
     loadSeenNotificationKeys()
 
     fetchActiveAnnouncements()
@@ -292,6 +330,20 @@ onMounted(() => {
 
     }, 60000)
 
+})
+
+watch(() => page.url, () => {
+    closeMobileSidebar()
+})
+
+const handleSidebarEscape = (event) => {
+    if (event.key === 'Escape') closeMobileSidebar()
+}
+
+onMounted(() => window.addEventListener('keydown', handleSidebarEscape))
+onBeforeUnmount(() => {
+    window.removeEventListener('resize', syncSidebarViewport)
+    window.removeEventListener('keydown', handleSidebarEscape)
 })
 
 watch(showMobileSidebar, (isOpen) => {
@@ -2062,9 +2114,13 @@ onBeforeUnmount(() => {
 
             <aside
 
-                class="fixed inset-y-0 left-0 z-50 flex w-[min(20rem,88vw)] -translate-x-full flex-col border-r border-slate-800 bg-slate-950 text-slate-200 shadow-2xl transition-transform duration-300 ease-out lg:z-30 lg:w-80 lg:translate-x-0 lg:shadow-none"
+                class="fixed inset-y-0 left-0 z-50 flex w-[min(20rem,88vw)] -translate-x-full flex-col border-r border-slate-800 bg-slate-950 text-slate-200 shadow-2xl transition-transform duration-300 ease-out lg:z-30 lg:w-80 lg:shadow-none"
 
-                :class="showMobileSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'"
+                :class="[
+                    showMobileSidebar ? 'translate-x-0' : '-translate-x-full',
+                    desktopSidebarOpen ? 'lg:translate-x-0' : 'lg:-translate-x-full'
+                ]"
+                id="dts-sidebar"
 
             >
 
@@ -2105,19 +2161,14 @@ onBeforeUnmount(() => {
                         </div>
 
                         <button
-
                             type="button"
-
-                            aria-label="Close navigation menu"
-
-                            class="ml-auto inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-xl font-black text-white hover:bg-slate-800 lg:hidden"
-
-                            @click="closeMobileSidebar"
-
+                            aria-label="Collapse navigation menu"
+                            :aria-expanded="navigationIsOpen"
+                            aria-controls="dts-sidebar"
+                            class="ml-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-xl font-black text-white transition hover:bg-slate-800"
+                            @click="toggleSidebar"
                         >
-
-                            ×
-
+                            ☰
                         </button>
 
                     </div>
@@ -2344,7 +2395,10 @@ onBeforeUnmount(() => {
 
             <!-- RIGHT CONTENT -->
 
-            <div class="min-w-0 flex-1 pl-0 lg:pl-80">
+            <div
+                class="min-w-0 flex-1 pl-0 transition-[padding] duration-300 ease-out"
+                :class="desktopSidebarOpen ? 'lg:pl-80' : 'lg:pl-0'"
+            >
 
                 <!-- TOP USER BAR -->
 
@@ -2352,21 +2406,26 @@ onBeforeUnmount(() => {
 
                     <div class="flex items-center justify-between gap-3">
 
-                        <button
-
-                            type="button"
-
-                            aria-label="Open navigation menu"
-
-                            class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-blue-100 bg-blue-50 text-xl font-black text-blue-700 shadow-sm hover:bg-blue-100 lg:hidden"
-
-                            @click="openMobileSidebar"
-
-                        >
-
-                            ☰
-
-                        </button>
+                        <!-- When the sidebar is hidden, keep the brand beside the hamburger. -->
+                        <div v-if="!navigationIsOpen" class="flex min-w-0 items-center gap-2 sm:gap-3">
+                            <button
+                                type="button"
+                                aria-label="Expand navigation menu"
+                                :aria-expanded="navigationIsOpen"
+                                aria-controls="dts-sidebar"
+                                class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 text-xl font-black text-blue-700 shadow-sm transition hover:bg-blue-100"
+                                @click="toggleSidebar"
+                            >
+                                ☰
+                            </button>
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white p-1 shadow-sm ring-1 ring-slate-200">
+                                <img src="/images/logo_dts-nobg.png" alt="DTS Logo" class="h-9 w-9 object-contain" />
+                            </div>
+                            <div class="min-w-0 leading-tight">
+                                <p class="text-sm font-bold text-slate-900">DTS</p>
+                                <p class="text-[10px] font-semibold text-slate-500 sm:text-xs">Document Tracking System</p>
+                            </div>
+                        </div>
 
                         <div class="ml-auto flex min-w-0 items-center justify-end gap-2 sm:gap-3">
 
