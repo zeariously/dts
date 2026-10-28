@@ -3460,7 +3460,6 @@ onBeforeUnmount(() => {
             class="h-full w-full rounded-full object-contain"
         />
     </button>
-
 </template>
 
 <style>

@@ -820,15 +820,11 @@ const buildNewIctAssetPayload = () => {
             || null,
 
         life_span_ended:
-            isIctOthersUnit(unit)
-                ? null
-                : (
-                    normalizeIctDateInput(
+            normalizeIctDateInput(
                         newIctAssetForm.value
                             .life_span_ended
                     )
-                    || null
-                ),
+                    || null,
 
         status:
             normalizeIctAssetStatus(
@@ -916,9 +912,7 @@ const validateNewIctAssetDraft = () => {
         ] = 'Enter a valid Date Acquired.'
     }
 
-    if (
-        !isIctOthersUnit(unit)
-        && newIctAssetForm.value
+    if ( newIctAssetForm.value
             .life_span_ended
         && !lifeSpanEnded
     ) {
@@ -928,9 +922,7 @@ const validateNewIctAssetDraft = () => {
             'Enter a valid Life Span Ended date.'
     }
 
-    if (
-        !isIctOthersUnit(unit)
-        && !isValidIctDateRange(
+    if ( !isValidIctDateRange(
             dateAcquired,
             lifeSpanEnded
         )
@@ -2356,28 +2348,6 @@ const isIctMonthBased = (itemOrUnit) =>
 const isIctSubscription = (itemOrUnit) =>
     Boolean(ictDurationUnit(itemOrUnit))
 
-/*
- * ICT custom Unit "OTHERS":
- * Date Acquired applies, but Life Span Ended does not.
- *
- * This intentionally checks the saved/selected UNIT value, so it also
- * works when "OTHERS" was created through the Add Unit/custom-unit UI.
- */
-const isIctOthersUnit = (itemOrUnit) => {
-    const unit =
-        typeof itemOrUnit === 'string'
-            ? itemOrUnit
-            : itemOrUnit?.unit
-
-    const normalized =
-        String(unit || '')
-            .trim()
-            .toUpperCase()
-
-    return ['OTHER', 'OTHERS'].includes(
-        normalized
-    )
-}
 
 const ictAssetStatusOptions = [
     {
@@ -2461,12 +2431,6 @@ const ictLifeSpanState = (
     asset,
     itemOrUnit = null
 ) => {
-    if (
-        isIctOthersUnit(itemOrUnit)
-    ) {
-        return null
-    }
-
     if (
         normalizeIctAssetStatus(
             asset?.status
@@ -2563,9 +2527,6 @@ const ictLifeSpanRowClass = (
     asset,
     itemOrUnit = null
 ) => {
-    if (isIctOthersUnit(itemOrUnit)) {
-        return 'bg-white hover:bg-blue-50/40'
-    }
     const normalizedLifeEnd =
         normalizeIctDateInput(
             asset?.life_span_ended
@@ -4480,7 +4441,6 @@ const validateIctAssetRows = (
 
         if (
             category === 'ict'
-            && !isIctOthersUnit(unit)
             && asset.life_span_ended
             && !lifeSpanEnded
         ) {
@@ -4492,7 +4452,6 @@ const validateIctAssetRows = (
 
         if (
             category === 'ict'
-            && !isIctOthersUnit(unit)
             && !isValidIctDateRange(
                 dateAcquired,
                 lifeSpanEnded
@@ -4570,10 +4529,7 @@ watch(
                                 asset.status
                             )
                             || 'working',
-                        life_span_ended:
-                            isIctOthersUnit(unit)
-                                ? ''
-                                : asset.life_span_ended,
+                        life_span_ended: asset.life_span_ended,
                     })
                 )
                 : syncedRows
@@ -4619,10 +4575,7 @@ watch(
                                 asset.status
                             )
                             || 'working',
-                        life_span_ended:
-                            isIctOthersUnit(unit)
-                                ? ''
-                                : asset.life_span_ended,
+                        life_span_ended: asset.life_span_ended,
                     })
                 )
                 : syncedRows
@@ -5596,10 +5549,7 @@ const addNewItem = () => {
                     newItemForm.value.ict_assets
                 ).map((asset) => ({
                     ...asset,
-                    life_span_ended:
-                        isIctOthersUnit(unit)
-                            ? ''
-                            : asset.life_span_ended,
+                    life_span_ended: asset.life_span_ended,
                 }))
     } else {
         payload.location = null
@@ -7449,10 +7399,7 @@ const openIctAssetEditModal = (
             normalizedAsset.current_user,
         date_acquired:
             normalizedAsset.date_acquired,
-        life_span_ended:
-            isIctOthersUnit(item)
-                ? ''
-                : normalizedAsset.life_span_ended,
+        life_span_ended: normalizedAsset.life_span_ended,
         status:
             normalizeIctAssetStatus(
                 normalizedAsset.status
@@ -7546,9 +7493,7 @@ const individualPropertyEditUsesLifeSpan =
     computed(
         () =>
             individualPropertyEditIsIct.value
-            && !isIctOthersUnit(
-                ictAssetEditingItem.value
-            )
+            
     )
 
 // Deletes only the selected property row and retains the parent inventory item.
@@ -7621,9 +7566,7 @@ const saveIctAssetEdit = () => {
 
     const usesLifeSpan =
         isIctProperty
-        && !isIctOthersUnit(
-            ictAssetEditingItem.value
-        )
+        
 
     if (
         !isIctProperty
@@ -13193,11 +13136,7 @@ const generateInventoryReport = () => {
                                         {{
                                             activeTab === 'ict'
                                                 ? (
-                                                    isIctOthersUnit(
-                                                        newItemForm.unit
-                                                    )
-                                                        ? 'For OTHERS, each ICT unit tracks Date Acquired only for its life-cycle date. Life Span Ended does not apply.'
-                                                        : 'Each ICT unit tracks Description, Accessories, Property Number, Current User, Date Acquired, Life Span Ended, Status, and MR.'
+                                                    'Each ICT unit tracks Description, Accessories, Property Number, Current User, Date Acquired, Life Span Ended, Status, and MR.'
                                                 )
                                                 : (
                                                     activeTab === 'other'
@@ -13389,14 +13328,7 @@ const generateInventoryReport = () => {
                                        
 
                                         <div
-                                            class="grid gap-3"
-                                            :class="
-                                                isIctOthersUnit(
-                                                    newItemForm.unit
-                                                )
-                                                    ? 'grid-cols-1'
-                                                    : 'sm:grid-cols-2'
-                                            "
+                                            class="grid gap-3 sm:grid-cols-2"
                                         >
                                             <div>
                                                 <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
@@ -13423,11 +13355,6 @@ const generateInventoryReport = () => {
                                             </div>
 
                                             <div
-                                                v-if="
-                                                    !isIctOthersUnit(
-                                                        newItemForm.unit
-                                                    )
-                                                "
                                             >
                                                 <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                     Life Span Ended
@@ -13454,11 +13381,6 @@ const generateInventoryReport = () => {
                                         </div>
 
                                         <p
-                                            v-if="
-                                                !isIctOthersUnit(
-                                                    newItemForm.unit
-                                                )
-                                            "
                                             class="mt-2 text-[9px] font-semibold leading-4 text-slate-400"
                                         >
                                             Red warning starts on January 1 of the same calendar year as the Life Span Ended date.
@@ -14620,14 +14542,7 @@ const generateInventoryReport = () => {
                                            
 
                                             <div
-                                                class="grid gap-3"
-                                                :class="
-                                                    isIctOthersUnit(
-                                                        fullEditForm.unit
-                                                    )
-                                                        ? 'grid-cols-1'
-                                                        : 'sm:grid-cols-2'
-                                                "
+                                                class="grid gap-3 sm:grid-cols-2"
                                             >
                                                 <div>
                                                     <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
@@ -14654,11 +14569,6 @@ const generateInventoryReport = () => {
                                                 </div>
 
                                                 <div
-                                                    v-if="
-                                                        !isIctOthersUnit(
-                                                            fullEditForm.unit
-                                                        )
-                                                    "
                                                 >
                                                     <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
                                                         Life Span Ended
@@ -14685,11 +14595,6 @@ const generateInventoryReport = () => {
                                             </div>
 
                                             <p
-                                                v-if="
-                                                    !isIctOthersUnit(
-                                                        fullEditForm.unit
-                                                    )
-                                                "
                                                 class="mt-2 text-[9px] font-semibold leading-4 text-slate-400"
                                             >
                                                 Near For Return warning starts on January 1 of the same calendar year as the Life Span Ended date.
