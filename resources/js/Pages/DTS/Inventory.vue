@@ -13357,7 +13357,7 @@ const generateInventoryReport = () => {
                                             <div
                                             >
                                                 <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
-                                                    Life Span Ended
+                                                    Life Span Ended (Optional)
                                                 </label>
 
                                                 <input
@@ -14571,7 +14571,7 @@ const generateInventoryReport = () => {
                                                 <div
                                                 >
                                                     <label class="mb-1.5 block text-[10px] font-black uppercase tracking-[0.08em] text-rose-700">
-                                                        Life Span Ended
+                                                        Life Span Ended (Optional)
                                                     </label>
 
                                                     <input
@@ -15431,7 +15431,7 @@ const generateInventoryReport = () => {
                                 "
                             >
                                 <label class="mb-2 block text-sm font-black text-rose-950">
-                                    Life Span Ended
+                                    Life Span Ended (Optional)
                                 </label>
 
                                 <input
@@ -16186,14 +16186,12 @@ const generateInventoryReport = () => {
                         </div>
 
                         <p
-                            class="mt-3 text-sm font-black text-slate-700"
-                        >
+                            class="mt-3 text-sm font-black text-slate-700">
                             No history yet
                         </p>
 
                         <p
-                            class="mt-1 max-w-sm text-xs font-semibold leading-5 text-slate-400"
-                        >
+                            class="mt-1 max-w-sm text-xs font-semibold leading-5 text-slate-400">
                             {{
                                 historyIsPropertyScoped
                                     ? 'No recorded changes were found for this Property Number.'
@@ -16201,7 +16199,6 @@ const generateInventoryReport = () => {
                             }}
                         </p>
                     </div>
-
                     <!-- ACTIVITY LIST -->
                     <div
                         v-else
@@ -16210,28 +16207,22 @@ const generateInventoryReport = () => {
                         <article
                             v-for="history in visibleInventoryHistories"
                             :key="`inventory-history-${history.id}`"
-                            class="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-md"
-                        >
+                            class="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-md">
                             <!-- AT-A-GLANCE SUMMARY -->
                             <div
-                                class="border-b border-blue-100 bg-blue-50/60 px-4 py-4 sm:px-5"
-                            >
+                                class="border-b border-blue-100 bg-blue-50/60 px-4 py-4 sm:px-5">
                                 <div
-                                    class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
-                                >
-                                    <div
-                                        class="min-w-0"
-                                    >
+                                    class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div class="min-w-0">
                                         <span
                                             class="inline-flex rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.08em]"
                                             :class="
                                                 historyActionToneClass(
                                                     history
                                                 )
-                                            "
-                                        >
+                                            ">
                                             {{
-                                                historyActionLabel(
+                                                historyActionLabel( 
                                                     history
                                                 )
                                             }}

@@ -140,7 +140,19 @@ const closeCreateAccountModal = () => {
 <template>
     <Head title="Log in" />
 
-    <div class="relative min-h-screen overflow-hidden bg-blue-600">
+    <div class="halloween-login relative min-h-screen overflow-hidden bg-blue-600">
+        <!-- Halloween accents: decorative only; existing DTS layout is unchanged. -->
+        <div class="halloween-ambient pointer-events-none absolute inset-0" aria-hidden="true"></div>
+        <div class="halloween-sky pointer-events-none absolute inset-0" aria-hidden="true">
+            <span class="halloween-star" style="top:9%;left:12%">✦</span>
+            <span class="halloween-star" style="top:17%;right:15%;animation-delay:1s">✧</span>
+            <span class="halloween-star" style="bottom:16%;left:9%;animation-delay:2s">✦</span>
+            <span class="halloween-star" style="bottom:10%;right:12%;animation-delay:.5s">✧</span>
+            <span class="halloween-bat" style="top:12%;left:6%">🦇</span>
+            <span class="halloween-bat halloween-bat-two" style="top:19%;right:6%">🦇</span>
+            <span class="halloween-pumpkin" style="bottom:7%;left:5%">🎃</span>
+            <span class="halloween-pumpkin" style="bottom:6%;right:5%;animation-delay:1.5s">🎃</span>
+        </div>
         <!-- Background decorations -->
         <div class="absolute -left-24 top-24 h-80 w-80 rounded-full bg-white/10 blur-3xl"></div>
         <div class="absolute -right-32 bottom-10 h-96 w-96 rounded-full bg-blue-300/20 blur-3xl"></div>
@@ -170,12 +182,16 @@ const closeCreateAccountModal = () => {
         </div>
 
         <main class="relative z-10 flex min-h-screen items-center justify-center px-5 py-10">
-            <div class="w-full max-w-6xl rounded-[2rem] border border-white/60 bg-white/15 p-5 shadow-2xl backdrop-blur-sm">
+            <div class="halloween-outer w-full max-w-6xl rounded-[2rem] border border-white/60 bg-white/15 p-5 shadow-2xl backdrop-blur-sm">
                 <div class="grid min-h-[680px] overflow-hidden rounded-[1.7rem] bg-white shadow-2xl lg:grid-cols-[0.95fr_1.15fr]">
                     <!-- Left panel -->
-                    <section class="relative overflow-hidden bg-blue-500 px-8 py-10 text-white sm:px-12 lg:px-14">
+                    <section class="halloween-left relative overflow-hidden bg-blue-500 px-8 py-10 text-white sm:px-12 lg:px-14">
                         <div class="absolute -left-24 bottom-[-130px] h-80 w-80 rounded-full bg-blue-300/30"></div>
                         <div class="absolute -right-20 top-16 h-60 w-60 rounded-full bg-white/10"></div>
+                        <!-- Moon, bats and seasonal badge live behind the logo/content. -->
+                        <div class="halloween-moon pointer-events-none absolute right-7 top-7 h-24 w-24 rounded-full" aria-hidden="true"></div>
+                        <span class="halloween-left-bat pointer-events-none absolute right-24 top-24 text-2xl" aria-hidden="true">🦇</span>
+                        <span class="halloween-left-bat pointer-events-none absolute right-9 top-40 text-lg" style="animation-delay:1.2s" aria-hidden="true">🦇</span>
 
                         <div class="relative z-10 flex h-full flex-col items-center text-center">
                             <!-- Centered logo -->
@@ -189,7 +205,11 @@ const closeCreateAccountModal = () => {
                             </div>
                             </div>
 
-                            <div class="mx-auto mt-14 max-w-md text-center">
+                            <div class="mt-7 inline-flex items-center gap-2 rounded-full border border-orange-200/50 bg-slate-900/20 px-4 py-2 text-xs font-extrabold uppercase tracking-[0.16em] text-orange-100 shadow-lg backdrop-blur-sm">
+                                <span aria-hidden="true">🎃</span> Spooky Season at DTS <span aria-hidden="true">✨</span>
+                            </div>
+
+                            <div class="mx-auto mt-7 max-w-md text-center">
                                 <h1 class="text-2xl font-black leading-tight tracking-wide sm:text-3xl">
                                     Manage your documents the best way
                                 </h1>
@@ -242,16 +262,19 @@ const closeCreateAccountModal = () => {
                     </section>
 
                     <!-- Login panel -->
-                    <section class="flex items-center justify-center bg-white px-7 py-12 sm:px-12">
+                    <section class="halloween-form-panel flex items-center justify-center bg-white px-7 py-12 sm:px-12">
                         <div class="w-full max-w-md">
                             <div class="text-center">
                                 <h2 class="text-4xl font-black tracking-tight text-slate-800">
-                                    Login
+                                    Login <span class="halloween-title-spark" aria-hidden="true">✦</span>
                                 </h2>
 
                                 <p class="mt-3 text-sm font-medium text-slate-500">
                                     Welcome back. Please sign in to continue.
                                 </p>
+                                <div class="mx-auto mt-4 flex items-center justify-center gap-3 text-xs font-bold uppercase tracking-[0.15em] text-violet-600" aria-hidden="true">
+                                    <span>✦</span> Happy Halloween <span>✦</span>
+                                </div>
                             </div>
 
                             <div
@@ -356,7 +379,7 @@ const closeCreateAccountModal = () => {
 
                                 <button
                                     type="submit"
-                                    class="w-full rounded-2xl bg-blue-600 px-6 py-4 text-sm font-black text-white shadow-xl shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    class="halloween-login-button w-full rounded-2xl bg-blue-600 px-6 py-4 text-sm font-black text-white shadow-xl shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                                     :disabled="form.processing"
                                 >
                                     {{ form.processing ? 'Logging in...' : 'Login' }}
@@ -929,4 +952,26 @@ const closeCreateAccountModal = () => {
         transform: scale(1.15);
     }
 }
+
+/* Seasonal decorations only: DTS branding, panels, forms and behavior remain intact. */
+.halloween-login { background: radial-gradient(circle at 14% 18%, #463f9e 0%, transparent 38%), radial-gradient(circle at 86% 87%, #733d92 0%, transparent 38%), #2563eb; }
+.halloween-ambient { background: radial-gradient(circle at 50% 0%, rgba(249,115,22,.14), transparent 42%); }
+.halloween-outer { box-shadow: 0 24px 85px rgba(22,12,64,.35), 0 0 50px rgba(251,146,60,.13); }
+.halloween-left { background: linear-gradient(155deg, #345cc0 0%, #4552ac 54%, #323a85 100%); }
+.halloween-left::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 91% 11%, rgba(255,181,99,.18), transparent 34%); }
+.halloween-moon { background: #ffe6ad; box-shadow: 0 0 22px rgba(255,206,124,.6), 0 0 75px rgba(255,191,104,.2); opacity:.85; }
+.halloween-moon::after { content: ''; position:absolute; width:76%; height:76%; top:-8%; right:-12%; border-radius:50%; background:#3456ac; }
+.halloween-form-panel { background: linear-gradient(145deg, #fff 0%, #fff 76%, #faf6ff 100%); }
+.halloween-title-spark { color: #f59e0b; font-size: .65em; vertical-align: middle; }
+.halloween-login-button { box-shadow:0 12px 23px rgba(37,99,235,.18), 0 0 0 2px rgba(251,146,60,.22); }
+.halloween-login-button:hover { box-shadow:0 13px 25px rgba(37,99,235,.2), 0 0 0 3px rgba(251,146,60,.42); }
+.halloween-star, .halloween-bat, .halloween-pumpkin { position:absolute; display:block; user-select:none; }
+.halloween-star { color:#ffdeb0; font-size:24px; animation: halloweenTwinkle 3.8s ease-in-out infinite; }
+.halloween-bat { font-size:34px; opacity:.62; animation: halloweenFloat 5s ease-in-out infinite; }
+.halloween-bat-two { animation-delay:1.6s; }
+.halloween-pumpkin { font-size:56px; opacity:.74; filter:drop-shadow(0 10px 12px rgba(24,16,66,.2)); animation:halloweenFloat 6s ease-in-out infinite; }
+.halloween-left-bat { opacity:.62; animation:halloweenFloat 5s ease-in-out infinite; }
+@keyframes halloweenFloat { 0%,100% { transform:translateY(0) rotate(-4deg); } 50% { transform:translateY(-12px) rotate(5deg); } }
+@keyframes halloweenTwinkle { 0%,100% { opacity:.3; transform:scale(.8); } 50% { opacity:1; transform:scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .halloween-star,.halloween-bat,.halloween-pumpkin,.halloween-left-bat { animation:none; } }
 </style>
