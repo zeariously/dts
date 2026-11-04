@@ -108,6 +108,25 @@ const selectedDocument = ref(null)
 const selectedDocumentSummary = ref(null)
 const showEditDocumentModal = ref(false)
 const editingDocument = ref(null)
+// Status correction is contained inside the existing Edit Document modal.
+const changeStatusForm = useForm({
+    target_status: '',
+    reason: '',
+    assignment_id: null,
+})
+const statusIsOutgoing = computed(() =>
+    ['true', '1', 'y', 'yes', 'outgoing'].includes(
+        String(editingDocument.value?.classification ?? '').toLowerCase()
+    )
+)
+const statusChoices = computed(() => statusIsOutgoing.value
+    ? [
+        { value: 'Forwarded to RND', label: 'Forwarded to RND' },
+        { value: 'Forwarded to Records', label: 'Forwarded to Records' },
+        { value: 'Recorded', label: 'Recorded' },
+    ]
+    : [{ value: 'For Receiving', label: 'Reopen to For Receiving' }]
+)
 const editDocumentForm = useForm({
     entrydate: '',
     subject: '',
@@ -1227,36 +1246,92 @@ const openEditDocumentModal = (document) => {
             : ''
 
     editDocumentForm.clearErrors()
+    changeStatusForm.reset()
+    changeStatusForm.clearErrors()
+    changeStatusForm.assignment_id = document.assignment_id ?? null
     showEditDocumentModal.value = true
 }
 
 const closeEditDocumentModal = () => {
-    if (editDocumentForm.processing) return
+    if (editDocumentForm.processing || changeStatusForm.processing) return
 
     showEditDocumentModal.value = false
     editingDocument.value = null
     editDocumentForm.reset()
     editDocumentForm.clearErrors()
+    changeStatusForm.reset()
+    changeStatusForm.clearErrors()
 }
 
+// One Save Changes button handles document edits and optional status correction.
+// Existing backend endpoints remain separate; do not send workflow fields to
+// the basic document update endpoint because that does not reopen the workflow.
 const submitEditDocument = () => {
-    if (!editingDocument.value?.IDdoc) {
+    const doc = editingDocument.value
+    if (!doc?.IDdoc || editDocumentForm.processing || changeStatusForm.processing) return
+
+    changeStatusForm.clearErrors()
+    const changeStatus = Boolean(changeStatusForm.target_status)
+    const detailsChanged = [
+        ['entrydate', normalizeDocumentDateInput(doc.entrydate)],
+        ['subject', String(doc.subject || '')],
+        ['regarding', String(doc.regarding || '')],
+        ['classification', String(doc.classification ?? 'False')],
+        ['IDdoctype', doc.IDdoctype == null ? '' : String(doc.IDdoctype)],
+        ['IDfrom', doc.IDfrom == null ? '' : String(doc.IDfrom)],
+        ['IDfor', doc.IDfor == null ? '' : String(doc.IDfor)],
+    ].some(([key, original]) => String(editDocumentForm[key] ?? '') !== original)
+
+    if (changeStatus && changeStatusForm.reason.trim().length < 10) {
+        changeStatusForm.setError('reason', 'Enter a reason of at least 10 characters.')
         return
     }
 
-    editDocumentForm.patch(
-        `/admin/documents/${editingDocument.value.IDdoc}`,
-        {
-            preserveScroll: true,
+    if (changeStatus && !window.confirm(
+        `Change DTS #${doc.IDdoc} to ${changeStatusForm.target_status}?\n\n` +
+        'The previous workflow history must be retained and this correction logged.'
+    )) return
 
-            onSuccess: () => {
-                showEditDocumentModal.value = false
-                editingDocument.value = null
-                editDocumentForm.reset()
-                editDocumentForm.clearErrors()
-            },
+    const finish = () => {
+        showEditDocumentModal.value = false
+        editingDocument.value = null
+        editDocumentForm.reset()
+        changeStatusForm.reset()
+        router.reload({ only: ['documents', 'stats', 'flash'], preserveScroll: true })
+    }
+
+    const saveStatus = () => {
+        changeStatusForm.patch(`/admin/documents/${doc.IDdoc}/status`, {
+            preserveScroll: true,
+            onSuccess: finish,
+        })
+    }
+
+    // Only details changed: one ordinary PATCH.
+    if (!changeStatus) {
+        if (!detailsChanged) {
+            closeEditDocumentModal()
+            return
         }
-    )
+        editDocumentForm.patch(`/admin/documents/${doc.IDdoc}`, {
+            preserveScroll: true,
+            onSuccess: finish,
+        })
+        return
+    }
+
+    // Only status changed: do not unnecessarily update document details.
+    if (!detailsChanged) {
+        saveStatus()
+        return
+    }
+
+    // Both changed: save the details first; only proceed if that succeeded.
+    // Each request is separately validated server-side.
+    editDocumentForm.patch(`/admin/documents/${doc.IDdoc}`, {
+        preserveScroll: true,
+        onSuccess: saveStatus,
+    })
 }
 
 const deleteAdminDocument = (document) => {
@@ -2999,14 +3074,14 @@ const historyBadgeClass = (type) => {
                             </h2>
 
                             <p class="mt-1 text-sm font-semibold text-white/75">
-                                Edit basic document information. Workflow history and assignment history are not rewritten here.
+                                Edit document details or make an authorized workflow status correction below.
                             </p>
                         </div>
 
                         <button
                             type="button"
                             class="rounded-xl bg-white/15 px-4 py-2.5 text-sm font-black text-white hover:bg-white/25"
-                            :disabled="editDocumentForm.processing"
+                            :disabled="editDocumentForm.processing || changeStatusForm.processing"
                             @click="closeEditDocumentModal"
                         >
                             Close
@@ -3188,6 +3263,53 @@ const historyBadgeClass = (type) => {
                         </div>
                     </div>
 
+                    <!-- Status fields are included in the existing Edit modal and saved with the single Save Changes button. -->
+                    <div class="mt-7 rounded-2xl border border-amber-200 bg-amber-50/60 p-5">
+                        <div class="mb-4">
+                            <h3 class="text-base font-black text-slate-900">Document Status</h3>
+                            <p class="mt-1 text-sm font-semibold text-slate-700">
+                                Current: <span class="font-black">{{ editingDocument?.workflow_status || 'Unknown' }}</span>
+                            </p>
+                            <p class="mt-1 text-xs text-slate-600">
+                                Status changes are administrative workflow corrections saved using the button below.
+                                Previous action and transfer history must be retained.
+                            </p>
+                        </div>
+                        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div>
+                                <label class="mb-2 block text-sm font-black text-slate-800">Change status to</label>
+                                <select
+                                    v-model="changeStatusForm.target_status"
+                                    class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold"
+                                >
+                                    <option value="">No status change</option>
+                                    <option v-for="choice in statusChoices" :key="choice.value" :value="choice.value">
+                                        {{ choice.label }}
+                                    </option>
+                                </select>
+                                <p v-if="changeStatusForm.errors.target_status" class="mt-1 text-xs font-semibold text-rose-600">
+                                    {{ changeStatusForm.errors.target_status }}
+                                </p>
+                            </div>
+                            <div>
+                                <label class="mb-2 block text-sm font-black text-slate-800">Reason for status correction</label>
+                                <textarea
+                                    v-model.trim="changeStatusForm.reason"
+                                    rows="3"
+                                    :disabled="!changeStatusForm.target_status"
+                                    placeholder="Required when changing status (minimum 10 characters)"
+                                    class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm"
+                                ></textarea>
+                                <p v-if="changeStatusForm.errors.reason" class="mt-1 text-xs font-semibold text-rose-600">
+                                    {{ changeStatusForm.errors.reason }}
+                                </p>
+                                <p v-if="changeStatusForm.errors.assignment_id" class="mt-1 text-xs font-semibold text-rose-600">
+                                    {{ changeStatusForm.errors.assignment_id }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold leading-5 text-amber-800">
                         Assigned To / workflow assignment is intentionally read-only here so Admin Edit does not rewrite distribution history.
                     </div>
@@ -3196,7 +3318,7 @@ const historyBadgeClass = (type) => {
                         <button
                             type="button"
                             class="rounded-2xl border border-slate-200 bg-white px-6 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
-                            :disabled="editDocumentForm.processing"
+                            :disabled="editDocumentForm.processing || changeStatusForm.processing"
                             @click="closeEditDocumentModal"
                         >
                             Cancel
@@ -3205,9 +3327,9 @@ const historyBadgeClass = (type) => {
                         <button
                             type="submit"
                             class="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                            :disabled="editDocumentForm.processing"
+                            :disabled="editDocumentForm.processing || changeStatusForm.processing"
                         >
-                            {{ editDocumentForm.processing ? 'Saving...' : 'Save Changes' }}
+                            {{ editDocumentForm.processing || changeStatusForm.processing ? 'Saving...' : 'Save Changes' }}
                         </button>
                     </div>
                 </form>

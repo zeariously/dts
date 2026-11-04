@@ -743,7 +743,6 @@ const closeCreateAccountModal = () => {
                     <p class="text-sm font-bold leading-6 text-slate-800">
                         {{ successMessage || 'Account created successfully. You may now log in.' }}
                     </p>
-
                     <p class="mt-3 text-sm font-medium leading-6 text-slate-600">
                         Please use your Login Name and Password to access the system.
                     </p>
@@ -777,12 +776,10 @@ const closeCreateAccountModal = () => {
                             class="h-full w-full object-contain"
                         />
                     </div>
-
                     <div>
                         <h3 class="text-xl font-black">
                             Forgot Password
                         </h3>
-
                         <p class="mt-1 text-sm font-semibold text-blue-100">
                             Password reset assistance
                         </p>
@@ -795,12 +792,10 @@ const closeCreateAccountModal = () => {
                     <p class="text-sm font-bold leading-6 text-slate-800">
                         Password reset is not yet enabled.
                     </p>
-
                     <p class="mt-3 text-sm font-medium leading-6 text-slate-600">
                         Please contact the system administrator to reset your password.
                     </p>
                 </div>
-
                 <div class="mt-6 flex justify-end">
                     <button
                         type="button"

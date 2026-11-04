@@ -1,691 +1,300 @@
 <?php
-
-
-
 namespace App\Http\Controllers\Admin;
-
-
-
 use App\Http\Controllers\Controller;
-
 use App\Models\ActivityLog;
-
 use Illuminate\Http\Request;
-
 use Illuminate\Support\Carbon;
-
 use Illuminate\Support\Collection;
-
 use Illuminate\Support\Facades\DB;
-
 use Illuminate\Support\Facades\Hash;
-
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
-
 use Illuminate\Validation\Rule;
-
 use Inertia\Inertia;
-
-
-
 class AdminUserManagementController extends Controller
-
 {
-
     public function index(Request $request)
-
     {
-
         $this->ensureAdmin();
-
-
-
         $perPage = (int) $request->input('per_page', 10);
-
         $perPage = in_array($perPage, [10, 15, 20, 50], true) ? $perPage : 10;
-
-
-
         $documentPerPage = (int) $request->input('document_per_page', 15);
-
         $documentPerPage = in_array($documentPerPage, [10, 15, 20, 50], true)
-
             ? $documentPerPage
-
             : 15;
-
-
-
         $search = trim((string) $request->input('search', ''));
-
         $documentSearch = trim((string) $request->input('document_search', ''));
-
         $roleId = $request->input('role_id');
-
         $tab = $request->input('tab', 'role-management');
-
-
-
         $roles = $this->roles();
-
         $users = $this->buildUsersPaginator($search, $roleId, $perPage, $roles);
-
         $documents = $this->buildDocumentsPaginator($documentSearch, $documentPerPage);
-
         $activityLogs = $this->buildActivityLogs();
-
         $announcements = $this->buildAnnouncements();
-
-
-
         return Inertia::render('Admin/UserManagement', [
-
             'users' => $users,
-
             'documents' => $documents,
-
             'documentOptions' =>
                 $this->documentEditOptions(),
-
             'guideTopicOverrides' =>
                 $this->buildGuideTopicOverrides(),
-
             'roles' => $roles->values(),
-
             'stats' => [
-
                 'total_users' => Schema::hasTable('username')
-
                     ? DB::table('username')->count()
-
                     : 0,
-
                 'admin_users' => $this->adminUsersCount(),
-
                 'total_documents' => Schema::hasTable('document')
-
                     ? DB::table('document')->count()
-
                     : 0,
-
                 'total_announcements' => count($announcements),
-
                 'current_page' => $users->currentPage(),
-
                 'last_page' => $users->lastPage(),
-
             ],
-
             'activityLogs' => $activityLogs,
-
             'announcements' => $announcements,
-
             'filters' => [
-
                 'search' => $search,
-
                 'role_id' => $roleId,
-
                 'per_page' => $perPage,
-
                 'document_search' => $documentSearch,
-
                 'document_per_page' => $documentPerPage,
-
                 'tab' => $tab,
-
             ],
-
             'authUser' => [
-
                 'id' => $this->authUserId(),
-
                 'name' => $this->authLoginName(),
-
                 'role_id' => (string) $this->authRights(),
-
             ],
-
             'flash' => [
-
                 'success' => session('success'),
-
                 'error' => session('error'),
-
             ],
-
         ]);
-
     }
-
-
-
     public function store(Request $request)
-
     {
-
         $this->ensureAdmin();
-
-
-
         abort_unless(
-
             Schema::hasTable('username'),
-
             500,
-
             'The username table does not exist.'
-
         );
-
-
-
         $allowedRights = $this->roles()
-
             ->pluck('id')
-
             ->map(fn ($right) => (string) $right)
-
             ->values()
-
             ->all();
-
-
-
         $validated = $request->validate([
-
             'name' => ['required', 'string', 'max:255'],
-
             'loginname' => [
-
                 'required',
-
                 'string',
-
                 'max:100',
-
                 'regex:/^[A-Za-z0-9.\_-]+$/',
-
                 Rule::unique('username', 'loginname'),
-
             ],
-
             'role_id' => ['required', 'string', Rule::in($allowedRights)],
-
             'password' => ['required', 'string', 'min:4', 'confirmed'],
-
         ], [
-
             'loginname.regex' => 'The username may only contain letters, numbers, dots, underscores, and hyphens.',
-
             'loginname.unique' => 'This username is already being used.',
-
             'password.confirmed' => 'The password confirmation does not match.',
-
         ]);
-
-
-
         $insertData = [
-
             'loginname' => trim($validated['loginname']),
-
             'password' => Hash::make($validated['password']),
-
             'rights' => (string) $validated['role_id'],
-
         ];
-
-
-
         if (Schema::hasColumn('username', 'name')) {
-
             $insertData['name'] = trim($validated['name']);
-
         }
-
-
-
         if (Schema::hasColumn('username', 'idoffice')) {
-
             $insertData['idoffice'] = 0;
-
         }
-
-
-
         if (Schema::hasColumn('username', 'idmapagency')) {
-
             $insertData['idmapagency'] = 0;
-
         }
-
-
-
         $newUserId = DB::table('username')->insertGetId($insertData, 'ID');
-
-
-
         if (Schema::hasTable('activity_logs')) {
-
             ActivityLog::record(
-
                 'created user',
-
                 'Admin User Management',
-
                 'Created DTS account for ' . trim($validated['name'])
-
                     . ' (' . trim($validated['loginname']) . ').',
-
                 'username',
-
                 (int) $newUserId,
-
                 [
-
                     'target_name' => trim($validated['name']),
-
                     'target_loginname' => trim($validated['loginname']),
-
                     'rights' => (string) $validated['role_id'],
-
                     'role' => $this->formatRightsName($validated['role_id']),
-
                 ]
-
             );
-
         }
-
-
-
         return back()->with('success', 'User account added successfully.');
-
     }
-
-
-
     public function updateRole(Request $request, $id)
-
     {
-
         $this->ensureAdmin();
-
-
-
         $validated = $request->validate([
-
             'role_id' => ['required', 'string', 'max:100'],
-
         ]);
-
-
-
         if ((int) $this->authUserId() === (int) $id) {
-
             return back()->with(
-
                 'error',
-
                 'You cannot change your own role while signed in.'
-
             );
-
         }
-
-
-
         $allowedRights = $this->roles()
-
             ->pluck('id')
-
             ->map(fn ($right) => (string) $right)
-
             ->values()
-
             ->all();
-
-
-
         if (! in_array((string) $validated['role_id'], $allowedRights, true)) {
-
             return back()->with('error', 'Selected role is invalid.');
-
         }
-
-
-
         $targetUser = DB::table('username')
-
             ->where('ID', $id)
-
             ->first();
-
-
-
         if (! $targetUser) {
-
             return back()->with('error', 'User account not found.');
-
         }
-
-
-
         $oldRights = (string) ($targetUser->rights ?? '');
-
         $newRights = (string) $validated['role_id'];
-
-
-
         DB::table('username')
-
             ->where('ID', $id)
-
             ->update([
-
                 'rights' => $newRights,
-
             ]);
-
-
-
         if (Schema::hasTable('activity_logs')) {
-
             ActivityLog::record(
-
                 'updated role',
-
                 'Admin User Management',
-
                 'Updated role of ' . ($targetUser->loginname ?? 'Unknown Account')
-
                     . ' from ' . $this->formatRightsName($oldRights)
-
                     . ' to ' . $this->formatRightsName($newRights) . '.',
-
                 'username',
-
                 (int) $id,
-
                 [
-
                     'target_loginname' => $targetUser->loginname ?? null,
-
                     'old_rights' => $oldRights,
-
                     'old_role' => $this->formatRightsName($oldRights),
-
                     'new_rights' => $newRights,
-
                     'new_role' => $this->formatRightsName($newRights),
-
                 ]
-
             );
-
         }
-
-
-
         return back()->with('success', 'User role updated successfully.');
-
     }
-
-
-
     public function storeAnnouncement(Request $request)
-
     {
-
         $this->ensureAdmin();
-
-
-
         abort_unless(
-
             Schema::hasTable('dts_admin_announcements'),
-
             500,
-
             'The announcements table does not exist. Run php artisan migrate.'
-
         );
-
-
-
         $allowedRoleIds = $this->roles()
-
             ->pluck('id')
-
             ->map(fn ($id) => (string) $id)
-
             ->values()
-
             ->all();
-
-
-
         $validated = $request->validate([
-
             'title' => ['required', 'string', 'max:150'],
-
             'message' => ['required', 'string', 'max:2000'],
-
             'target_type' => ['required', Rule::in(['all', 'role'])],
-
             'target_value' => ['nullable', 'string', 'max:100'],
-
             'starts_at' => ['nullable', 'date'],
-
             'ends_at' => ['nullable', 'date'],
-
             'is_active' => ['required', 'boolean'],
-
         ]);
-
-
-
         if (
-
             $validated['target_type'] === 'role'
-
             && ! in_array(
-
                 (string) ($validated['target_value'] ?? ''),
-
                 $allowedRoleIds,
-
                 true
-
             )
-
         ) {
-
             return back()->withErrors([
-
                 'target_value' => 'Please select a valid role.',
-
             ])->withInput();
-
         }
-
-
-
         $startsAt = ! empty($validated['starts_at'])
-
             ? Carbon::parse($validated['starts_at'])
-
             : null;
-
-
-
         $endsAt = ! empty($validated['ends_at'])
-
             ? Carbon::parse($validated['ends_at'])
-
             : null;
-
-
-
         if ($startsAt && $endsAt && $endsAt->lt($startsAt)) {
-
             return back()->withErrors([
-
                 'ends_at' => 'End date and time must be later than the start date and time.',
-
             ])->withInput();
-
         }
-
-
-
         $announcementId = DB::table('dts_admin_announcements')
-
             ->insertGetId([
-
                 'title' => trim($validated['title']),
-
                 'message' => trim($validated['message']),
-
                 'target_type' => $validated['target_type'],
-
                 'target_value' => $validated['target_type'] === 'role'
-
                     ? (string) $validated['target_value']
-
                     : null,
-
                 'is_active' => (bool) $validated['is_active'],
-
                 'starts_at' => $startsAt?->format('Y-m-d H:i:s'),
-
                 'ends_at' => $endsAt?->format('Y-m-d H:i:s'),
-
                 'created_by' => $this->authUserId(),
-
                 'created_at' => now(),
-
                 'updated_at' => now(),
-
             ]);
-
-
-
         if (Schema::hasTable('activity_logs')) {
-
             ActivityLog::record(
-
                 'created announcement',
-
                 'Admin Announcements',
-
                 'Created announcement: ' . trim($validated['title']) . '.',
-
                 'dts_admin_announcements',
-
                 (int) $announcementId,
-
                 [
-
                     'target_type' => $validated['target_type'],
-
                     'target_value' => $validated['target_type'] === 'role'
-
                         ? (string) $validated['target_value']
-
                         : null,
-
                     'is_active' => (bool) $validated['is_active'],
-
                 ]
-
             );
-
         }
-
-
-
         return back()->with('success', 'Announcement published successfully.');
-
     }
-
-
-
     public function destroyAnnouncement($announcement)
-
     {
-
         $this->ensureAdmin();
-
-
-
         abort_unless(
-
             Schema::hasTable('dts_admin_announcements'),
-
             404
-
         );
-
-
-
         $record = DB::table('dts_admin_announcements')
-
             ->where('id', $announcement)
-
             ->first();
-
-
-
         if (! $record) {
-
             return back()->with('error', 'Announcement not found.');
-
         }
-
-
-
         DB::table('dts_admin_announcements')
-
             ->where('id', $announcement)
-
             ->delete();
-
-
-
         if (Schema::hasTable('activity_logs')) {
-
             ActivityLog::record(
-
                 'deleted announcement',
-
                 'Admin Announcements',
-
                 'Deleted announcement: ' . ($record->title ?? 'Untitled') . '.',
-
                 'dts_admin_announcements',
-
                 (int) $announcement,
-
                 [
-
                     'title' => $record->title ?? null,
-
                 ]
-
             );
-
         }
-
-
-
         return back()->with('success', 'Announcement deleted successfully.');
-
     }
-
-
     /**
      * Read saved DTS Guide topic overrides.
      * Available to authenticated DTS users so the layout can apply admin edits.
@@ -697,13 +306,10 @@ class AdminUserManagementController extends Controller
                 $this->buildGuideTopicOverrides(),
         ]);
     }
-
-
     public function storeGuideTopic(
         Request $request
     ) {
         $this->ensureAdmin();
-
         if (
             ! Schema::hasTable(
                 'dts_guide_topic_overrides'
@@ -714,7 +320,6 @@ class AdminUserManagementController extends Controller
                 'DTS Guide storage is not ready. Run php artisan migrate first.'
             );
         }
-
         $validated = $request->validate([
             'title_en' => [
                 'required',
@@ -775,7 +380,6 @@ class AdminUserManagementController extends Controller
                 'max:255',
             ],
         ]);
-
         $normalizeList = static function (
             array $values
         ): array {
@@ -794,56 +398,45 @@ class AdminUserManagementController extends Controller
                 ->values()
                 ->all();
         };
-
         $titleEn =
             trim(
                 $validated['title_en']
             );
-
         $titleTl =
             trim(
                 $validated['title_tl']
             );
-
         /*
          * Prefix custom topics with "custom-" so a newly added guide
          * cannot accidentally replace one of the built-in guide topic IDs.
          */
         $slug =
             strtolower($titleEn);
-
         $slug =
             preg_replace(
                 '/[^a-z0-9]+/i',
                 '-',
                 $slug
             );
-
         $slug =
             trim(
                 (string) $slug,
                 '-'
             );
-
         if ($slug === '') {
             $slug = 'guide-topic';
         }
-
         $slug =
             substr(
                 $slug,
                 0,
                 82
             );
-
         $baseTopicId =
             'custom-' . $slug;
-
         $topicId =
             $baseTopicId;
-
         $suffix = 2;
-
         while (
             DB::table(
                 'dts_guide_topic_overrides'
@@ -858,34 +451,27 @@ class AdminUserManagementController extends Controller
                 $baseTopicId
                 . '-'
                 . $suffix;
-
             $suffix++;
         }
-
         $keywords =
             $normalizeList([
                 ...$validated['keywords'],
                 $titleEn,
                 $titleTl,
             ]);
-
         $payload = [
             'topic_id' =>
                 $topicId,
-
             'title_en' =>
                 $titleEn,
-
             'title_tl' =>
                 $titleTl,
-
             'keywords' =>
                 json_encode(
                     $keywords,
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'steps_en' =>
                 json_encode(
                     $normalizeList(
@@ -894,7 +480,6 @@ class AdminUserManagementController extends Controller
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'steps_tl' =>
                 json_encode(
                     $normalizeList(
@@ -903,7 +488,6 @@ class AdminUserManagementController extends Controller
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'href' =>
                 trim(
                     (string) (
@@ -911,7 +495,6 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'action_label_en' =>
                 trim(
                     (string) (
@@ -921,7 +504,6 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'action_label_tl' =>
                 trim(
                     (string) (
@@ -931,21 +513,16 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'updated_by' =>
                 $this->authUserId(),
-
             'created_at' =>
                 now(),
-
             'updated_at' =>
                 now(),
         ];
-
         DB::table(
             'dts_guide_topic_overrides'
         )->insert($payload);
-
         if (Schema::hasTable('activity_logs')) {
             ActivityLog::record(
                 'added DTS guide',
@@ -965,20 +542,16 @@ class AdminUserManagementController extends Controller
                 ]
             );
         }
-
         return back()->with(
             'success',
             'New DTS Guide added successfully.'
         );
     }
-
-
     public function updateGuideTopic(
         Request $request,
         string $topicId
     ) {
         $this->ensureAdmin();
-
         if (
             ! Schema::hasTable(
                 'dts_guide_topic_overrides'
@@ -989,7 +562,6 @@ class AdminUserManagementController extends Controller
                 'DTS Guide storage is not ready. Run php artisan migrate first.'
             );
         }
-
         abort_unless(
             preg_match(
                 '/^[a-z0-9][a-z0-9\-]{0,99}$/',
@@ -998,7 +570,6 @@ class AdminUserManagementController extends Controller
             422,
             'Invalid DTS Guide topic ID.'
         );
-
         $validated = $request->validate([
             'title_en' => [
                 'required',
@@ -1059,7 +630,6 @@ class AdminUserManagementController extends Controller
                 'max:255',
             ],
         ]);
-
         $normalizeList = static function (
             array $values
         ): array {
@@ -1077,14 +647,11 @@ class AdminUserManagementController extends Controller
                 ->values()
                 ->all();
         };
-
         $payload = [
             'title_en' =>
                 trim($validated['title_en']),
-
             'title_tl' =>
                 trim($validated['title_tl']),
-
             'keywords' =>
                 json_encode(
                     $normalizeList(
@@ -1093,7 +660,6 @@ class AdminUserManagementController extends Controller
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'steps_en' =>
                 json_encode(
                     $normalizeList(
@@ -1102,7 +668,6 @@ class AdminUserManagementController extends Controller
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'steps_tl' =>
                 json_encode(
                     $normalizeList(
@@ -1111,7 +676,6 @@ class AdminUserManagementController extends Controller
                     JSON_UNESCAPED_UNICODE
                     | JSON_UNESCAPED_SLASHES
                 ),
-
             'href' =>
                 trim(
                     (string) (
@@ -1119,7 +683,6 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'action_label_en' =>
                 trim(
                     (string) (
@@ -1129,7 +692,6 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'action_label_tl' =>
                 trim(
                     (string) (
@@ -1139,14 +701,11 @@ class AdminUserManagementController extends Controller
                         ?? ''
                     )
                 ) ?: null,
-
             'updated_by' =>
                 $this->authUserId(),
-
             'updated_at' =>
                 now(),
         ];
-
         $exists =
             DB::table(
                 'dts_guide_topic_overrides'
@@ -1156,7 +715,6 @@ class AdminUserManagementController extends Controller
                     $topicId
                 )
                 ->exists();
-
         if ($exists) {
             DB::table(
                 'dts_guide_topic_overrides'
@@ -1177,7 +735,6 @@ class AdminUserManagementController extends Controller
                     now(),
             ]);
         }
-
         if (Schema::hasTable('activity_logs')) {
             ActivityLog::record(
                 'updated DTS guide',
@@ -1197,14 +754,11 @@ class AdminUserManagementController extends Controller
                 ]
             );
         }
-
         return back()->with(
             'success',
             'DTS Guide topic updated successfully.'
         );
     }
-
-
     /**
      * Admin-only correction of basic document information.
      *
@@ -1217,23 +771,19 @@ class AdminUserManagementController extends Controller
         $document
     ) {
         $this->ensureAdmin();
-
         abort_unless(
             Schema::hasTable('document'),
             404
         );
-
         $record = DB::table('document')
             ->where('IDdoc', $document)
             ->first();
-
         if (! $record) {
             return back()->with(
                 'error',
                 'Document not found.'
             );
         }
-
         $validated = $request->validate([
             'entrydate' => [
                 'required',
@@ -1272,9 +822,7 @@ class AdminUserManagementController extends Controller
                 'exists:lu_office,ID',
             ],
         ]);
-
         $documentId = (int) $record->IDdoc;
-
         $before = [
             'entrydate' =>
                 $record->entrydate ?? null,
@@ -1291,7 +839,6 @@ class AdminUserManagementController extends Controller
             'IDfor' =>
                 $record->IDfor ?? null,
         ];
-
         $updates = [
             'entrydate' =>
                 Carbon::parse(
@@ -1315,7 +862,6 @@ class AdminUserManagementController extends Controller
             'IDfor' =>
                 (int) $validated['IDfor'],
         ];
-
         if (
             Schema::hasColumn(
                 'document',
@@ -1324,7 +870,6 @@ class AdminUserManagementController extends Controller
         ) {
             $updates['updated_at'] = now();
         }
-
         DB::transaction(function () use (
             $documentId,
             $updates,
@@ -1336,7 +881,6 @@ class AdminUserManagementController extends Controller
                     $documentId
                 )
                 ->update($updates);
-
             /*
              * Keep the current workflow office synchronized with To Office.
              * Historical distribution rows are not rewritten.
@@ -1359,7 +903,6 @@ class AdminUserManagementController extends Controller
                         ->selectRaw(
                             'MAX(CAST(IDdist AS UNSIGNED)) as latest_IDdist'
                         );
-
                 if (
                     Schema::hasColumn(
                         'distribution',
@@ -1371,7 +914,6 @@ class AdminUserManagementController extends Controller
                             'assignment_id'
                         );
                 }
-
                 $latestIds =
                     $latestIdsQuery
                         ->pluck(
@@ -1379,7 +921,6 @@ class AdminUserManagementController extends Controller
                         )
                         ->filter()
                         ->values();
-
                 if ($latestIds->isNotEmpty()) {
                     DB::table('distribution')
                         ->whereIn(
@@ -1395,7 +936,6 @@ class AdminUserManagementController extends Controller
                 }
             }
         });
-
         if (Schema::hasTable('activity_logs')) {
             ActivityLog::record(
                 'updated document',
@@ -1428,7 +968,6 @@ class AdminUserManagementController extends Controller
                 ]
             );
         }
-
         return back()->with(
             'success',
             'DTS document #'
@@ -1436,8 +975,139 @@ class AdminUserManagementController extends Controller
                 . ' updated successfully.'
         );
     }
-
-
+    /**
+     * Admin-only workflow correction. Preserve earlier distributions/actions.
+     * Reopening inserts a new pending distribution; it never rewrites the old one.
+     */
+    public function updateDocumentStatus(Request $request, $document)
+    {
+        $this->ensureAdmin();
+        abort_unless(Schema::hasTable('document'), 404);
+        $validated = $request->validate([
+            'target_status' => ['required', 'string', Rule::in([
+                'For Receiving', 'Forwarded to RND', 'Forwarded to Records', 'Recorded',
+            ])],
+            'reason' => ['required', 'string', 'min:10', 'max:2000'],
+            'assignment_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $target = $validated['target_status'];
+        $reason = trim($validated['reason']);
+        $assignmentId = $validated['assignment_id'] ?? null;
+        $change = DB::transaction(function () use ($document, $target, $reason, $assignmentId) {
+            $record = DB::table('document')->where('IDdoc', $document)->lockForUpdate()->first();
+            abort_unless($record, 404, 'Document not found.');
+            $documentId = (int) $record->IDdoc;
+            $outgoing = in_array(strtolower((string) $record->classification), ['true', '1', 'y', 'yes', 'outgoing'], true);
+            if ($outgoing) {
+                if ($target === 'For Receiving') {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'target_status' => 'For Receiving is only available for Incoming documents.',
+                    ]);
+                }
+                abort_unless(Schema::hasColumn('document', 'outgoing_status'), 422, 'Outgoing status field is missing.');
+                $previous = trim((string) ($record->outgoing_status ?? '')) ?: 'Recorded';
+                if ($previous === $target) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'target_status' => 'This document already has the selected status.',
+                    ]);
+                }
+                $updates = ['outgoing_status' => $target];
+                if (Schema::hasColumn('document', 'updated_at')) $updates['updated_at'] = now();
+                DB::table('document')->where('IDdoc', $documentId)->update($updates);
+                return compact('documentId', 'previous', 'target', 'reason');
+            }
+            if ($target !== 'For Receiving') {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'target_status' => 'Incoming documents can only be reopened to For Receiving.',
+                ]);
+            }
+            if ((int) ($record->is_completed ?? 0) === 1 || ! empty($record->completed_at)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'target_status' => 'Completed documents require a separate approved reopening process.',
+                ]);
+            }
+            abort_unless(Schema::hasTable('distribution'), 422, 'Distribution table is missing.');
+            $hasAssignment = Schema::hasColumn('distribution', 'assignment_id');
+            if ($hasAssignment && Schema::hasTable('dts_document_assignments')) {
+                $assignmentQuery = DB::table('dts_document_assignments')->where('IDdoc', $documentId);
+                $numberOfAssignments = (clone $assignmentQuery)->count();
+                if ($numberOfAssignments > 1 && $assignmentId === null) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'assignment_id' => 'This document has multiple assignments. Select the specific workflow before reopening.',
+                    ]);
+                }
+                if ($assignmentId !== null && ! (clone $assignmentQuery)->where('id', $assignmentId)->exists()) {
+                    throw \Illuminate\Validation\ValidationException::withMessages([
+                        'assignment_id' => 'The selected assignment does not belong to this document.',
+                    ]);
+                }
+            } elseif ($assignmentId !== null) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'assignment_id' => 'Assignment workflows are unavailable for this database.',
+                ]);
+            }
+            $query = DB::table('distribution')->where('IDdoc', $documentId);
+            if ($hasAssignment) {
+                $query = $assignmentId === null
+                    ? $query->whereNull('assignment_id')
+                    : $query->where('assignment_id', $assignmentId);
+            }
+            $latest = $query->orderByRaw('CAST(IDdist AS UNSIGNED) DESC')->lockForUpdate()->first();
+            if (! $latest) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'target_status' => 'Cannot reopen a document without an existing distribution. Use the normal assignment workflow.',
+                ]);
+            }
+            $current = $this->workflowStatus($latest, $documentId);
+            if ($current === 'For Receiving') {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'target_status' => 'The latest workflow is already For Receiving.',
+                ]);
+            }
+            if (empty($latest->confirmdate)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'target_status' => 'Only an already received or addressed workflow can be reopened here.',
+                ]);
+            }
+            // New distribution becomes the current workflow; old received/addressed rows remain intact.
+            $new = [
+                'IDdoc' => $documentId,
+                'IDoffice' => $latest->IDoffice ?? $record->IDfor,
+                'distdate' => now(),
+                'confirmdate' => null,
+                'confirmuser' => null,
+                'YNreturn' => 'False',
+                'returndate' => null,
+                'IDuser' => $this->authUserId(),
+                'remarks' => 'Administrative reopening: ' . $reason,
+                'IDparentdist' => $latest->IDdist,
+                'YNpulled' => 'False',
+                'idmapagency' => $latest->idmapagency ?? $record->IDkeeper,
+            ];
+            if ($hasAssignment) $new['assignment_id'] = $assignmentId;
+            if (Schema::hasColumn('distribution', 'created_at')) $new['created_at'] = now();
+            if (Schema::hasColumn('distribution', 'updated_at')) $new['updated_at'] = now();
+            $newDistributionId = DB::table('distribution')->insertGetId($new, 'IDdist');
+            // Keep summary status aligned, but the frontend derives the real status from distribution.
+            $updates = ['IDdocstatus' => 3];
+            if (Schema::hasColumn('document', 'updated_at')) $updates['updated_at'] = now();
+            DB::table('document')->where('IDdoc', $documentId)->update($updates);
+            $previous = $current;
+            return compact('documentId', 'previous', 'target', 'reason', 'newDistributionId');
+        });
+        if (Schema::hasTable('activity_logs')) {
+            ActivityLog::record(
+                'corrected document status',
+                'Admin Documents',
+                'Corrected DTS document #' . $change['documentId'] . ' status from '
+                    . $change['previous'] . ' to ' . $change['target'] . '.',
+                'document',
+                $change['documentId'],
+                $change
+            );
+        }
+        return back()->with('success', 'DTS document #' . $change['documentId'] . ' status updated successfully.');
+    }
     /**
      * Admin-only permanent document removal.
      *
@@ -1448,27 +1118,21 @@ class AdminUserManagementController extends Controller
     public function destroyDocument($document)
     {
         $this->ensureAdmin();
-
         abort_unless(
             Schema::hasTable('document'),
             404
         );
-
         $record = DB::table('document')
             ->where('IDdoc', $document)
             ->first();
-
         if (! $record) {
             return back()->with(
                 'error',
                 'Document not found.'
             );
         }
-
         $documentId = (int) $record->IDdoc;
-
         $filePaths = collect();
-
         if (
             Schema::hasTable(
                 'dts_document_files'
@@ -1494,7 +1158,6 @@ class AdminUserManagementController extends Controller
                     ->filter()
                     ->values();
         }
-
         DB::transaction(function () use (
             $documentId
         ) {
@@ -1509,7 +1172,6 @@ class AdminUserManagementController extends Controller
                 'dts_document_files',
                 'dts_document_assignments',
             ];
-
             foreach ($childTables as $table) {
                 if (
                     Schema::hasTable($table)
@@ -1526,7 +1188,6 @@ class AdminUserManagementController extends Controller
                         ->delete();
                 }
             }
-
             DB::table('document')
                 ->where(
                     'IDdoc',
@@ -1534,14 +1195,12 @@ class AdminUserManagementController extends Controller
                 )
                 ->delete();
         });
-
         if ($filePaths->isNotEmpty()) {
             Storage::disk('public')
                 ->delete(
                     $filePaths->all()
                 );
         }
-
         /*
          * Remove any now-empty folder for this document.
          */
@@ -1550,7 +1209,6 @@ class AdminUserManagementController extends Controller
                 'dts/documents/'
                 . $documentId
             );
-
         if (Schema::hasTable('activity_logs')) {
             ActivityLog::record(
                 'deleted document',
@@ -1575,7 +1233,6 @@ class AdminUserManagementController extends Controller
                 ]
             );
         }
-
         return back()->with(
             'success',
             'DTS document #'
@@ -1583,366 +1240,162 @@ class AdminUserManagementController extends Controller
                 . ' deleted successfully.'
         );
     }
-
-
-
     private function buildUsersPaginator(
-
         string $search,
-
         $roleId,
-
         int $perPage,
-
         Collection $roles
-
     ) {
-
         if (! Schema::hasTable('username')) {
-
             return $this->emptyPaginator($perPage, 'page');
-
         }
-
-
-
         $usersQuery = DB::table('username as u');
-
-
-
         if ($search !== '') {
-
             $usersQuery->where(function ($query) use ($search) {
-
                 $query->where('u.loginname', 'like', '%' . $search . '%')
-
                     ->orWhere('u.ID', 'like', '%' . $search . '%');
-
-
-
                 if (Schema::hasColumn('username', 'name')) {
-
                     $query->orWhere('u.name', 'like', '%' . $search . '%');
-
                 }
-
             });
-
         }
-
-
-
         if ($roleId !== null && $roleId !== '') {
-
             $usersQuery->where('u.rights', $roleId);
-
         }
-
-
-
         $selectColumns = [
-
             'u.ID',
-
             'u.loginname',
-
             'u.rights',
-
         ];
-
-
-
         $selectColumns[] = Schema::hasColumn('username', 'name')
-
             ? 'u.name'
-
             : DB::raw('NULL as name');
-
-
-
         $selectColumns[] = Schema::hasColumn('username', 'lastlogin')
-
             ? 'u.lastlogin'
-
             : DB::raw('NULL as lastlogin');
-
-
-
         return $usersQuery
-
             ->select($selectColumns)
-
             ->orderByDesc('u.ID')
-
             ->paginate($perPage, ['\*'], 'page')
-
             ->withQueryString()
-
             ->through(function ($user) use ($roles) {
-
                 $rights = (string) ($user->rights ?? '');
-
                 $role = $roles->firstWhere('id', $rights);
-
-
-
                 return [
-
                     'id' => $user->ID,
-
                     'name' => $user->name ?: $user->loginname,
-
                     'username' => $user->loginname,
-
                     'lastlogin' => $user->lastlogin ?? null,
-
                     'role_id' => $rights,
-
                     'role_name' => $role['name']
-
                         ?? $this->formatRightsName($rights),
-
                 ];
-
             });
-
     }
-
-
-
     private function buildDocumentsPaginator(
-
         string $search,
-
         int $perPage
-
     ) {
-
         if (! Schema::hasTable('document')) {
-
             return $this->emptyPaginator($perPage, 'document_page');
-
         }
-
-
-
         $query = DB::table('document as d')
-
             ->select([
-
                 'd.IDdoc',
-
                 'd.subject',
-
                 'd.regarding',
-
                 'd.entrydate',
-
                 'd.classification',
-
                 'd.IDdoctype',
-
                 'd.IDfrom',
-
                 'd.IDfor',
-
                 'd.IDkeeper',
-
             ]);
-
-
-
         if ($search !== '') {
-
             $query->where(function ($documentQuery) use ($search) {
-
                 $documentQuery
-
                     ->where('d.IDdoc', 'like', '%' . $search . '%')
-
                     ->orWhere('d.subject', 'like', '%' . $search . '%')
-
                     ->orWhere('d.regarding', 'like', '%' . $search . '%');
-
             });
-
         }
-
-
-
         $documents = $query
-
             ->orderByDesc('d.IDdoc')
-
             ->paginate($perPage, ['\*'], 'document_page')
-
             ->withQueryString();
-
-
-
         $documentIds = $documents->getCollection()
-
             ->pluck('IDdoc')
-
             ->filter()
-
             ->values();
-
-
-
         $doctypeMap = Schema::hasTable('lu_doctype')
-
             ? DB::table('lu_doctype')->pluck('description', 'ID')
-
             : collect();
-
-
-
         $officeMap = Schema::hasTable('lu_office')
-
             ? DB::table('lu_office')->pluck('officename', 'ID')
-
             : collect();
-
-
-
         $personnelMap = Schema::hasTable('lu_personnel')
-
             ? DB::table('lu_personnel')->pluck('name', 'ID')
-
             : collect();
-
-
-
         $latestDistributions = collect();
-
-
-
         if (
-
             Schema::hasTable('distribution')
-
             && $documentIds->isNotEmpty()
-
         ) {
-
             $latestDistributions = DB::table('distribution')
-
                 ->whereIn('IDdoc', $documentIds)
-
                 ->orderByDesc('IDdist')
-
                 ->get()
-
                 ->unique('IDdoc')
-
                 ->keyBy('IDdoc');
-
         }
-
-
-
         $documents->setCollection(
-
             $documents->getCollection()->map(function ($document) use (
-
                 $doctypeMap,
-
                 $officeMap,
-
                 $personnelMap,
-
                 $latestDistributions
-
             ) {
-
                 $latestDistribution = $latestDistributions->get($document->IDdoc);
-
-
-
                 $assignedPersonnelId = $document->IDkeeper;
-
-
-
                 if (
-
                     $latestDistribution
-
                     && Schema::hasColumn('distribution', 'idmapagency')
-
                     && ! empty($latestDistribution->idmapagency)
-
                 ) {
-
                     $assignedPersonnelId = $latestDistribution->idmapagency;
-
                 }
-
-
-
                 return [
-
                     'IDdoc' => $document->IDdoc,
-
                     'document_no' => $document->IDdoc,
-
                     'subject' => $document->subject,
-
                     'regarding' => $document->regarding,
-
                     'entrydate' => $document->entrydate,
-
                     'classification' => $document->classification,
-
                     'IDdoctype' =>
                         $document->IDdoctype,
-
                     'IDfrom' =>
                         $document->IDfrom,
-
                     'IDfor' =>
                         $document->IDfor,
-
                     'IDkeeper' =>
                         $document->IDkeeper,
-
                     'classification_label' => $this->classificationLabel(
-
                         $document->classification
-
                     ),
-
                     'doctype' => $doctypeMap->get($document->IDdoctype),
-
                     'from_office' => $officeMap->get($document->IDfrom),
-
                     'for_office' => $officeMap->get($document->IDfor),
-
                     'staff_concern' => $personnelMap->get($assignedPersonnelId),
-
                     'transferred_to' => $personnelMap->get($assignedPersonnelId),
-
                     'workflow_status' => $this->workflowStatus(
-
                         $latestDistribution,
-
                         $document->IDdoc
-
                     ),
-
                 ];
-
             })
-
         );
-
-
-
         return $documents;
-
     }
-
-
     private function documentEditOptions(): array
     {
         $doctypes =
@@ -1967,7 +1420,6 @@ class AdminUserManagementController extends Controller
                     ->values()
                     ->all()
                 : [];
-
         $offices =
             Schema::hasTable('lu_office')
                 ? DB::table('lu_office')
@@ -1990,409 +1442,182 @@ class AdminUserManagementController extends Controller
                     ->values()
                     ->all()
                 : [];
-
         return [
             'doctypes' => $doctypes,
             'offices' => $offices,
         ];
     }
-
-
-
     private function buildActivityLogs(): array
-
     {
-
         if (! Schema::hasTable('activity_logs')) {
-
             return [];
-
         }
-
-
-
         return DB::table('activity_logs')
-
             ->orderByDesc('id')
-
             ->limit(100)
-
             ->get()
-
             ->map(function ($log) {
-
                 return [
-
                     'action' => $log->action ?? '-',
-
                     'module' => $log->module ?? '-',
-
                     'user' => $log->user_name
-
                         ?? $log->username
-
                         ?? 'Unknown User',
-
                     'ip_address' => $log->ip_address ?? '-',
-
                     'date' => $log->created_at ?? null,
-
                 ];
-
             })
-
             ->values()
-
             ->all();
-
     }
-
-
-
     private function buildAnnouncements(): array
-
     {
-
         if (! Schema::hasTable('dts_admin_announcements')) {
-
             return [];
-
         }
-
-
-
         $announcements = DB::table('dts_admin_announcements')
-
             ->orderByDesc('id')
-
             ->limit(100)
-
             ->get();
-
-
-
         $creatorIds = $announcements
-
             ->pluck('created_by')
-
             ->filter()
-
             ->unique()
-
             ->values();
-
-
-
         $creatorMap = collect();
-
-
-
         if (
-
             $creatorIds->isNotEmpty()
-
             && Schema::hasTable('username')
-
         ) {
-
             $creatorQuery = DB::table('username')
-
                 ->whereIn('ID', $creatorIds)
-
                 ->select([
-
                     'ID',
-
                     'loginname',
-
                     Schema::hasColumn('username', 'name')
-
                         ? 'name'
-
                         : DB::raw('NULL as name'),
-
                 ])
-
                 ->get();
-
-
-
             $creatorMap = $creatorQuery->mapWithKeys(function ($user) {
-
                 return [
-
                     $user->ID => $user->name ?: $user->loginname,
-
                 ];
-
             });
-
         }
-
-
-
         return $announcements
-
             ->map(function ($announcement) use ($creatorMap) {
-
                 return [
-
                     'id' => $announcement->id,
-
                     'title' => $announcement->title,
-
                     'message' => $announcement->message,
-
                     'target_type' => $announcement->target_type,
-
                     'target_value' => $announcement->target_value,
-
                     'is_active' => (bool) $announcement->is_active,
-
                     'starts_at' => $announcement->starts_at,
-
                     'ends_at' => $announcement->ends_at,
-
                     'created_by' => $announcement->created_by,
-
                     'created_by_name' => $creatorMap->get(
-
                         $announcement->created_by
-
                     ),
-
                     'created_at' => $announcement->created_at,
-
                     'updated_at' => $announcement->updated_at,
-
                 ];
-
             })
-
             ->values()
-
             ->all();
-
     }
-
-
-
     private function workflowStatus($distribution, $documentId): string
-
     {
-
         if (! $distribution) {
-
             return 'Unassigned';
-
         }
-
-
-
         $trueValues = ['true', 'y', '1'];
-
-
-
-
-
         if (
-
             Schema::hasColumn('distribution', 'YNpulled')
-
             && in_array(
-
                 strtolower((string) ($distribution->YNpulled ?? '')),
-
                 $trueValues,
-
                 true
-
             )
-
         ) {
-
             return 'Pulled Out';
-
         }
-
-
-
         if (
-
             Schema::hasColumn('distribution', 'YNreturn')
-
             && in_array(
-
                 strtolower((string) ($distribution->YNreturn ?? '')),
-
                 $trueValues,
-
                 true
-
             )
-
         ) {
-
             return 'Returned';
-
         }
-
-
-
         if (! empty($distribution->confirmdate)) {
-
             if ($this->hasCurrentFinalAction($documentId, $distribution)) {
-
                 return 'Addressed';
-
             }
-
-
-
             return 'Received';
-
         }
-
-
-
         return 'For Receiving';
-
     }
-
-
-
     private function hasCurrentFinalAction($documentId, $distribution): bool
-
     {
-
         if (
-
             ! Schema::hasTable('dts_document_remarks')
-
             || ! Schema::hasColumn('dts_document_remarks', 'action_type')
-
         ) {
-
             return false;
-
         }
-
-
-
         $query = DB::table('dts_document_remarks')
-
             ->where('IDdoc', $documentId)
-
             ->where('action_type', 'action_taken');
-
-
-
-
-
         if (
-
             ! empty($distribution->distdate)
-
             && Schema::hasColumn('dts_document_remarks', 'created_at')
-
         ) {
-
             $query->where(
-
                 'created_at',
-
                 '>=',
-
                 $distribution->distdate
-
             );
-
         }
-
-
-
         if (
-
             Schema::hasColumn('distribution', 'assignment_id')
-
             && Schema::hasColumn('dts_document_remarks', 'assignment_id')
-
         ) {
-
             $assignmentId = $distribution->assignment_id ?? null;
-
-
-
             if ($assignmentId === null) {
-
                 $query->whereNull('assignment_id');
-
             } else {
-
                 $query->where('assignment_id', $assignmentId);
-
             }
-
         }
-
-
-
         return $query->exists();
-
     }
-
-
-
     private function classificationLabel($classification): string
-
     {
-
         return in_array(
-
             strtolower((string) $classification),
-
             ['true', '1', 'y', 'yes', 'outgoing'],
-
             true
-
         )
-
             ? 'Outgoing'
-
             : 'Incoming';
-
     }
-
-
-
     private function emptyPaginator(int $perPage, string $pageName)
-
     {
-
         return new \Illuminate\Pagination\LengthAwarePaginator(
-
             collect(),
-
             0,
-
             $perPage,
-
             1,
-
             [
-
                 'path' => request()->url(),
-
                 'pageName' => $pageName,
-
             ]
-
         );
-
     }
-
-
-
     private function buildGuideTopicOverrides(): array
     {
         if (
@@ -2402,32 +1627,27 @@ class AdminUserManagementController extends Controller
         ) {
             return [];
         }
-
         $decodeList = static function (
             mixed $value
         ): array {
             if (is_array($value)) {
                 return array_values($value);
             }
-
             if (
                 ! is_string($value)
                 || trim($value) === ''
             ) {
                 return [];
             }
-
             $decoded =
                 json_decode(
                     $value,
                     true
                 );
-
             return is_array($decoded)
                 ? array_values($decoded)
                 : [];
         };
-
         return DB::table(
             'dts_guide_topic_overrides'
         )
@@ -2440,49 +1660,40 @@ class AdminUserManagementController extends Controller
                     return [
                         'topic_id' =>
                             (string) $row->topic_id,
-
                         'title_en' =>
                             (string) (
                                 $row->title_en
                                 ?? ''
                             ),
-
                         'title_tl' =>
                             (string) (
                                 $row->title_tl
                                 ?? ''
                             ),
-
                         'keywords' =>
                             $decodeList(
                                 $row->keywords
                                 ?? null
                             ),
-
                         'steps_en' =>
                             $decodeList(
                                 $row->steps_en
                                 ?? null
                             ),
-
                         'steps_tl' =>
                             $decodeList(
                                 $row->steps_tl
                                 ?? null
                             ),
-
                         'href' =>
                             $row->href
                             ?? null,
-
                         'action_label_en' =>
                             $row->action_label_en
                             ?? null,
-
                         'action_label_tl' =>
                             $row->action_label_tl
                             ?? null,
-
                         'updated_at' =>
                             $row->updated_at
                             ?? null,
@@ -2492,278 +1703,116 @@ class AdminUserManagementController extends Controller
             ->values()
             ->all();
     }
-
-
     private function ensureAdmin(): void
-
     {
-
         $rights = (string) $this->authRights();
-
-
-
         abort_unless(in_array($rights, ['1', '4'], true), 403);
-
     }
-
-
-
     private function authUserId()
-
     {
-
         $user = auth()->user();
-
-
-
         if (! $user) {
-
             return null;
-
         }
-
-
-
         if (isset($user->ID)) {
-
             return $user->ID;
-
         }
-
-
-
         if (isset($user->id)) {
-
             return $user->id;
-
         }
-
-
-
         $loginname = $user->loginname ?? $user->username ?? null;
-
-
-
         if ($loginname && Schema::hasTable('username')) {
-
             return DB::table('username')
-
                 ->where('loginname', $loginname)
-
                 ->value('ID');
-
         }
-
-
-
         return null;
-
     }
-
-
-
     private function authLoginName(): string
-
     {
-
         $user = auth()->user();
-
-
-
         if (! $user) {
-
             return 'Admin';
-
         }
-
-
-
         return $user->loginname
-
             ?? $user->username
-
             ?? $user->name
-
             ?? 'Admin';
-
     }
-
-
-
     private function authRights()
-
     {
-
         $user = auth()->user();
-
-
-
         if (! $user) {
-
             return null;
-
         }
-
-
-
         if (isset($user->rights)) {
-
             return $user->rights;
-
         }
-
-
-
         $loginname = $user->loginname ?? $user->username ?? null;
-
-
-
         if (
-
             $loginname
-
             && Schema::hasTable('username')
-
             && Schema::hasColumn('username', 'rights')
-
         ) {
-
             return DB::table('username')
-
                 ->where('loginname', $loginname)
-
                 ->value('rights');
-
         }
-
-
-
         $id = $user->ID ?? $user->id ?? null;
-
-
-
         if (
-
             $id
-
             && Schema::hasTable('username')
-
             && Schema::hasColumn('username', 'rights')
-
         ) {
-
             return DB::table('username')
-
                 ->where('ID', $id)
-
                 ->value('rights');
-
         }
-
-
-
         return null;
-
     }
-
-
-
     private function roles(): Collection
-
     {
-
         return collect([
-
             ['id' => '1', 'name' => 'Admin'],
-
             ['id' => '2', 'name' => 'User'],
-
             ['id' => '3', 'name' => 'Staff'],
-
             ['id' => '4', 'name' => 'Super Admin'],
-
         ]);
-
     }
-
-
-
     private function formatRightsName($rights): string
-
     {
-
         return match ((string) $rights) {
-
             '1' => 'Admin',
-
             '2' => 'User',
-
             '3' => 'Staff',
-
             '4' => 'Super Admin',
-
             default => 'No Role',
-
         };
-
     }
-
-
-
     private function adminRightsValues(): array
-
     {
-
         return [
-
             '1',
-
             '4',
-
             'admin',
-
             'administrator',
-
             'superadmin',
-
             'super admin',
-
         ];
-
     }
-
-
-
     private function adminUsersCount(): int
-
     {
-
         if (
-
             ! Schema::hasTable('username')
-
             || ! Schema::hasColumn('username', 'rights')
-
         ) {
-
             return 0;
-
         }
-
-
-
         return DB::table('username')
-
             ->whereIn(
-
                 DB::raw('LOWER(CAST(rights AS CHAR))'),
-
                 $this->adminRightsValues()
-
             )
-
             ->count();
-
     }
-
 }

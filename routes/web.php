@@ -47,6 +47,7 @@ Route::middleware(['auth', 'verified'])
 
         // Admin - All Documents
         Route::patch('/documents/{document}', [AdminUserManagementController::class, 'updateDocument'])->name('documents.update');
+        Route::patch('/documents/{document}/status', [AdminUserManagementController::class, 'updateDocumentStatus'])->name('documents.status.update');
         Route::delete('/documents/{document}', [AdminUserManagementController::class, 'destroyDocument'])->name('documents.destroy');
 
         Route::post('/dts-guide/topics', [AdminUserManagementController::class, 'storeGuideTopic'])->name('dts-guide.topics.store');
