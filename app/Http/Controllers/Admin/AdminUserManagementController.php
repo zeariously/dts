@@ -1795,7 +1795,7 @@ class AdminUserManagementController extends Controller
             '1',
             '4',
             'admin',
-            'administrator',
+            'administrator',       
             'superadmin',
             'super admin',
         ];
