@@ -4595,9 +4595,37 @@ const ictQuantityLabel = (itemOrUnit) => {
     return 'Count'
 }
 
+// Count only actual non-returned ICT properties. The persisted
+// currently_available value is a storage capacity used by the existing
+// property-row synchronization, so we must NOT decrease it on return:
+// that would truncate returned properties and their audit trail.
+const activeIctPropertyCount = (item) => {
+    if (String(item?.category || '').toLowerCase() !== 'ict' || isIctSubscription(item)) {
+        return currentAvailableValue(item)
+    }
+
+    const assets = ictAssetDetails(item)
+    const registered = assets.filter((asset) => [
+        asset?.property_number,
+        asset?.description,
+        asset?.accessories,
+        asset?.current_user,
+    ].some((value) => String(value ?? '').trim() !== ''))
+
+    // Preserve a legacy numeric count if no property details were entered.
+    // When at least one property is registered, ignore empty placeholder rows.
+    if (registered.length === 0) {
+        return currentAvailableValue(item)
+    }
+
+    return registered.filter((asset) =>
+        normalizeIctAssetStatus(asset?.status) !== 'returned'
+    ).length
+}
+
 const ictQuantityDisplay = (item) => {
     const value =
-        currentAvailableValue(item)
+        activeIctPropertyCount(item)
 
     if (value === null) {
         return '—'
@@ -9585,7 +9613,7 @@ const generateInventoryReport = () => {
             }
         } else if (activeTab.value === 'ict') {
             const quantity =
-                currentAvailableValue(item)
+                activeIctPropertyCount(item)
 
             if (
                 quantity !== null
@@ -9941,7 +9969,7 @@ const generateInventoryReport = () => {
             }
 
             const ictQuantity =
-                currentAvailableValue(item)
+                activeIctPropertyCount(item)
 
             const ictQuantityText =
                 ictQuantity === null
