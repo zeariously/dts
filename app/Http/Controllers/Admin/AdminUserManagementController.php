@@ -24,11 +24,13 @@ class AdminUserManagementController extends Controller
             : 15;
         $search = trim((string) $request->input('search', ''));
         $documentSearch = trim((string) $request->input('document_search', ''));
+        $documentClassification = $request->input('document_classification') === 'outgoing'
+            ? 'outgoing' : 'incoming';
         $roleId = $request->input('role_id');
         $tab = $request->input('tab', 'role-management');
         $roles = $this->roles();
         $users = $this->buildUsersPaginator($search, $roleId, $perPage, $roles);
-        $documents = $this->buildDocumentsPaginator($documentSearch, $documentPerPage);
+        $documents = $this->buildDocumentsPaginator($documentSearch, $documentPerPage, $documentClassification);
         $activityLogs = $this->buildActivityLogs();
         $announcements = $this->buildAnnouncements();
         return Inertia::render('Admin/UserManagement', [
@@ -59,6 +61,7 @@ class AdminUserManagementController extends Controller
                 'per_page' => $perPage,
                 'document_search' => $documentSearch,
                 'document_per_page' => $documentPerPage,
+                'document_classification' => $documentClassification,
                 'tab' => $tab,
             ],
             'authUser' => [
@@ -1294,7 +1297,8 @@ class AdminUserManagementController extends Controller
     }
     private function buildDocumentsPaginator(
         string $search,
-        int $perPage
+        int $perPage,
+        string $classification = 'incoming'
     ) {
         if (! Schema::hasTable('document')) {
             return $this->emptyPaginator($perPage, 'document_page');
@@ -1311,6 +1315,16 @@ class AdminUserManagementController extends Controller
                 'd.IDfor',
                 'd.IDkeeper',
             ]);
+        // Filter in SQL, not in Vue, so totals and pagination remain accurate.
+        // Legacy classification is stored as string values (e.g. True/False).
+        $outgoingValues = ['true', '1', 'y', 'yes', 'outgoing'];
+        $query->where(function ($classificationQuery) use ($classification, $outgoingValues) {
+            if ($classification === 'outgoing') {
+                $classificationQuery->whereIn(DB::raw('LOWER(TRIM(COALESCE(d.classification, \'\')))'), $outgoingValues);
+            } else {
+                $classificationQuery->whereNotIn(DB::raw('LOWER(TRIM(COALESCE(d.classification, \'\')))'), $outgoingValues);
+            }
+        });
         if ($search !== '') {
             $query->where(function ($documentQuery) use ($search) {
                 $documentQuery
@@ -1795,7 +1809,7 @@ class AdminUserManagementController extends Controller
             '1',
             '4',
             'admin',
-            'administrator',       
+            'administrator',
             'superadmin',
             'super admin',
         ];

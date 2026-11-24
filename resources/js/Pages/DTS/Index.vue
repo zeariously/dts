@@ -157,10 +157,8 @@ const currentPersonnelIds = computed(() => {
         .map((id) => String(id).trim())
 })
 
-const canManageDts = computed(() => {
-    
-    return ['3'].includes(userRights.value)
-})
+// Preserve original DTS management controls (Role 3).
+const canManageDts = computed(() => ['3'].includes(userRights.value))
 
 const canReceiveDts = computed(() => {
    
@@ -1567,6 +1565,7 @@ const rows = computed(() => {
         return sourceRows
     }
 
+    // Preserve the previous Role 2 returned-document display behavior.
     return sourceRows.filter((doc) => !shouldHideReturnedAwayFromRoleTwo(doc))
 })
 
@@ -1928,23 +1927,25 @@ const documentStatusLabel = (doc) => {
     return status
 }
 
-// Action status is separate from the document's receiving/workflow status.
-// First Action alone does not complete a document: it remains For Action
-// until a Final Action is saved or the document is closed/completed.
+// Display the exact action stage without changing the receiving workflow.
+// First Action is still open; only a saved Final Action closes the assignment.
 const documentActionStatusLabel = (doc) => {
-    // The primary status remains Received. Show a second badge only while
-    // waiting for Final Action. A First Action does not remove For Action.
-    const primaryStatus = String(documentStatusLabel(doc) || '').trim().toLowerCase()
-    if (primaryStatus !== 'received') return ''
-
+    if (['true', '1', 'outgoing'].includes(String(doc?.classification ?? '').trim().toLowerCase())) return ''
+    const status = String(documentStatusLabel(doc) || '').trim().toLowerCase()
+    if (status === 'addressed') return 'Final Action'
+    if (status !== 'received') return ''
     const hasReceipt = Boolean(doc?.confirmdate || doc?.date_received || doc?.received_date)
     if (!hasReceipt) return ''
-
-    return 'For Action'
+    return Number(doc?.has_first_action || 0) === 1 ? 'First Action' : 'No Action Yet'
 }
 
-const documentActionStatusClass = () =>
-    'border-red-300 bg-red-100 text-red-800'
+const documentActionStatusClass = (doc) => {
+    const stage = documentActionStatusLabel(doc)
+    if (stage === 'Final Action') return 'border-indigo-200 bg-indigo-50 text-indigo-700'
+    if (stage === 'First Action') return 'border-sky-200 bg-sky-50 text-sky-700'
+    if (stage === 'No Action Yet') return 'border-slate-200 bg-slate-50 text-slate-600'
+    return 'border-slate-200 bg-slate-50 text-slate-600'
+}
 
 // Shared DTS badge colors. Keep these classes identical in Index.vue and Show.vue.
 const dtsStatusBadgeClass = (status) => {
@@ -3493,8 +3494,8 @@ const submitEntryDateUpdate = () => {
                                 </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -3681,8 +3682,8 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mx-auto mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -4249,8 +4250,8 @@ const submitEntryDateUpdate = () => {
                                 </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -4437,8 +4438,8 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mx-auto mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -4608,8 +4609,8 @@ const submitEntryDateUpdate = () => {
                                 </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -4796,8 +4797,8 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mx-auto mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -4974,8 +4975,8 @@ const submitEntryDateUpdate = () => {
                                 </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -5162,8 +5163,8 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mx-auto mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>
@@ -5598,8 +5599,8 @@ const submitEntryDateUpdate = () => {
                                     </span>
                                 <span
                                     v-if="documentActionStatusLabel(doc)"
-                                    class="mx-auto mt-4 block w-fit rounded-full border px-3 py-1 text-xs font-black"
-                                    :class="documentActionStatusClass()"
+                                    class="mx-auto mt-2 flex w-fit shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-black uppercase leading-tight tracking-normal"
+                                    :class="documentActionStatusClass(doc)"
                                 >
                                     {{ documentActionStatusLabel(doc) }}
                                 </span>

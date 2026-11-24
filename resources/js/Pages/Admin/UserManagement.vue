@@ -70,6 +70,7 @@ const props = defineProps({
             per_page: 10,
             document_search: '',
             document_per_page: 15,
+            document_classification: 'incoming',
             tab: 'role-management',
         }),
     },
@@ -96,6 +97,7 @@ const selectedRole = ref(props.filters?.role_id || '')
 const perPage = ref(Number(props.filters?.per_page || 10))
 const documentSearch = ref(props.filters?.document_search || '')
 const documentPerPage = ref(Number(props.filters?.document_per_page || 15))
+const documentClassification = ref(props.filters?.document_classification === 'outgoing' ? 'outgoing' : 'incoming')
 const activeTab = ref(props.filters?.tab || 'role-management')
 const roleDrafts = ref({})
 const savingUserId = ref(null)
@@ -1004,6 +1006,7 @@ const commonQuery = () => ({
     per_page: perPage.value,
     document_search: documentSearch.value || undefined,
     document_per_page: documentPerPage.value,
+    document_classification: documentClassification.value,
     tab: activeTab.value,
 })
 
@@ -1013,6 +1016,13 @@ const applyUserFilters = () => {
         preserveScroll: true,
         replace: true,
     })
+}
+
+const setDocumentClassification = (classification) => {
+    if (documentClassification.value === classification) return
+    documentClassification.value = classification
+    // Clear the document page so each classification starts on its first page.
+    applyDocumentFilters()
 }
 
 const applyDocumentFilters = () => {
@@ -1565,6 +1575,57 @@ const formatDate = (value) => {
     }).format(date)
 }
 
+// Pending age: use the Monitoring Dashboard's backend value when available.
+// Fallback counts completed Mon–Thu workdays from the document entry date.
+const pendingStatus = (document) => {
+    const status = String(document?.workflow_status ?? document?.status ?? '')
+        .trim().toLowerCase().replace(/[_-]+/g, ' ')
+    const classification = String(document?.classification ?? '').toLowerCase()
+    if (['true', '1', 'y', 'yes', 'outgoing'].includes(classification)) return false
+    if (!status || /(addressed|recorded|completed|closed|cancelled)/.test(status)) return false
+    return /(receiv|action|pending|return|forward)/.test(status)
+}
+
+const workdaysPending = (dateValue) => {
+    if (!dateValue) return null
+    const datePart = String(dateValue).match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+    if (!datePart) return null
+    const [year, month, day] = datePart.split('-').map(Number)
+    const start = new Date(Date.UTC(year, month - 1, day))
+    if (start.getUTCFullYear() !== year || start.getUTCMonth() !== month - 1 || start.getUTCDate() !== day) return null
+    // Use Philippine calendar date, independent of the browser time zone.
+    const todayParts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date())
+    const getPart = (type) => Number(todayParts.find((part) => part.type === type)?.value)
+    const today = Date.UTC(getPart('year'), getPart('month') - 1, getPart('day'))
+    const startMs = start.getTime()
+    if (startMs >= today) return 0
+    let count = 0
+    // Full calendar weeks are four working days: Monday through Thursday.
+    const elapsed = Math.floor((today - startMs) / 86400000)
+    const fullWeeks = Math.floor(elapsed / 7)
+    count += fullWeeks * 4
+    const cursor = new Date(startMs + fullWeeks * 7 * 86400000)
+    for (let i = 0; i < elapsed % 7; i++) {
+        const weekday = cursor.getUTCDay()
+        if (weekday >= 1 && weekday <= 4) count++
+        cursor.setUTCDate(cursor.getUTCDate() + 1)
+    }
+    return count
+}
+
+const documentPendingDays = (document) => {
+    if (!pendingStatus(document)) return null
+    for (const key of ['pending_days', 'pending_workdays', 'days_pending']) {
+        const value = document?.[key]
+        if (value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))) {
+            return Math.max(0, Math.floor(Number(value)))
+        }
+    }
+    return workdaysPending(document?.pending_since ?? document?.assigned_at ?? document?.entrydate)
+}
+
 const classificationLabel = (value) => {
     const normalized = String(value ?? '').toLowerCase()
 
@@ -1924,13 +1985,29 @@ const historyBadgeClass = (type) => {
                         </div>
 
                         <div class="rounded-2xl bg-white/15 px-4 py-3 text-sm font-black">
-                            Showing {{ documents.from || 0 }} - {{ documents.to || 0 }} of {{ documents.total || 0 }}
+                            {{ documentClassification === 'incoming' ? 'Incoming' : 'Outgoing' }}: {{ documents.from || 0 }} - {{ documents.to || 0 }} of {{ documents.total || 0 }}
                         </div>
                     </div>
                 </div>
 
+                <!-- Incoming / Outgoing use separate backend queries and pagination. -->
+                <div class="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-5 py-3">
+                    <button
+                        v-for="classification in ['incoming', 'outgoing']"
+                        :key="classification"
+                        type="button"
+                        class="rounded-lg px-5 py-2 text-sm font-black transition"
+                        :class="documentClassification === classification
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'bg-white text-slate-600 hover:bg-slate-200'"
+                        @click="setDocumentClassification(classification)"
+                    >
+                        {{ classification === 'incoming' ? 'Incoming' : 'Outgoing' }}
+                    </button>
+                </div>
+
                 <div class="overflow-x-auto">
-                    <table class="w-full min-w-[1250px] text-left text-sm">
+                    <table class="w-full min-w-[1370px] text-left text-sm">
                         <thead class="bg-indigo-600 text-white">
                             <tr>
                                 <th class="px-5 py-4 font-black">DTS ID</th>
@@ -1940,6 +2017,7 @@ const historyBadgeClass = (type) => {
                                 <th class="px-5 py-4 font-black">Document Type</th>
                                 <th class="px-5 py-4 font-black">Assigned To</th>
                                 <th class="px-5 py-4 font-black">Status</th>
+                                <th class="px-5 py-4 text-center font-black">Pending Days</th>
                                 <th class="px-5 py-4 text-center font-black">Action</th>
                             </tr>
                         </thead>
@@ -1987,6 +2065,16 @@ const historyBadgeClass = (type) => {
                                     </span>
                                 </td>
 
+                                <td class="px-5 py-5 text-center">
+                                    <span
+                                        v-if="documentPendingDays(document) !== null"
+                                        class="inline-flex min-w-16 justify-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-black text-amber-700"
+                                    >
+                                        {{ documentPendingDays(document) }} {{ documentPendingDays(document) === 1 ? 'day' : 'days' }}
+                                    </span>
+                                    <span v-else class="text-slate-400">—</span>
+                                </td>
+
                                 <td class="px-5 py-5">
                                     <div class="flex flex-wrap justify-center gap-2">
                                         <button
@@ -2020,8 +2108,8 @@ const historyBadgeClass = (type) => {
                             </tr>
 
                             <tr v-if="documentRows.length === 0">
-                                <td colspan="8" class="px-5 py-14 text-center">
-                                    <p class="text-lg font-black text-slate-800">No documents found</p>
+                                <td colspan="9" class="px-5 py-14 text-center">
+                                    <p class="text-lg font-black text-slate-800">No {{ documentClassification }} documents found</p>
                                     <p class="mt-1 text-sm font-medium text-slate-500">
                                         Try another DTS ID, subject, or regarding keyword.
                                     </p>

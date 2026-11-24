@@ -129,6 +129,8 @@ public function index(Request $request)
         || $request->boolean('show_all')
         || $request->boolean('all_documents');
 
+    // Preserve the original All Documents access roles.
+    // Role 2 still sees ONLY their current assigned incoming workflows.
     if ($isAllDocumentsSection && ! in_array($currentRights, ['2', '3'], true)) {
         abort(403);
     }
@@ -162,6 +164,23 @@ public function index(Request $request)
     } elseif (Schema::hasColumn('lu_doctype', 'code')) {
         $doctypeCodeColumn = 'dt.code';
     }
+
+    // The first action belongs to this specific assignment AND receipt cycle.
+    // A transferred/reassigned document must not inherit an earlier person's action.
+    $firstActionAssignmentSql = $hasRemarkAssignment
+        ? 'AND firstAction.assignment_id <=> assignment.id'
+        : 'AND assignment.id IS NULL';
+    $hasFirstActionSql = Schema::hasTable('dts_document_remarks')
+        && Schema::hasColumn('dts_document_remarks', 'action_type')
+        ? "CASE WHEN EXISTS (
+            SELECT 1 FROM dts_document_remarks firstAction
+            WHERE firstAction.IDdoc = d.IDdoc
+              {$firstActionAssignmentSql}
+              AND firstAction.action_type = 'action_saved'
+              AND dist.confirmdate IS NOT NULL
+              AND (dist.distdate IS NULL OR firstAction.created_at >= dist.distdate)
+        ) THEN 1 ELSE 0 END"
+        : '0';
 
     $selectedActionLabelExpression = Schema::hasColumn(
         'dts_document_remarks',
@@ -335,6 +354,8 @@ public function index(Request $request)
         $currentRights,
         $viewerPersonnelIds
     ) {
+        // Critical: Roles 2 and 4 must see only documents assigned to them.
+        // Filtering is based on the CURRENT distribution per A/B/C assignment.
         $mustLimit = $force || in_array($currentRights, ['2', '4'], true);
 
         if (! $mustLimit) {
@@ -645,6 +666,7 @@ public function index(Request $request)
             CONCAT('Account #', COALESCE(returnParent.confirmuser, dist.IDuser))
         ) as returned_by_name"),
 
+        DB::raw($hasFirstActionSql . ' as has_first_action'),
         'selectedActionRemark.id as selected_action_id',
         'selectedActionRemark.action_type as action_type',
         'selectedActionRemark.action_type_id as action_type_id',
@@ -671,9 +693,9 @@ public function index(Request $request)
     $statsBase = $buildWorkflowBase();
     $applyCommonYear($statsBase);
 
-    if (! $isAllDocumentsSection && $section !== 'reports') {
-        $applyTaggedScope($statsBase);
-    }
+    // Dashboard counts match the current user's assigned incoming records.
+    // All Documents and Reports must not override personnel restrictions.
+    $applyTaggedScope($statsBase);
 
     $countStatus = function ($base, string $status) use ($applyStatusFilter) {
         $query = clone $base;
@@ -705,8 +727,14 @@ public function index(Request $request)
 
     $documentsQuery = $buildWorkflowBase();
 
-    if (! $isAllDocumentsSection && $section !== 'reports' && ! ($currentRights === '2' && in_array($section, ['sent-docs', 'outgoing'], true))) {
-        // Outgoing has no staff assignment; Role 2 may view the full outgoing list.
+    // Role 2's existing outgoing read-only exception is kept. Incoming records
+    // are always assigned-personnel scoped, even in All Documents and Reports.
+    $isRoleTwoOutgoingList = $currentRights === '2'
+        && in_array($section, ['sent-docs', 'outgoing'], true);
+    $isRoleTwoOutgoingReport = $currentRights === '2'
+        && $section === 'reports'
+        && strtolower(trim((string) $request->input('report_classification', ''))) === 'true';
+    if (! $isRoleTwoOutgoingList && ! $isRoleTwoOutgoingReport) {
         $applyTaggedScope($documentsQuery);
     }
 
@@ -779,7 +807,7 @@ public function index(Request $request)
     } elseif ($section === 'incoming') {
         // Incoming dashboard card: never mix outgoing records into this list.
         $documentsQuery->where('d.classification', 'False');
-    } elseif ($section === 'sent-docs') {
+    } elseif (in_array($section, ['sent-docs', 'outgoing'], true)) {
         // Outgoing dashboard card: list all outgoing documents.
         $documentsQuery->where('d.classification', 'True');
     } elseif ($section === 'pulled-out-docs') {
@@ -5884,11 +5912,23 @@ private function viewerCanAccessDocument(
         }
     }
 
-    /*
-     * The current DTS allows users to open document details through
-     * All Documents. Action permissions remain assignment-specific.
-     */
-    return true;
+    // Management accounts retain their existing full-document viewing access.
+    $rights = $this->currentUserRights();
+    if (in_array($rights, ['1', '3'], true)) {
+        return true;
+    }
+
+    // Outgoing has no personnel assignment. Preserve Role 2's read-only view.
+    if ($rights === '2' && DB::table('document')
+        ->where('IDdoc', $documentId)
+        ->whereRaw("LOWER(TRIM(classification)) = 'true'")
+        ->exists()) {
+        return true;
+    }
+
+    // Incoming details require the current assignment tag for personnel roles.
+    return in_array($rights, ['2', '4'], true)
+        && $this->documentIsTaggedToViewer($documentId, $assignmentId);
 }
 private function documentIsTaggedToViewer(
     int $documentId,
