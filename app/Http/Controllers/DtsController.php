@@ -734,7 +734,10 @@ public function index(Request $request)
     $isRoleTwoOutgoingReport = $currentRights === '2'
         && $section === 'reports'
         && strtolower(trim((string) $request->input('report_classification', ''))) === 'true';
-    if (! $isRoleTwoOutgoingList && ! $isRoleTwoOutgoingReport) {
+    // Original DTS: All Documents is a listing of every document, not just
+    // records assigned to the current personnel. Keep the original role gate
+    // above (Rights 2 and 3 only); other sections retain personnel scoping.
+    if (! $isAllDocumentsSection && ! $isRoleTwoOutgoingList && ! $isRoleTwoOutgoingReport) {
         $applyTaggedScope($documentsQuery);
     }
 
