@@ -29,6 +29,10 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    isUnassignedViewOnly: {
+        type: Boolean,
+        default: false,
+    },
     canReceiveDts: {
         type: Boolean,
         default: false,
@@ -71,7 +75,8 @@ const userRights = computed(() => {
 })
 
 const isSuperAdminViewOnly = computed(() => {
-    return Boolean(props.isSuperAdminViewOnly)
+    // Existing Rights 4 view-only and newly permitted unassigned readers.
+    return Boolean(props.isSuperAdminViewOnly || props.isUnassignedViewOnly)
 })
 
 const canManageDts = computed(() => {
