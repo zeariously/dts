@@ -75,7 +75,8 @@ const userRights = computed(() => {
 })
 
 const isSuperAdminViewOnly = computed(() => {
-    // Existing Rights 4 view-only and newly permitted unassigned readers.
+    // Preserve original Rights 4 behavior; unassigned Rights 2 can read only.
+    // Rights 1 Admin/Encoder and Rights 3 are never downgraded by this flag.
     return Boolean(props.isSuperAdminViewOnly || props.isUnassignedViewOnly)
 })
 
