@@ -2288,8 +2288,10 @@ public function show(Request $request, $id)
             (int) $document->IDdoc,
             $assignmentId
         ),
+        // Only unassigned Rights 2 users get view-only presentation.
+        // Rights 1 stays Admin/Encoder; Rights 3 keeps its original permissions.
         'isUnassignedViewOnly' => $document->classification !== 'True'
-            && in_array($this->currentUserRights(), ['1', '2', '3'], true)
+            && $this->currentUserRights() === '2'
             && ! $this->documentIsTaggedToViewer((int) $document->IDdoc, $assignmentId),
         'canMarkOutgoingRecorded' => $document->classification === 'True'
             && in_array($this->currentUserRights(), ['1', '3'], true)
@@ -2314,9 +2316,10 @@ public function show(Request $request, $id)
                 $assignmentId
             ),
         'canDeleteAttachments' => $this->currentUserRights() === '3'
-            && $this->viewerCanAccessDocument((int) $document->IDdoc, $assignmentId)
-            && ($document->classification === 'True'
-                || $this->documentIsTaggedToViewer((int) $document->IDdoc, $assignmentId)),
+            && $this->viewerCanAccessDocument(
+                (int) $document->IDdoc,
+                $assignmentId
+            ),
         'canRemarkDts' => ! ($this->currentUserRights() === '2' && strtolower(trim((string) $document->classification)) === 'true')
             && $this->canRemarkDts()
             && $this->viewerCanRemarkDocument(
@@ -2530,7 +2533,6 @@ public function pullout(Request $request, $id)
     $this->ensureCanManageDts();
 
     $assignmentId = $this->requestedAssignmentId($request);
-    $this->ensureViewerCanActOnDocument((int) $id, $assignmentId);
 
     if ($assignmentId !== null) {
         $this->resolveDocumentAssignment((int) $id, $assignmentId);
@@ -3656,9 +3658,6 @@ public function updateEntryDate(Request $request, $id)
     $this->ensureRoleTwoOutgoingReadOnly((int) $id);
 
     $this->ensureCanManageDts();
-    if (DB::table('document')->where('IDdoc', $id)->value('classification') !== 'True') {
-        $this->ensureViewerCanActOnDocument((int) $id, $this->requestedAssignmentId($request));
-    }
     $validated = $request->validate([
         'entrydate' => ['required', 'date'],
     ]);
@@ -3813,9 +3812,6 @@ public function destroyAttachment(Request $request, $id, $file)
     $this->ensureRoleTwoOutgoingReadOnly((int) $id);
 
     abort_unless($this->viewerCanAccessDocument((int) $id), 403);
-    if (DB::table('document')->where('IDdoc', $id)->value('classification') !== 'True') {
-        $this->ensureViewerCanActOnDocument((int) $id, $this->requestedAssignmentId($request));
-    }
 
     if (! Schema::hasTable('dts_document_files')) {
         return back()->withErrors([
@@ -5938,13 +5934,13 @@ private function viewerCanAccessDocument(
         return true;
     }
 
-    // Original DTS: Rights 2 may open an unassigned incoming document
-    // from All Documents, but they cannot perform any workflow action.
-    // Rights 4 keeps its existing assignment-only access.
+    // Rights 2 may open other incoming documents from All Documents for reading.
+    // Write operations remain guarded by the original assignment/action checks.
     if ($rights === '2') {
         return true;
     }
 
+    // Rights 4 keeps its original assignment-only access.
     return $rights === '4'
         && $this->documentIsTaggedToViewer($documentId, $assignmentId);
 }
@@ -6016,11 +6012,14 @@ private function viewerCanTransferDocument(
     }
 
     /*
-     * Original DTS quick transfer remains available to Rights 3 on their
-     * assigned workflow; merely being able to view is not action authority.
+     * Preserve the Role 3 quick-transfer rule, but verify that the requested
+     * assignment belongs to the document.
      */
     if ($this->currentUserRights() === '3') {
-        return $this->viewerCanActOnDocument($documentId, $assignmentId);
+        return $this->viewerCanAccessDocument(
+            $documentId,
+            $assignmentId
+        );
     }
 
     if (! $this->canReceiveDts()) {
@@ -6065,10 +6064,15 @@ private function viewerCanRemarkDocument(
     int $documentId,
     ?int $assignmentId = null
 ): bool {
-    // Original DTS: remarks may still be written after Final Address,
-    // but an unassigned viewer may only read, not modify this workflow.
-    if (! $this->viewerCanAccessDocument($documentId, $assignmentId)
-        || ! $this->documentIsTaggedToViewer($documentId, $assignmentId)) {
+    // Remarks remain available even after Final Address/Addressed.
+    // Only the document assigner/creator and assigned personnel may write.
+    if (! $this->viewerCanAccessDocument($documentId, $assignmentId)) {
+        return false;
+    }
+
+    // Unassigned Rights 2 users may inspect records, never add remarks.
+    if ($this->currentUserRights() === '2'
+        && ! $this->documentIsTaggedToViewer($documentId, $assignmentId)) {
         return false;
     }
 
@@ -6141,7 +6145,10 @@ private function viewerCanReattachDocument(
     }
 
     if ($this->currentUserRights() === '3') {
-        return $this->viewerCanActOnDocument($documentId, $assignmentId);
+        return $this->viewerCanAccessDocument(
+            $documentId,
+            $assignmentId
+        );
     }
 
     if (
